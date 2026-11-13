@@ -1,0 +1,12 @@
+# build output
+bin/
+obj/
+*.user
+
+# local research clones (huge, not needed in repo)
+_research/
+packages/
+
+# editor
+.vs/
+.idea/

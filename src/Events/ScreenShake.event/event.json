@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "pev.screen-shake",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "main.js",
+  "icon": "icon.png",
+  "category": "VisualFx",
+  "name": { "en": "Screen Shake", "zh-CN": "屏幕震动" },
+  "description": {
+    "en": "Shakes the screen. Used to verify multi-instance independence.",
+    "zh-CN": "震动屏幕，用于验证多实例独立性。"
+  },
+  "params": [
+    { "name": "strength", "type": "Float", "default": 1.0, "min": 0, "max": 10 },
+    { "name": "duration", "type": "Float", "default": 0.5, "min": 0, "max": 8, "unit": "beats" },
+    { "name": "target", "type": "Tile", "default": [0, "ThisTile"] }
+  ]
+}
