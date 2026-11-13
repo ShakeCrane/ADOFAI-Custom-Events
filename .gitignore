@@ -10,3 +10,6 @@ packages/
 # editor
 .vs/
 .idea/
+
+# release artifacts (published via GitHub Releases)
+dist/

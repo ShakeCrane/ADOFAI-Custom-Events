@@ -1,8 +1,0 @@
-{
-  "Id": "PEV.Core",
-  "DisplayName": "ADOFAI Programmable Events",
-  "Author": "ShakeCrane",
-  "Version": "0.1.0",
-  "AssemblyName": "PEV.Core.dll",
-  "EntryMethod": "PEV.Core.Plugin.Load"
-}
