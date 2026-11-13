@@ -6,16 +6,48 @@
   "entry": "main.js",
   "icon": "icon.png",
   "category": "VisualFx",
-  "name": { "en": "Pulse", "zh-CN": "脉冲" },
+  "name": {
+    "en": "Pulse",
+    "zh-CN": "脉冲"
+  },
   "description": {
     "en": "A continuously animated shape that breathes and drifts. Demonstrates per-frame update(t).",
     "zh-CN": "一个持续呼吸、漂移的图形，用于演示逐帧 update(t)。"
   },
   "params": [
-    { "name": "duration", "type": "Float", "default": 4, "min": 0.25, "max": 32, "unit": "s" },
-    { "name": "cycles", "type": "Float", "default": 3, "min": 0.25, "max": 32 },
-    { "name": "size", "type": "Float", "default": 0.35, "min": 0.01, "max": 3 },
-    { "name": "drift", "type": "Float", "default": 0.25, "min": 0, "max": 1 },
-    { "name": "color", "type": "Color", "default": "66ddff" }
+    {
+      "name": "duration",
+      "type": "Float",
+      "default": 4,
+      "min": 0.25,
+      "max": 32,
+      "unit": "s"
+    },
+    {
+      "name": "cycles",
+      "type": "Float",
+      "default": 2,
+      "min": 0.25,
+      "max": 32
+    },
+    {
+      "name": "size",
+      "type": "Float",
+      "default": 0.8,
+      "min": 0.01,
+      "max": 3
+    },
+    {
+      "name": "drift",
+      "type": "Float",
+      "default": 0.25,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "name": "color",
+      "type": "Color",
+      "default": "66ddff"
+    }
   ]
 }

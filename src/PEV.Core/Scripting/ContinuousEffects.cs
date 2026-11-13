@@ -32,6 +32,9 @@ namespace PEV.Scripting
 
         public static int LiveCount => Live.Count;
 
+        /// <summary>Set by the P4 harness to log the resolved camera and placement once.</summary>
+        public static bool DiagnoseFirstApply;
+
         public static bool Exists(string key) => !string.IsNullOrEmpty(key) && Live.ContainsKey(key);
 
         /// <summary>Diagnostics for the harness: per-key counters and last applied values.</summary>
@@ -57,8 +60,10 @@ namespace PEV.Scripting
                 if (Live.TryGetValue(key, out var existing) && existing.GameObject != null)
                     return true;
 
-                var go = new GameObject("PEV.Fx:" + key);
-                go.transform.SetParent(GameBridge.Root, false);
+                // Must go through the canvas: it assigns the effect layer and parents the
+                // object under the root that owns the dedicated camera. Creating a bare
+                // GameObject leaves it on layer 0, where the game's own cameras draw over it.
+                var go = EffectCanvas.CreateObject("PEV.Fx:" + key);
 
                 var sr = go.AddComponent<SpriteRenderer>();
                 sr.sprite = SolidSprite.White;
@@ -141,7 +146,7 @@ namespace PEV.Scripting
             float alpha = ParseFloat(args, "alpha", 1f);
             float angle = ParseFloat(args, "angle", 0f);
 
-            var cam = Camera.main;
+            var cam = GameCamera.Current;
             Vector3 pos;
             if (cam != null)
             {
@@ -158,6 +163,31 @@ namespace PEV.Scripting
             else
             {
                 pos = new Vector3(x, y, 0f);
+            }
+
+            // One-shot diagnostics: proves which camera was chosen and where the sprite
+            // landed. Without this a placement bug looks exactly like "no effect".
+            if (DiagnoseFirstApply)
+            {
+                DiagnoseFirstApply = false;
+                var c = GameCamera.Current;
+                string camInfo = c == null
+                    ? "NO CAMERA"
+                    : $"{c.name} ortho={c.orthographic} size={(c.orthographic ? c.orthographicSize : c.fieldOfView)} " +
+                      $"pos={c.transform.position} fwd={c.transform.forward} aspect={c.aspect:F2} " +
+                      $"mask={c.cullingMask} depth={c.depth} near={c.nearClipPlane} far={c.farClipPlane}";
+
+                var rend = entry.Renderer;
+                string rendInfo = rend == null ? "NO RENDERER" :
+                    $"enabled={rend.enabled} sprite={(rend.sprite != null)} " +
+                    $"visible={(c != null && rend.isVisible)} " +
+                    $"layer={entry.GameObject.layer} sortingLayer={rend.sortingLayerName}/{rend.sortingOrder} " +
+                    $"shader={rend.material?.shader?.name ?? "none"} " +
+                    $"color={rend.color} bounds={rend.bounds}";
+
+                PEV.Core.Plugin.Log($"fx apply: cam=[{camInfo}]");
+                PEV.Core.Plugin.Log("fx apply: canvas " + EffectCanvas.Describe());
+                PEV.Core.Plugin.Log($"fx apply: obj pos={pos} scale={entry.GameObject.transform.localScale} [{rendInfo}]");
             }
 
             entry.GameObject.transform.position = pos;

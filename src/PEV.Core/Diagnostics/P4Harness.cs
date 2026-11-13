@@ -91,6 +91,7 @@ namespace PEV.Diagnostics
             // Log what each instance actually hands to create(ctx, params). Reading the
             // cached snapshot tells us nothing about what the script sees.
             ScriptHost.LogInit = true;
+            ContinuousEffects.DiagnoseFirstApply = true;
 
             var pulse = FindType("pev.pulse");
             if (pulse == null)
@@ -121,8 +122,14 @@ namespace PEV.Diagnostics
                 int idx = floors.IndexOf(ev.floor);
                 ev["duration"] = 3f;
                 ev["cycles"] = idx == 0 ? 2f : 5f;
-                ev["size"] = 0.3f;
-                ev["drift"] = idx == 0 ? 0.2f : 0.6f;
+
+                // Deliberately large and opaque for the visual check. At the shipped
+                // defaults (size 0.3, alpha ~0.1) the shape is legitimately hard to pick
+                // out of a screenshot, which would make a rendering failure and a subtle
+                // effect look identical.
+                ev["size"] = 2.0f;
+                ev["drift"] = 0f;
+                ev["color"] = "00ff00";
 
                 // The script reads Data.Effective, not the LevelEvent's live values. Show
                 // what will actually reach create(ctx, params).
@@ -133,17 +140,45 @@ namespace PEV.Diagnostics
 
             Row("LIVE-before-play", ContinuousEffects.LiveCount.ToString(), "effects alive before playback");
 
+            // Decisive visibility probe: one opaque red quad, large, dead centre. If this
+            // does not appear in the capture, the problem is rendering, not the pulse maths.
+            ContinuousEffects.Create("probe", new Dictionary<string, object>
+            {
+                { "key", "probe" }, { "color", "ff0000" }, { "scale", 3.0f },
+                { "alpha", 1.0f }, { "x", 0f }, { "y", 0f }, { "sortingOrder", 32000 }
+            }, out string probeErr);
+            Row("PROBE-created", probeErr ?? "ok", "");
+
+            yield return new WaitForSeconds(0.5f);
+
+            if (ContinuousEffects.TryGetStats("probe", out int pc, out float ps, out float pa2, out var ppos))
+            {
+                var obj = GameObject.Find("PEV.Fx:probe");
+                var sr = obj != null ? obj.GetComponent<SpriteRenderer>() : null;
+                Row("PROBE-state", (sr != null && sr.isVisible) ? "VISIBLE" : "NOT-VISIBLE",
+                    $"scale={ps} alpha={pa2} pos={ppos} sprite={(sr != null && sr.sprite != null)} " +
+                    $"layer={(obj != null ? obj.layer : -1)} order={(sr != null ? sr.sortingOrder : -1)} " +
+                    $"color={(sr != null ? sr.color.ToString() : "?")}");
+            }
+
+            yield return CaptureFrame("probe");
+            ContinuousEffects.Destroy("probe", out _);
+
             editor.Play();
 
             // Instances start when the song clock reaches their tile, which is after the
-            // countdown. Poll for the objects instead of guessing a fixed delay.
+            // countdown. Poll long enough for the later floor too: at 120 BPM with a
+            // countdown, floor 5 starts several seconds after floor 2, and a short window
+            // reports "missing" for an instance that simply had not begun yet.
             bool aOk = false, bOk = false;
-            for (int i = 0; i < 40 && !(aOk && bOk); i++)
+            for (int i = 0; i < 200 && !(aOk && bOk); i++)
             {
-                yield return new WaitForSeconds(0.1f);
+                yield return new WaitForSeconds(0.05f);
                 aOk = ContinuousEffects.TryGetStats(KeyForFloor(floors[0]), out _, out _, out _, out _);
                 bOk = ContinuousEffects.TryGetStats(KeyForFloor(floors[1]), out _, out _, out _, out _);
             }
+
+            yield return CaptureFrame("pulse-alive");
 
             ContinuousEffects.TryGetStats(KeyForFloor(floors[0]), out int calls0, out float sa, out _, out var pa);
             ContinuousEffects.TryGetStats(KeyForFloor(floors[1]), out int calls1, out float sb, out _, out var pb);
@@ -169,6 +204,11 @@ namespace PEV.Diagnostics
             for (int i = 0; i < 20; i++)
             {
                 yield return new WaitForSeconds(0.1f);
+
+                // Capture once, mid-lifetime, so the rendered result can be inspected
+                // afterwards. Numeric checks prove the animation is driven; only an image
+                // proves it is actually visible.
+                if (i == 8) yield return CaptureFrame("mid");
 
                 if (ContinuousEffects.TryGetStats(KeyForFloor(floors[0]), out int c, out float scale, out float alpha, out var pos))
                 {
@@ -232,6 +272,41 @@ namespace PEV.Diagnostics
             var field = typeof(RuntimeHost).GetField("_instances",
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
             return (field?.GetValue(host) as List<EventInstance>) ?? new List<EventInstance>();
+        }
+
+        /// <summary>
+        /// Saves a screenshot next to the results file.
+        ///
+        /// ScreenCapture lives in UnityEngine.ScreenCaptureModule, which targets
+        /// netstandard2.1 and cannot be referenced from a net48 assembly. Call it through
+        /// reflection rather than dragging in that dependency.
+        /// </summary>
+        private static IEnumerator CaptureFrame(string tag)
+        {
+            yield return new WaitForEndOfFrame();
+
+            string dir = Path.GetDirectoryName(_resultPath);
+            if (string.IsNullOrEmpty(dir)) yield break;
+
+            string path = Path.Combine(dir, $"p4-{tag}.png");
+            bool issued = false;
+
+            // C# forbids yield inside a try that has a catch, so the call and the wait
+            // are separated.
+            try
+            {
+                var type = Type.GetType("UnityEngine.ScreenCapture, UnityEngine.ScreenCaptureModule");
+                var method = type?.GetMethod("CaptureScreenshot", new[] { typeof(string) });
+                if (method == null) { Row("CAPTURE", "UNAVAILABLE", tag); yield break; }
+
+                method.Invoke(null, new object[] { path });
+                Row("CAPTURE", tag, path);
+                issued = true;
+            }
+            catch (Exception e) { Row("CAPTURE", "EXCEPTION", tag + ": " + e.Message); }
+
+            // Give the capture a moment to reach disk before the run continues.
+            if (issued) yield return new WaitForSeconds(0.4f);
         }
     }
 }

@@ -13,3 +13,4 @@ packages/
 
 # release artifacts (published via GitHub Releases)
 dist/
+release_body.md

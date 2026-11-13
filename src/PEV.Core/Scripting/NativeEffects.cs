@@ -21,20 +21,23 @@ namespace PEV.Scripting
                 float duration = ParseFloat(args, "duration", 0.3f);
                 float alpha = ParseFloat(args, "alpha", 0.6f);
 
-                var go = new GameObject("PEV.Flash");
-                go.transform.SetParent(GameBridge.Root, false);
+                var go = EffectCanvas.CreateObject("PEV.Flash");
                 var sr = go.AddComponent<SpriteRenderer>();
                 sr.sprite = SolidSprite.White;
                 sr.sortingOrder = short.MaxValue;
 
-                var cam = Camera.main;
+                var cam = GameCamera.Current;
                 if (cam != null)
                 {
                     // Put it just in front of the camera and size it to the viewport.
                     go.transform.position = cam.transform.position + cam.transform.forward * 0.5f;
-                    float h = 2f * 0.5f * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad);
-                    float w = h * cam.aspect;
-                    go.transform.localScale = new Vector3(w + 1f, h + 1f, 1f);
+
+                    // Match the effect camera's framing so the quad covers the screen.
+                    float halfH = cam.orthographic
+                        ? cam.orthographicSize
+                        : Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad);
+                    float halfW = halfH * cam.aspect;
+                    go.transform.localScale = new Vector3(halfW * 2f + 1f, halfH * 2f + 1f, 1f);
                 }
 
                 var ticker = go.AddComponent<EffectTicker>();
@@ -61,7 +64,7 @@ namespace PEV.Scripting
                 float strength = ParseFloat(args, "strength", 0.2f);
                 float duration = ParseFloat(args, "duration", 0.4f);
 
-                var cam = Camera.main;
+                var cam = GameCamera.Current;
                 if (cam == null) { error = "no main camera"; return false; }
 
                 var host = cam.gameObject.GetComponent<ShakeHost>();

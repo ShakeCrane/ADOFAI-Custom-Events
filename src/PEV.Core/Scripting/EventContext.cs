@@ -48,28 +48,17 @@ namespace PEV.Scripting
     /// </summary>
     public static class GameBridge
     {
-        private static Transform _root;
-
-        public static Transform Root
-        {
-            get
-            {
-                if (_root == null)
-                {
-                    var go = new GameObject("PEV.Effects");
-                    UnityEngine.Object.DontDestroyOnLoad(go);
-                    _root = go.transform;
-                }
-                return _root;
-            }
-        }
+        /// <summary>
+        /// Everything a script can spawn lives on the effect canvas: its own layer, drawn
+        /// by a camera above the game's stack. Parenting to the gameplay camera instead
+        /// produced objects that existed at the right place but were painted over.
+        /// </summary>
+        public static Transform Root => EffectCanvas.Root;
 
         public static void DestroyAll()
         {
             try { ContinuousEffects.DestroyAll(); } catch { }
-            if (_root == null) return;
-            for (int i = _root.childCount - 1; i >= 0; i--)
-                UnityEngine.Object.Destroy(_root.GetChild(i).gameObject);
+            try { EffectCanvas.DestroyAll(); } catch { }
         }
 
         /// <summary>Whitelist dispatch. Unknown names fail loudly instead of silently doing nothing.</summary>
