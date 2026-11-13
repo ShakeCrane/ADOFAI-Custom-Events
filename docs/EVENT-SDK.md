@@ -141,22 +141,32 @@ function create(ctx, params) {
 ### `ctx` 里有什么
 
 ```js
-ctx.time        // 当前歌曲时间（秒）
-ctx.eventTime   // 本事件所在格的进入时间
-ctx.t           // time - eventTime
-ctx.beat        // 按 bpm 换算的拍数
-ctx.floorSeq    // 所在格的序号
+ctx.time            // 当前歌曲时间（秒）
+ctx.eventTime       // 本事件所在格的进入时间
+ctx.t               // time - eventTime
+ctx.beat            // 按 bpm 换算的拍数
+ctx.bpm             // 关卡 BPM
+ctx.secondsPerBeat  // 60 / bpm，把"拍"参数换算成秒时用它
+ctx.floorSeq        // 所在格的序号
 ctx.isPlaying
 ctx.isPaused
 ```
 
 `update(t)` 的参数 `t` 与 `ctx.t` 相同，单位是秒。
 
+参数如果写的是"拍"，换算成秒不要写死 120 BPM：
+
+```js
+var seconds = params.duration * ctx.secondsPerBeat;
+```
+
 **`t` 是相对时间，不是累计帧时间。** 暂停会冻结它，重开会归零。不要自己累加 `deltaTime`，否则暂停和重开时行为会错。
 
 ---
 
 ## 5. 可用的效果
+
+### 一次性效果
 
 ```js
 fx.flash({ color: "ffffff", duration: 0.3, alpha: 0.6 });
@@ -168,7 +178,83 @@ fx.shake({ strength: 0.2, duration: 0.4 });
 | `fx.flash` | `color`（十六进制，可带或不带 `#`）、`duration`（秒）、`alpha` |
 | `fx.shake` | `strength`、`duration`（秒） |
 
-两者都返回 `{ ok: boolean, error: string }`。**不在白名单里的效果会返回 `ok: false` 而不是静默失败**，调试时值得检查。
+### 持续型对象
+
+要做出逐帧变化的图形，用这三个：
+
+```js
+fx.create(key, { color: "66ddff", scale: 0.3, alpha: 0 });   // 建一次
+fx.set(key,    { x: 0.2, scale: 0.5, alpha: 0.8, angle: 45 }); // 每帧更新
+fx.destroy(key);                                               // 结束时清理
+```
+
+| 方法 | 参数 |
+|---|---|
+| `fx.create` | `key`（你自己起的名字）、`color`、`scale`、`alpha`、`sortingOrder` |
+| `fx.set` | `key`，以及 `x` `y` `scale` `alpha` `angle` `color` 中任意几个 |
+| `fx.destroy` | `key` |
+
+坐标说明：`x` / `y` 是相对画面中心的归一化坐标，`1.0` 约等于半屏。这样换分辨率或缩放时位置不会跑偏。
+
+**`key` 必须每个实例不同。** 最常见的是拼上 `ctx.floorSeq`：
+
+```js
+var key = "pulse:" + ctx.floorSeq;
+```
+
+同一个事件放两次而 `key` 相同，两个实例会抢同一个对象，后写的覆盖先写的。
+
+### 完整示例：持续动画
+
+`Pulse.event` 是随模组分发的参考实现，核心部分：
+
+```js
+function create(ctx, params) {
+  var key = "pulse:" + ctx.floorSeq;
+  var started = false;
+  var duration = params.duration > 0 ? params.duration : 1;
+
+  return {
+    update: function (t) {
+      if (t < 0) return;
+
+      // 过了生命周期就收掉，否则对象会一直留在画面上
+      if (t > duration) {
+        if (started) { started = false; fx.destroy(key); }
+        return;
+      }
+
+      if (!started) {
+        started = true;
+        fx.create(key, { color: params.color, scale: params.size, alpha: 0 });
+      }
+
+      var p = t / duration;                          // 0..1
+      var wave = Math.sin(p * params.cycles * Math.PI * 2);
+
+      fx.set(key, {
+        scale: params.size * (1 + wave * 0.25),
+        alpha: 0.35 * (0.6 + 0.4 * wave),
+        x: Math.sin(p * Math.PI * 2) * params.drift,
+        angle: p * 360
+      });
+    },
+
+    dispose: function () {
+      if (started) fx.destroy(key);
+      started = false;
+    }
+  };
+}
+```
+
+三个要点：
+
+1. **用 `started` 标志保证 `create` 只跑一次**，`set` 每帧跑。
+2. **自己判断生命周期**。`update(t)` 不会因为过了某个时长就停止调用，脚本要自己决定何时收尾。
+3. **`dispose` 里也要 `destroy`**。重开、检查点跳转、退出关卡都会触发 `dispose`；宿主也会兜底回收，但显式清理更干净。
+
+所有方法都返回 `{ ok: boolean, error: string }`。**不在白名单里的效果会返回 `ok: false` 而不是静默失败**，调试时值得检查。
 
 ---
 
@@ -213,7 +299,7 @@ function create(ctx, params) {
 ```js
 function create(ctx, params) {
   var started = false;
-  var seconds = params.duration * 0.5;   // 假设 120 BPM
+  var seconds = params.duration * ctx.secondsPerBeat;   // 拍 -> 秒，跟随关卡 BPM
 
   return {
     update: function (t) {

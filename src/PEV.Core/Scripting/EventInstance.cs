@@ -144,6 +144,7 @@ namespace PEV.Scripting
             Context.Time = songTime;
             Context.T = t;
             Context.Beat = t * BpmRatio;
+            Context.Bpm = BpmRatio * 60.0;
             Context.IsPlaying = true;
             Context.IsPaused = false;
 

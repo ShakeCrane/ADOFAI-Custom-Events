@@ -15,6 +15,7 @@ namespace PEV.Scripting
         public double EventTime;
         public double T;
         public double Beat;
+        public double Bpm = 120;
         public int FloorSeq;
         public bool IsPlaying;
         public bool IsPaused;
@@ -29,6 +30,10 @@ namespace PEV.Scripting
                 { "eventTime", EventTime },
                 { "t", T },
                 { "beat", Beat },
+                { "bpm", Bpm },
+                // Seconds per beat, so a script can turn a "beats" parameter into seconds
+                // without assuming a tempo.
+                { "secondsPerBeat", Bpm > 0 ? 60.0 / Bpm : 0.5 },
                 { "floorSeq", FloorSeq },
                 { "isPlaying", IsPlaying },
                 { "isPaused", IsPaused }

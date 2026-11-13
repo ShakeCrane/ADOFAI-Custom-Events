@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "pev.camera-warp",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "main.js",
+  "icon": "icon.png",
+  "category": "VisualFx",
+  "name": { "en": "Camera Warp", "zh-CN": "镜头扭曲" },
+  "description": {
+    "en": "Warps the camera over a duration. A proof-of-concept package for P0.",
+    "zh-CN": "在指定时长内扭曲镜头。P0 阶段的验证用事件包。"
+  },
+  "params": [
+    { "name": "strength", "type": "Float", "default": 0.8, "min": 0, "max": 2, "unit": "x" },
+    { "name": "duration", "type": "Float", "default": 2, "min": 0, "max": 16, "unit": "beats" },
+    { "name": "ease", "type": "Enum:Ease", "default": "OutQuad" },
+    { "name": "color", "type": "Color", "default": "ffffff" }
+  ]
+}
