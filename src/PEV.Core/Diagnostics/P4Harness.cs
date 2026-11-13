@@ -134,31 +134,21 @@ namespace PEV.Diagnostics
             Row("LIVE-before-play", ContinuousEffects.LiveCount.ToString(), "effects alive before playback");
 
             editor.Play();
-            yield return null;
 
-            // Sample over time. A continuous effect should produce a new scale every frame,
-            // and the two instances should not move in lockstep.
-            var samples = new List<string>();
-            for (int i = 0; i < 40; i++)
+            // Instances start when the song clock reaches their tile, which is after the
+            // countdown. Poll for the objects instead of guessing a fixed delay.
+            bool aOk = false, bOk = false;
+            for (int i = 0; i < 40 && !(aOk && bOk); i++)
             {
                 yield return new WaitForSeconds(0.1f);
-
-                var keys = KeyForFloor(floors[0]);
-                if (ContinuousEffects.TryGetStats(keys, out int calls, out float scale, out float alpha, out var pos))
-                {
-                    if (i % 8 == 0)
-                        samples.Add($"t{i}: calls={calls} scale={scale:F3} alpha={alpha:F3} x={pos.x:F2}");
-                }
+                aOk = ContinuousEffects.TryGetStats(KeyForFloor(floors[0]), out _, out _, out _, out _);
+                bOk = ContinuousEffects.TryGetStats(KeyForFloor(floors[1]), out _, out _, out _, out _);
             }
 
-            foreach (var s in samples) Row("SAMPLE", s, "");
+            ContinuousEffects.TryGetStats(KeyForFloor(floors[0]), out int calls0, out float sa, out _, out var pa);
+            ContinuousEffects.TryGetStats(KeyForFloor(floors[1]), out int calls1, out float sb, out _, out var pb);
 
             Row("LIVE-during-play", ContinuousEffects.LiveCount.ToString(), "effects alive while playing");
-
-            // Distinctness: the two instances must be at different positions.
-            bool aOk = ContinuousEffects.TryGetStats(KeyForFloor(floors[0]), out _, out float sa, out _, out var pa);
-            bool bOk = ContinuousEffects.TryGetStats(KeyForFloor(floors[1]), out _, out float sb, out _, out var pb);
-
             Row("INSTANCES-live", (aOk && bOk) ? "PASS" : "FAIL",
                 $"both objects present: floor{floors[0]}={aOk}, floor{floors[1]}={bOk}");
 
@@ -168,6 +158,26 @@ namespace PEV.Diagnostics
                 Row("INSTANCES-independent", differ ? "PASS" : "FAIL",
                     $"scale {sa:F3} vs {sb:F3}, x {pa.x:F2} vs {pb.x:F2}");
             }
+            else
+            {
+                Row("INSTANCES-independent", "SKIP", "objects did not appear");
+            }
+
+            // Sample over time. A continuous effect should produce a new value every frame,
+            // not once at trigger time.
+            var samples = new List<string>();
+            for (int i = 0; i < 20; i++)
+            {
+                yield return new WaitForSeconds(0.1f);
+
+                if (ContinuousEffects.TryGetStats(KeyForFloor(floors[0]), out int c, out float scale, out float alpha, out var pos))
+                {
+                    if (i % 5 == 0)
+                        samples.Add($"t{i}: calls={c} scale={scale:F3} alpha={alpha:F3} x={pos.x:F2}");
+                }
+            }
+
+            foreach (var s in samples) Row("SAMPLE", s, "");
 
             // Per-frame driving: the call count should be roughly the frame count, not zero
             // and not one. This is the check that distinguishes "animated" from "triggered".

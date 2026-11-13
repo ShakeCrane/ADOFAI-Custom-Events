@@ -91,9 +91,15 @@ namespace PEV.Scripting
 
                 if (!EventRegistry.TryGetById(data.Id, out var manifest)) continue;
 
+                // Floor times are not reliable at arm time (the path may not be rebuilt yet),
+                // so this is only a first guess. EventInstance re-resolves it on start and
+                // ignores a NaN here rather than propagating it into every frame.
                 double entry = 0;
                 if (floors != null && ev.floor >= 0 && ev.floor < floors.Count)
-                    entry = floors[ev.floor].entryTime;
+                {
+                    double t = floors[ev.floor].entryTime;
+                    if (!double.IsNaN(t) && !double.IsInfinity(t)) entry = t;
+                }
 
                 _instances.Add(new EventInstance
                 {
@@ -101,6 +107,7 @@ namespace PEV.Scripting
                     Data = data,
                     Manifest = manifest,
                     EntryTime = entry,
+                    EntryTimeResolved = false,
                     BpmRatio = level.bpm / 60.0
                 });
                 built++;

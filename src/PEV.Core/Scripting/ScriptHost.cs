@@ -175,7 +175,13 @@ var __pevReady = true;
             try
             {
                 _engine.SetValue("__state", stateJson);
-                _engine.Invoke(_updateFn, _instance, t);
+
+                // Call through a wrapper so the argument list is unambiguous. Invoking the
+                // function object directly let Jint bind the extra arguments as its own
+                // overload parameters, and update() received undefined instead of t.
+                var call = _engine.Evaluate(
+                    "(function(fn, self, t){ return fn.call(self, t); })");
+                _engine.Invoke(call, _updateFn, _instance, t);
                 UpdateCalls++;
             }
             catch (Exception e)

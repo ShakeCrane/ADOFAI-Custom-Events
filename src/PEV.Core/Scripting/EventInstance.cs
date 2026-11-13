@@ -28,6 +28,7 @@ namespace PEV.Scripting
         public ScriptHost Host;
 
         public double EntryTime;
+        public bool EntryTimeResolved;
         public double BpmRatio = 2.0;
         public double LastT = double.NegativeInfinity;
 
@@ -35,9 +36,37 @@ namespace PEV.Scripting
 
         public EventContext Context;
 
+        /// <summary>
+        /// Resolves the tile's entry time from the live floor list.
+        ///
+        /// It cannot be captured when the runtime is armed: arming happens before the path
+        /// is rebuilt for playback, so floor times are still stale and produce NaN. Look it
+        /// up on the frame the instance starts instead.
+        /// </summary>
+        private void ResolveEntryTime()
+        {
+            try
+            {
+                var floors = ADOBase.lm != null ? ADOBase.lm.listFloors : null;
+                if (floors == null) return;
+
+                int idx = LevelEvent.floor;
+                if (idx < 0 || idx >= floors.Count) return;
+
+                double t = floors[idx].entryTime;
+                if (double.IsNaN(t) || double.IsInfinity(t)) return;
+
+                EntryTime = t;
+                EntryTimeResolved = true;
+            }
+            catch { }
+        }
+
         public bool Begin()
         {
             if (Manifest == null || Data == null) { Phase = InstancePhase.Faulted; return false; }
+
+            if (!EntryTimeResolved) ResolveEntryTime();
 
             string source = EventScriptCache.Get(Manifest);
             if (source == null) { Phase = InstancePhase.Faulted; return false; }
