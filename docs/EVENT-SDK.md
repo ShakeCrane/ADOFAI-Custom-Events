@@ -110,6 +110,20 @@ CameraWarp.event
 | `default` | 默认值，必须与 `type` 匹配 |
 | `min` / `max` | 数值范围 |
 | `unit` | 显示单位，如 `"beats"`、`"x"` |
+| `label` | 显示名，字符串或 `{ "en": ..., "zh-CN": ... }` |
+| `group` | 属性面板分组（页签）。不写则整个事件是一列平铺的参数 |
+| `order` | 同组内的排序位置，不写则按声明顺序 |
+| `showIf` | 条件显示：`["shape", "Rect"]`，当另一属性等于该值时这一行才出现 |
+| `hideIf` | 条件隐藏：同上，等于该值时这一行消失 |
+
+`group` 是长参数事件的关键。原生事件都按页签分组；一个参数列表直接平铺出二十多个控件时，作者找不到自己想要的参数。
+
+```json
+{ "name": "size",   "type": "Vector2", "default": [4, 3], "group": "Geometry", "showIf": ["shape", "Rect"] },
+{ "name": "radius", "type": "Float",   "default": 2, "group": "Geometry", "showIf": ["shape", "Circle"] }
+```
+
+`showIf` / `hideIf` 的值必须与目标的**存储形式**一致：枚举写成员名，`Bool` 写 `"true"` / `"false"`，数值写数字的字符串形式。
 
 `default` 的类型很重要：`Float` 参数写 `2` 和写 `2.0` 都能用，但 `Tile` 必须写成 `[0, "ThisTile"]` 这样的数组。
 

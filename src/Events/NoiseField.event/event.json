@@ -1,0 +1,247 @@
+{
+  "schemaVersion": 1,
+  "id": "pev.noise-field",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "main.js",
+  "icon": "icon.png",
+  "category": "DecorationFx",
+  "name": {
+    "en": "Noise Field",
+    "zh-CN": "噪声域"
+  },
+  "description": {
+    "en": "A rectangular or circular region of scrolling red noise, a visual re-implementation of the Phigros chapter 9 effect. Press play to preview.",
+    "zh-CN": "矩形或圆形的滚动红色噪声区，复现 Phigros 第九章噪域观感。按播放预览。"
+  },
+  "params": [
+    {
+      "name": "relativeTo",
+      "type": "Enum:PEV.Scripting.NoiseFieldRelativeTo, PEV.Core",
+      "default": "Tile",
+      "group": "Geometry",
+      "order": 0
+    },
+    {
+      "name": "anchor",
+      "type": "Enum:PEV.Scripting.NoiseFieldAnchor, PEV.Core",
+      "default": "Center",
+      "group": "Geometry",
+      "order": 1
+    },
+    {
+      "name": "shape",
+      "type": "Enum:PEV.Scripting.NoiseFieldShape, PEV.Core",
+      "default": "Rect",
+      "group": "Geometry",
+      "order": 2
+    },
+    {
+      "name": "size",
+      "type": "Vector2",
+      "default": [
+        4,
+        3
+      ],
+      "group": "Geometry",
+      "order": 3,
+      "showIf": [
+        "shape",
+        "Rect"
+      ]
+    },
+    {
+      "name": "radius",
+      "type": "Float",
+      "default": 2,
+      "min": 0,
+      "max": 64,
+      "group": "Geometry",
+      "order": 4,
+      "showIf": [
+        "shape",
+        "Circle"
+      ]
+    },
+    {
+      "name": "positionOffset",
+      "type": "Vector2",
+      "default": [
+        0,
+        0
+      ],
+      "group": "Geometry",
+      "order": 5
+    },
+    {
+      "name": "rotation",
+      "type": "Float",
+      "default": 0,
+      "min": -180,
+      "max": 180,
+      "group": "Geometry",
+      "order": 6
+    },
+    {
+      "name": "lockRotation",
+      "type": "Bool",
+      "default": false,
+      "group": "Geometry",
+      "order": 7
+    },
+    {
+      "name": "lockSize",
+      "type": "Bool",
+      "default": false,
+      "group": "Geometry",
+      "order": 8
+    },
+    {
+      "name": "depth",
+      "type": "Int",
+      "default": 0,
+      "min": -20,
+      "max": 20,
+      "group": "Geometry",
+      "order": 9
+    },
+    {
+      "name": "parallax",
+      "type": "Vector2",
+      "default": [
+        1,
+        1
+      ],
+      "group": "Geometry",
+      "order": 10
+    },
+    {
+      "name": "tag",
+      "type": "String",
+      "default": "",
+      "group": "Appearance",
+      "order": 11
+    },
+    {
+      "name": "visible",
+      "type": "Bool",
+      "default": true,
+      "group": "Appearance",
+      "order": 12
+    },
+    {
+      "name": "opacity",
+      "type": "Float",
+      "default": 100,
+      "min": 0,
+      "max": 100,
+      "unit": "%",
+      "group": "Appearance",
+      "order": 13
+    },
+    {
+      "name": "noiseBrightness",
+      "type": "Float",
+      "default": 1.0,
+      "min": 0,
+      "max": 3,
+      "group": "Noise",
+      "order": 14
+    },
+    {
+      "name": "noiseSaturation",
+      "type": "Float",
+      "default": 1.0,
+      "min": 0,
+      "max": 3,
+      "group": "Noise",
+      "order": 15
+    },
+    {
+      "name": "noiseSampleRate",
+      "type": "Float",
+      "default": 1.0,
+      "min": 0.25,
+      "max": 4,
+      "group": "Noise",
+      "order": 16
+    },
+    {
+      "name": "lineOpacity",
+      "type": "Float",
+      "default": 0.35,
+      "min": 0,
+      "max": 1,
+      "group": "Noise",
+      "order": 17
+    },
+    {
+      "name": "noiseFrameCount",
+      "type": "Int",
+      "default": 8,
+      "min": 2,
+      "max": 32,
+      "group": "Noise",
+      "order": 18
+    },
+    {
+      "name": "noiseEvolveSpeed",
+      "type": "Float",
+      "default": 12,
+      "min": 0,
+      "max": 60,
+      "unit": "fps",
+      "group": "Noise",
+      "order": 19
+    },
+    {
+      "name": "noiseMoveSpeed",
+      "type": "Vector2",
+      "default": [
+        0.15,
+        0
+      ],
+      "group": "Noise",
+      "order": 20
+    },
+    {
+      "name": "noiseScale",
+      "type": "Vector2",
+      "default": [
+        1,
+        1
+      ],
+      "group": "Noise",
+      "order": 21
+    },
+    {
+      "name": "glitchRange",
+      "type": "Float",
+      "default": 0,
+      "min": 0,
+      "max": 1,
+      "group": "Noise",
+      "order": 22
+    },
+    {
+      "name": "color",
+      "type": "Color",
+      "default": "ff2020",
+      "group": "Appearance",
+      "order": 23
+    },
+    {
+      "name": "feather",
+      "type": "Float",
+      "default": 0,
+      "min": 0,
+      "max": 8,
+      "group": "Noise",
+      "order": 24,
+      "showIf": [
+        "shape",
+        "Circle"
+      ]
+    }
+  ]
+}

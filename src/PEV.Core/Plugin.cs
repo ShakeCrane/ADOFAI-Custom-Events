@@ -56,6 +56,7 @@ namespace PEV.Core
             Diagnostics.P2Harness.Configure(entry.Path);
             Diagnostics.P3Harness.Configure(entry.Path);
             Diagnostics.P4Harness.Configure(entry.Path);
+            Diagnostics.PN1Harness.Configure(entry.Path);
             Log("harmony patched");
             return true;
         }

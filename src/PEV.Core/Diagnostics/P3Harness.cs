@@ -331,6 +331,12 @@ namespace PEV.Diagnostics
             if (f == null) return;
             editor.selectedFloors.Clear();
             editor.selectedFloors.Add(f);
+
+            // Selecting by writing the list skips the editor's own step of redrawing the
+            // tile's event indicators, which is driven from the selection-change path. A
+            // test that asserts badges must reproduce that step, or every floor except the
+            // one the editor last drew looks badgeless.
+            try { editor.ShowEventIndicators(f); } catch { }
         }
 
         public static int PickFreeFloor(scnEditor editor)

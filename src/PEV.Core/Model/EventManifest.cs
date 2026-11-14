@@ -17,6 +17,11 @@ namespace PEV.Model
         public List<string> Options; // advisory; only used when we downgrade to String
         public string NoteKey;       // for type "Note": localization key holding the text
         public string CustomLabel;   // overrides the field's display name
+        public string Group;         // properties-panel tab; native events group into pages
+        public int? Order;           // explicit sort position within the event's list
+        /// <summary>Flat key/value pairs: show this row only when another property matches.</summary>
+        public List<string> ShowIf;
+        public List<string> HideIf;
 
         /// <summary>
         /// Convert to the dictionary shape the game's PropertyInfo constructor expects.
@@ -35,6 +40,12 @@ namespace PEV.Model
             if (!string.IsNullOrEmpty(Unit)) d["unit"] = Unit;
             if (!string.IsNullOrEmpty(NoteKey)) d["noteKey"] = NoteKey;
             if (!string.IsNullOrEmpty(CustomLabel)) d["customLabel"] = CustomLabel;
+            // Grouping is what makes a 25-parameter event usable: without it the panel is
+            // one flat scroll list, while every native event organizes its panel into tabs.
+            if (!string.IsNullOrEmpty(Group)) d["group"] = Group;
+            if (Order.HasValue) d["order"] = Order.Value;
+            if (ShowIf != null && ShowIf.Count > 0) d["showIf"] = ShowIf.ToArray();
+            if (HideIf != null && HideIf.Count > 0) d["hideIf"] = HideIf.ToArray();
             return d;
         }
     }
@@ -99,8 +110,15 @@ namespace PEV.Model
                     {
                         Name = p.Value<string>("name"),
                         Type = p.Value<string>("type"),
-                        Unit = p.Value<string>("unit")
+                        Unit = p.Value<string>("unit"),
+                        Group = p.Value<string>("group"),
+                        // Labels may be a plain string or a per-locale object like name.
+                        CustomLabel = LocalizedValue(p["label"]) ?? LocalizedValue(p["customLabel"]),
+                        NoteKey = p.Value<string>("noteKey")
                     };
+                    if (p["order"] != null) spec.Order = p.Value<int>("order");
+                    spec.ShowIf = ReadPairs(p["showIf"]);
+                    spec.HideIf = ReadPairs(p["hideIf"]);
                     if (string.IsNullOrWhiteSpace(spec.Name) || string.IsNullOrWhiteSpace(spec.Type))
                     {
                         error = "a param entry is missing 'name' or 'type'";
@@ -119,6 +137,29 @@ namespace PEV.Model
                 }
             }
             return m;
+        }
+
+        /// <summary>
+        /// Reads a flat key/value condition array ("shape", "Rect", ...) or an object form.
+        /// The game decodes it as alternating key and value strings.
+        /// </summary>
+        private static List<string> ReadPairs(JToken token)
+        {
+            if (token == null || token.Type == JTokenType.Null) return null;
+            var result = new List<string>();
+            if (token is JArray arr)
+            {
+                foreach (var item in arr) result.Add(item.ToString());
+            }
+            else if (token is JObject obj)
+            {
+                foreach (var kv in obj)
+                {
+                    result.Add(kv.Key);
+                    result.Add(kv.Value.ToString());
+                }
+            }
+            return result.Count > 0 ? result : null;
         }
 
         private static string LocalizedValue(JToken token)

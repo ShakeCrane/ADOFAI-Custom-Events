@@ -58,6 +58,9 @@ namespace PEV.Scripting
         public static void DestroyAll()
         {
             try { ContinuousEffects.DestroyAll(); } catch { }
+            // Before the canvas: texture release walks our own bookkeeping, and doing it
+            // first keeps the ordering explicit if a texture ever outlives its object.
+            try { NoiseFieldRenderer.DestroyAll(); } catch { }
             try { EffectCanvas.DestroyAll(); } catch { }
         }
 
@@ -72,6 +75,11 @@ namespace PEV.Scripting
                 case "create": return ContinuousEffects.Create(Str(args, "key"), args, out error);
                 case "set": return ContinuousEffects.Set(Str(args, "key"), args, out error);
                 case "destroy": return ContinuousEffects.Destroy(Str(args, "key"), out error);
+
+                // Noise fields are a host primitive, not part of the author-facing SDK; the
+                // public contract is the .event package format, so this surface may change.
+                case "field": return NoiseFieldRenderer.Set(Str(args, "key"), args, out error);
+                case "fielddestroy": return NoiseFieldRenderer.Destroy(Str(args, "key"), args, out error);
                 default:
                     error = $"unsupported effect '{effectName}'";
                     return false;

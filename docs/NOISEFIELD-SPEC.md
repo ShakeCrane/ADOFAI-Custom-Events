@@ -1,0 +1,1053 @@
+# 噪声域（Noise Field）事件 — 实现技术规范
+
+> 读者：接手实现的工程师。本文假设你已读过 `ARCHITECTURE-v1.md` 与 `docs/EVENT-SDK.md`。
+> 目标不是说服你，而是让你不必再自己调研一遍。
+>
+> 环境：ADOFAI `r150`（2026/11/03），Unity `6000.3.25f1`，Mono，UMM `0.32.5.0`。
+
+---
+
+## 接手第一步
+
+不要从头读。按这个顺序：
+
+1. **§0 证据等级** —— 30 秒，决定你信哪条、验哪条。
+2. **§14 Q1** —— 半天。验 `SpriteRenderer` 的 UV 偏移是否生效。**这条不成立会改纹理生成器的形态**，所以必须先做。
+3. **§11 P-N1** —— 1 天。做出第一块会动的噪声。做完这一步，剩下的都是工作量，不是风险。
+4. **§5 + §10** —— 参数表与包结构，写代码时对照用。
+5. 其余章节按需查。
+
+如果只记一句话：**难点不在渲染，在坐标系、时钟和资源回收。**
+
+---
+
+## 0. 证据等级
+
+本文所有结论标记来源。**不要跳过标记**——标 `[未知]` 的地方如果按 `[实测]` 对待，会返工。
+
+| 标记 | 含义 | 可信度 |
+|---|---|---|
+| `[实测]` | 本仓库 P0–P4 跑出来的结果，见对应 `P*-RESULTS.md` | 最高，直接采信 |
+| `[代码]` | 当前 `src/PEV.Core/` 代码里的事实，可直接读 | 高 |
+| `[源码文档]` | `_research/7thRhythmDocuments/adofai/docs/` 的反编译文档。**注意：游戏源码目录 `7thRhythmSource/` 在本机是空的**，所以这是二手资料，有出错可能 | 中高，用前建议抽查 |
+| `[推断]` | 由上述事实推出，未单独验证 | 中，按假设对待 |
+| `[未知]` | 必须实测才能定，本文给出验证方法 | 无，不要假设 |
+
+**交付前的最小要求**：所有 `[未知]` 至少被验证过一次，且结果回写到本文。
+
+---
+
+## 1. 目标与边界
+
+### 1.1 做什么
+
+在 ADOFAI 关卡里放置一个**可定位、可缩放、可移动的噪声区域**，视觉上复现 Phigros 第九章「噪声域」的观感：区域内出现滚动的红色噪声颗粒与横向噪线，随音乐时间演化，可淡入淡出。
+
+### 1.2 不做什么（冻结）
+
+| 不做 | 原因 |
+|---|---|
+| 判定拦截（区域内强制 miss / 变红） | 要动 `scrPlayer.Hit` / `scrMisc.GetHitMargin`，是全游戏判定的公共出口。失败表现是"所有谱面判定都错"，违反 §11.2 的 patch 纪律 |
+| 触摸/输入屏蔽 | 同上，属于判定侧 |
+| 音频低通 | 要动 `AudioListener` 滤镜链，且 ADOFAI 没有现成入口 |
+| 复制 Phigros 的任何纹理、shader、代码 | 资源与代码版权均属原厂；PhiStudio-Rust / PhiraiAd 是 GPL。**只按原理重写** |
+| 全屏效果 | 只做区域。全屏 glitch 用游戏自带的 `SetFilter` / `SetFilterAdvanced` 事件即可，不需要我们实现 |
+
+### 1.3 验收标准
+
+不是「看起来像 Phigros」，而是：
+
+1. 同一噪声强度下，颗粒分布、密度、颜色接近原版。
+2. 纹理运动速度、演化方式、采样密度接近原版。
+3. 亮度、饱和度等参数变化时，响应规律接近原版。
+4. 几何区域能正确贴合 ADOFAI 坐标系，不因区域大小或镜头缩放产生错误拉伸。
+5. 暂停、重开、检查点跳转后，画面与声音时间一致。
+
+### 1.4 一个必须先说清的预期
+
+**编辑器里看不到噪声域。** 运行时实例只在 `LevelData.Decode` 与 `scnEditor.Play` 时创建（`Plugin.cs` 的 `DecodePatch` / `EditorPlayPatch`）`[代码]`。编辑器画布里放置、拖参数时，事件只是个图标，效果不会预览。
+
+这不是缺陷，是与现有三个示例事件一致的行为。但作者第一次用会以为是坏的，所以：
+
+- `.event` 的描述文本里要写明「按播放预览」。
+- 如果要编辑器内预览，那是独立功能（在 `scnEditor` 里驱动一份不消耗歌曲时钟的实例），**不在本文范围内**。
+
+评审时如果有人问「为什么放了没反应」，答案在这里。
+
+---
+
+## 2. 原版噪域的结构
+
+调研结论（`[源码文档]` + `[推断]`）：噪域**不是单个 shader**，而是一套组合渲染系统。分三层：
+
+### 2.1 区域本体：`BlockRender` 管线
+
+这是区域的真实实现，也是这次要复现的部分：
+
+```
+六组 Camera Mask（约 1/8 画面分辨率）
+        ↓
+SubtractBlockBlender（普通区域与反转区域合成）
+        ↓
+BlockCompose（区域合成）
+        ↓
+EdgeMask Pass 1（边缘处理）
+        ↓
+DisabledBlock（Additive 混合）  /  ActiveBlock（Premultiplied Alpha）
+        ↓
+最终画面合成
+```
+
+对应 Unity 对象：`ActiveBlock`、`DisabledBlock`、`EdgeMask`、`BlockCompose`、`SubtractBlockBlender`、`BlockRender`、`PreviewBlockControl`。
+
+关键事实：**区域是用低分辨率掩膜合成的**。这直接决定我们的实现形态——见 §4.3。
+
+### 2.2 噪声纹理
+
+原版纹理（`NoiseBgLines`、`FD_Noise_00000`、`PointNoise`、`BlockNoise1`、`Round10_Blur4`、`GlitchMap`、`Glitch4in1`）全部是原厂资源，**不能打包分发**。必须程序化生成。
+
+### 2.3 后期与故障效果
+
+`VignettePlus`（`noiseBrightness`、`noiseSaturation`、`noiseSampleRate`、`lineOpacity`、`center/radius/smoothness/darkness`）、`GlitchDog`（`noiseFrameCount`、`noiseMoveSpeed`、`noiseEvolveSpeed`、`noiseScale`、`noiseOffset`）、`GlitchSettings`（`glitchTex`、`glitchRange`、多层故障纹理、水平切片与 RGB 偏移）。
+
+这一层是**全屏**的，不是区域。在 ADOFAI 里这一层有现成替代：游戏自带的 `SetFilter` / `SetFilterAdvanced` 事件，`CameraFilterPack` 里有 `NewGlitch1..7`、`TV_MovieNoise`、`Color_Chromatic_Plus` 等 `[源码文档]`。**我们不需要实现这一层**。
+
+### 2.4 一个重要的参数解读
+
+`GlitchDog` 的四个参数 `noiseFrameCount` / `noiseMoveSpeed` / `noiseEvolveSpeed` / `noiseScale` `[源码文档]`，含义几乎必然是：
+
+- `noiseFrameCount`：噪声是**预生成的 K 帧序列**（翻页动画），不是每帧实时算的。
+- `noiseEvolveSpeed`：翻页速率。
+- `noiseMoveSpeed`：UV 滚动速率。
+- `noiseScale`：UV 平铺密度。
+
+`[推断]`，但这个推断极其关键——它把"每帧生成纹理"这个昂贵操作变成了"启动时生成 K 张，之后只换贴图和改 UV"。**整个实现方案的性能问题就此消失**。见 §4.3。
+
+---
+
+## 3. 可以复用的既有能力
+
+这些已经在这个仓库里跑通了，不要重造。
+
+| 能力 | 位置 | 状态 |
+|---|---|---|
+| `.event` 包扫描（ZIP / 目录） | `Loading/EventLoader.cs`，`ReadResource(path, name)` 读包内任意文件 | `[实测]` P3 |
+| 事件注册到快捷栏 + 图标兜底 | `Registry/EventRegistry.cs` | `[实测]` Stage 0 V3/V3c |
+| 自定义枚举作为原生下拉 | `Enum:NS.Type, Asm` 写法 | `[实测]` Stage 0 V2 |
+| 参数类型转换双向 | `Storage/ParamCoercion.cs`（文件→编辑器）、`Storage/StorageValue.cs`（编辑器→文件） | `[实测]` P0 |
+| 注释载体存储 + 五条不变式 | `Storage/LevelStorage.cs` | `[实测]` P0/P3 |
+| 放置 / 复制 / 删除的编辑器同步 | `Editor/EditorIntegration.cs` | `[实测]` P2 |
+| 撤销/重做后仍能绑定 | `__pevUid` 存在 `LevelEvent.data` 里 | `[实测]` P3 |
+| 每实例独立 JS 引擎 + 沙箱 | `Scripting/ScriptHost.cs` | `[实测]` P1 |
+| 歌曲时钟驱动（不累积 deltaTime） | `Scripting/RuntimeHost.cs` | `[实测]` P1/P4 |
+| 持续型对象（create/set/destroy） | `Scripting/ContinuousEffects.cs` | `[实测]` P4 |
+| 效果画布与相机解析 | `Scripting/EffectCanvas.cs`、`Scripting/GameCamera.cs` | `[实测]` P4 |
+
+### 3.1 三个必须知道的历史坑
+
+1. **`Camera.main` 是 null。** ADOFAI 不给主相机打 `MainCamera` 标签。必须走 `scrCamera.instance.camobj`。`GameCamera.Current` 已封装。
+2. **对象不能挂在游戏相机下**，会被画在下面。用 `EffectCanvas.CreateObject`，layer 0 + 高 `sortingOrder`。
+3. **`fx.set` 传入的坐标是"半屏归一化"**，`1.0` = 半个视口。噪声域需要世界坐标，不能直接复用这套坐标——见 §7.2。
+
+---
+
+## 4. 关键设计决策
+
+### 4.1 事件形状：普通事件，不是 `decorations`
+
+`[源码文档]`：`LevelEventInfo.isDecoration` 决定事件在 `LevelData.Decode` 时被分到 `decorations` 还是 `levelEvents`。装饰事件会自动获得编辑器里的列表项、选中、拖拽、pivot 手柄、`MoveDecorations` 按 tag 驱动。
+
+看起来很诱人，但有两个硬约束：
+
+**约束一（致命）**：`isDecoration = true` 的自定义类型如果被写进文件的 `decorations` 数组，原版读它时会去 `GCS.levelEventsInfo[数字串]` 查表，抛 `KeyNotFoundException`，**整关 `actions` 全部丢失**。`[实测]` Stage 0 反证实验拍下来过。这与硬性目标 C1 直接冲突。
+
+**约束二**：装饰对象由 `scrDecorationManager.CreateDecoration` 创建，它面对一个不认识的 `LevelEventType` 走哪个分支 `[未知]`。可能是通用 `scrDecoration` 兜底，也可能是空引用。
+
+**决定**：v1 走**普通事件**（`isDecoration = false`，即现状），"像一个装饰"由**参数**实现（相对对象、锚点、尺寸、旋转、深度、tag），不由"它在不在 decorations 数组里"实现。
+
+**升级路径**（可选，P5 之后）：在编辑器里把实例注入 `levelData.decorations`，文件里仍然写注释。做法是 `LevelData.Decode` 后置补丁注入 + `EncodeToDictionary` 前置过滤。前置条件：
+
+- 必须先验证 `scrDecorationManager.CreateDecoration` 对未知类型的行为（§14 Q1）。
+- `UpdateDecorationObjects()` 会清空并按 `decorations` 重建，注入必须挂在它之后 `[源码文档]`。
+
+**不要**在验证通过前把这条路径写进正式代码。
+
+### 4.2 存储：注释载体不变
+
+沿用 `@PEV1` 注释。`LevelStorage.Restore()` 扫描 `level.levelEvents` 里的 `EditorComment`，`Bake()` 写回。零改动。
+
+唯一要注意：`Bake()` 把 payload 写进 `actions` 列表，`floor` 用 `ev.floor`。噪声域是一个 floor 事件，语义自洽。
+
+### 4.3 渲染：不用 shader
+
+这是整个方案里最重要的一个决定。
+
+**为什么不能用 shader**：Unity 构建会剥掉没有被场景资产引用的 shader。Mod 里 `Shader.Find("PEV/Noise")` 会返回 `null`。要发自己的 shader，必须用 **Unity 6000.3.25f1 打一个 AssetBundle**，那是另一条完整的构建链，且与游戏版本强耦合。对一个 v1 效果来说不划算。
+
+**用什么**：`SpriteRenderer` + 程序化生成的 `Texture2D`。
+
+这条路**已经在游戏里跑通过**：P4 的 `ContinuousEffects` 用 `SpriteRenderer` + `SolidSprite.White` 渲染出了可见图形，截图确认 `[实测]` P4。所以 sprite 渲染通路本身不存在风险。
+
+关于 `Sprites/Default`：`SpriteRenderer` 不显式赋材质时用的是内置 sprite 材质，sprite 系统自己在用，不会被剥掉 `[推断，但 P4 已间接佐证]`。**不要**用 `Shader.Find("Sprites/Default")` 去拿——多一次查找、多一个失败分支，而默认材质直接用就行。
+
+**具体形态**：
+
+```
+实例
+ ├─ GameObject "PEV.Field:<uid>"        （挂在 EffectCanvas.Root 下）
+ ├─ SpriteRenderer                        （一张 quad）
+ ├─ Sprite[] Sprites                      （K 个，与 Frames 一一对应，生成期一次性建好）
+ └─ Texture2D[] Frames                    （K 张，翻页序列）
+```
+
+每帧开销 = `sr.sprite = Sprites[frame]` + 改材质 UV offset。**没有逐像素运算**。
+
+**不要**用「一张 Sprite + 每帧换 `material.mainTexture`」的写法。`SpriteRenderer` 的材质绑定的是 sprite 自带的纹理，覆盖 `mainTexture` 在打包图集或批处理下不可靠——表现是画面显示第一帧后不再变化，且没有任何报错。K 个 `Sprite` 在生成期建好，换 `sprite` 引用是确定生效的。
+
+UV 滚动用 `sr.material.mainTextureOffset`。**这一条是 `[未知]`，不是 `[实测]`**：
+
+- `Sprite.Create` 会把 UV 直接烘进 mesh。`Sprites/Default` 是否在顶点着色器里乘 `_MainTex_ST`，取决于 Unity 版本里的 shader 源码——Unity 6000.3 的内置 sprite shader 大概率走 `TRANSFORM_TEX`，但**没有验证过**。
+- 如果它不生效，表现是：翻页正常（换 sprite 生效），但滚动完全不动，没有报错。
+
+**验证方法**（P-N1 的第一件事）：故意设一个很大的 `noiseMoveSpeed`，看画面有没有横向滚动。没滚动就是这条不成立。
+
+**退路**（按代价排序）：
+
+1. 把 offset 烘进 `Sprite.Create` 的 `rect`：生成一张比可视区宽 `K` 倍的纹理，每帧换 `rect` 的 x 偏移。滚动连续，代价是纹理更宽、每帧要重建 `Sprite`（比换引用贵，但仍然可接受）。
+2. 换成 `MeshRenderer` + 手写 quad mesh，自己控制 UV 数组。绕开 sprite 系统，代价是失去 `sortingLayer`/`sortingOrder` 的便利（要自己算 `renderQueue` 或 `sortingLayerID`）。
+3. 不做滚动，只用翻页。视觉上像「闪动的噪点」而不是「流动的噪点」，观感差一截。
+
+先按方案 1 的形态设计 `NoiseTextureFactory`（生成时就能指定宽度），这样方案 0 不成立时不需要改结构。
+
+### 4.4 遮罩：CPU 生成时就带上
+
+不要在 GPU 侧做遮罩（那需要 shader 或 `SpriteMask` 的模板缓冲）。既然纹理是我们自己生成的，**生成时就把 alpha 按形状写好**。
+
+- 矩形：宽高范围内 alpha=1，边缘按 `feather` 逐像素衰减。
+- 圆形：半径内 alpha=1，边缘按 `feather` 衰减。
+
+好处：形状、羽化、反转全部是生成参数，不需要额外组件；换形状只是重生成纹理。
+
+代价：形状改变时要重生成（但形状是静态参数，只在参数变化时发生）。
+
+`[源码文档]` 提过游戏自带 `SpriteAlphaMask` / `SpriteAlphaMaskUtils`（按 tag 绑定、把重叠 mask 合成到 RenderTexture）。那是给多装饰叠加遮罩用的；我们单 quad 自带 alpha，用不上，也不要用——它是装饰系统的内部结构。
+
+### 4.5 时钟
+
+**唯一时钟**：`scrConductor.instance.songposition_minusi`。已在 `RuntimeHost.Update()` 里，`EventInstance.Tick` 算出 `t = songTime - EntryTime`。
+
+**绝对不能**用 `Time.deltaTime` / `Time.unscaledDeltaTime` 累加。
+
+⚠️ 现存代码里的例外：`NativeEffects.EffectTicker` 用 `Time.unscaledDeltaTime` `[代码]`。那是给 0.3 秒闪屏用的，一次性、短命、无所谓。**噪声域不能用它**。
+
+### 4.6 生命周期与多事件协作
+
+Phigros 的噪域有时间维度：出现、激活、消失、多段激活、激活前白闪 `[源码文档]` RPE-Next 数据模型。ADOFAI 的装饰模型是"存在，然后被移动事件改"。
+
+诚实映射成**三个事件**：
+
+| 事件 | 职责 | 必要性 |
+|---|---|---|
+| `AddNoiseField` | 创建实例，声明几何与全部渲染参数 | 必须 |
+| `MoveNoiseField` | 按 tag 找到实例，改 transform（位置/尺寸/旋转/不透明度），带缓动 | v1 可有可无（几何参数已能表达静态位置）；做动画时需要 |
+| `SetNoiseFieldState` | 按 tag 改 `visible` / `active`（激活态决定视觉强度），带缓动 | 需要「区域内判定失败」的视觉语义时必须有 |
+
+v1 只做 `AddNoiseField`。另外两个在 P2 阶段做。
+
+**tag 索引**：`AddNoiseField` 的 `tag` 参数注册到 Core 内的 `Dictionary<string, List<NoiseFieldInstance>>`；Move/State 事件按空格拆 tag 查找（与原生 `MoveDecorations` 一致，空 tag 用 `NO TAG`）。
+
+---
+
+## 5. 参数表
+
+全部在 `PropertyType` 白名单内——白名单本身是 `[源码文档]` §4 第 11–12 条 + `[实测]` Stage 0 V2。
+
+**但要注意实测覆盖范围**：P0 实际建出控件并跑通往返的只有 `Float`、`Enum`、`Color`、`Tile` 四种 `[实测]` P0。本表用到的 `Vector2`、`Bool`、`Int`、`String` 属于白名单内但**本项目尚未逐个验证**的类型——`[源码文档]` §4 第 11 条表明它们都是 `PropertyInfo` 构造器直接支持的，风险低，但 `ParamCoercion` / `StorageValue` 对它们的处理是照 `PropertyType` 分支写的，没有实测过。
+
+**所以 V-N1 不是走过场**：它是这四个类型在本项目里的第一次验证。如果 `Vector2` 的控件没出来，或者 `Bool` 存成了 `"True"` 字符串，问题就在这里，不在别处。
+
+### 5.1 几何（沿用 ADOFAI 装饰词汇）
+
+| 参数名 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `relativeTo` | `Enum:PEV.Scripting.NoiseFieldRelativeTo, PEV.Core` | `Tile` | 坐标参照 |
+| `anchor` | `Enum:PEV.Scripting.NoiseFieldAnchor, PEV.Core` | `Center` | 九宫格锚点 |
+| `shape` | `Enum:PEV.Scripting.NoiseFieldShape, PEV.Core` | `Rect` | 形状 |
+| `size` | `Vector2` | `[4,3]` | 长宽，单位：方块。`shape=Rect` 时生效 |
+| `radius` | `Float` | `2` | 半径，单位：方块。`shape=Circle` 时生效 |
+| `positionOffset` | `Vector2` | `[0,0]` | 相对锚点的偏移，单位：方块 |
+| `rotation` | `Float` | `0` | 度 |
+| `lockRotation` | `Bool` | `false` | 随参照对象旋转时是否锁定 |
+| `lockSize` | `Bool` | `false` | 镜头缩放时是否锁定屏幕尺寸 |
+| `depth` | `Int` | `0` | 层级，映射到 `sortingOrder` |
+| `parallax` | `Vector2` | `[1,1]` | 视差系数 |
+| `tag` | `String` | `""` | 供 Move/State 事件引用 |
+| `visible` | `Bool` | `true` | 初始可见 |
+| `opacity` | `Float` | `100` | 0–100，与原生装饰一致（内部 /100） |
+
+### 5.2 噪声（沿用 Phigros 渲染变量）
+
+不另造「风格参数」，每个都对应原版的实际渲染变量。
+
+| 参数名 | 类型 | 默认 | 对应原版 | 说明 |
+|---|---|---|---|---|
+| `noiseBrightness` | `Float` | `1.0` | `VignettePlus.noiseBrightness` | 颗粒亮度倍数 |
+| `noiseSaturation` | `Float` | `1.0` | `VignettePlus.noiseSaturation` | 饱和度倍数 |
+| `noiseSampleRate` | `Float` | `1.0` | `VignettePlus.noiseSampleRate` | 采样密度；越大颗粒越细 |
+| `lineOpacity` | `Float` | `0.35` | `VignettePlus.lineOpacity` | 横向噪线强度 |
+| `noiseFrameCount` | `Int` | `8` | `GlitchDog.noiseFrameCount` | 预生成帧数，2–32 |
+| `noiseEvolveSpeed` | `Float` | `12` | `GlitchDog.noiseEvolveSpeed` | 每秒翻页数 |
+| `noiseMoveSpeed` | `Vector2` | `[0.15,0]` | `GlitchDog.noiseMoveSpeed` | UV 滚动速度，单位：贴图宽度/秒 |
+| `noiseScale` | `Vector2` | `[1,1]` | `GlitchDog.noiseScale` | UV 平铺密度 |
+| `glitchRange` | `Float` | `0` | `GlitchSettings.glitchRange` | 水平切片错位幅度；0 = 关闭 |
+| `color` | `Color` | `ff2020` | — | 颗粒主色 |
+| `feather` | `Float` | `0` | — | 边缘羽化宽度，单位：方块 |
+
+### 5.3 枚举定义
+
+```csharp
+namespace PEV.Scripting
+{
+    // 顺序即下拉顺序；名字一旦发布就不能改——文件里存的是名字（StorageValue.Canonical）。
+    public enum NoiseFieldRelativeTo
+    {
+        Tile,        // 方块：以事件所在格为基准
+        Camera,      // 镜头：跟相机，屏幕相对
+        PlanetRed,   // 火之行星
+        PlanetBlue,  // 冰之行星
+        PlanetGreen, // 风之行星
+        CameraRatio  // 镜头（比例）：屏幕相对，按视口比例而非世界单位
+    }
+
+    public enum NoiseFieldAnchor
+    {
+        Center, TopLeft, Top, TopRight,
+        Left, Right,
+        BottomLeft, Bottom, BottomRight
+    }
+
+    public enum NoiseFieldShape { Rect, Circle }
+}
+```
+
+**注意**：`PropertyInfo` 的 `default` 必须是成员名，写错会得到「默认值 'A' 不是成员」的报错并退化成无控件 `[实测]` Stage 0 V2。`pack_event.py` 能校验类型名，但校验不了枚举成员名——**这一项只能靠人眼**。
+
+---
+
+## 6. 文件形态
+
+注释里的内容：一行紧凑 JSON。
+
+```
+floor=12  @PEV1 {"id":"pev.noise-field","v":"1.0.0","uid":"3f8a91c2","p":{"relativeTo":"Tile","anchor":"Center","shape":"Rect","size":[4,3],"radius":2,"positionOffset":[0,0],"rotation":0,"lockRotation":false,"lockSize":false,"depth":0,"parallax":[1,1],"tag":"","visible":true,"opacity":100,"noiseBrightness":1,"noiseSaturation":1,"noiseSampleRate":1,"lineOpacity":0.35,"noiseFrameCount":8,"noiseEvolveSpeed":12,"noiseMoveSpeed":[0.15,0],"noiseScale":[1,1],"glitchRange":0,"color":"ff2020","feather":0}}
+```
+
+枚举写名字、`Vector2` 写数组 `[x,y]`，由 `StorageValue.Canonical` 保证 `[实测]` P0。
+
+---
+
+## 7. 运行时实现
+
+### 7.1 为什么必须有原生模块
+
+JS 沙箱里拿不到 `Texture2D`、没有 `System`、不能反射 `[实测]` P1。噪声生成与贴图上传**必须**在 C# 侧。
+
+所以分工：
+
+- `.event` 的 `main.js`：读参数、决定何时创建/销毁、每帧推一次状态。
+- Core 的 `NoiseFieldRenderer.cs`：生成纹理、持有对象、响应 set。
+
+### 7.2 新增脚本 API
+
+在 `ScriptHost.Bootstrap` 里加：
+
+```js
+field: function (key, o) {
+  var a = o || {}; a.key = key;
+  return JSON.parse(__hostFx('field', JSON.stringify(a)));
+},
+fieldDestroy: function (key) {
+  return JSON.parse(__hostFx('fieldDestroy', JSON.stringify({ key: key })));
+}
+```
+
+在 `GameBridge.TryPlayNative` 里加两个 case：
+
+```csharp
+case "field":        return NoiseFieldRenderer.Set(Str(args, "key"), args, out error);
+case "fielddestroy": return NoiseFieldRenderer.Destroy(Str(args, "key"), out error);
+```
+
+**`fx.field` 与 `fx.create` 的区别**：`fx.create` 的坐标是半屏归一化、只有 scale/alpha/angle；`fx.field` 收世界单位的几何参数，并且会生成纹理。两者不复用。
+
+**实例上下文怎么传进 Core**：`ScriptHost.OnHostFx(name, argsJson)` 是**实例方法** `[代码]`，`_debugName` 就是 `"{id}#{uid}"`。所以在分发前把 uid 塞进 args：
+
+```csharp
+private int _floorSeq;   // 新增字段
+
+private string OnHostFx(string name, string argsJson)
+{
+    try
+    {
+        var args = string.IsNullOrEmpty(argsJson)
+            ? new Dictionary<string, object>()
+            : JsonConvert.DeserializeObject<Dictionary<string, object>>(argsJson)
+              ?? new Dictionary<string, object>();
+
+        // 脚本给的 key 只在实例内部唯一；跨实例必须再叠一层身份，
+        // 否则同一格放两个同 key 的对象会互相覆盖，且不会有任何报错。
+        args["__instance"] = _debugName ?? "";
+        args["__floor"]    = _floorSeq;
+
+        bool ok = GameBridge.TryPlayNative(name, args, out string error);
+        return JsonConvert.SerializeObject(new Dictionary<string, object>
+        {
+            { "ok", ok }, { "error", error }
+        });
+    }
+    catch (Exception e)
+    {
+        return JsonConvert.SerializeObject(new Dictionary<string, object>
+        {
+            { "ok", false }, { "error", e.Message }
+        });
+    }
+}
+```
+
+`_floorSeq` 的赋值位置有要求：必须在 `Initialize()` 里、**`_engine.Evaluate(create)` 之前**完成。因为 `create()` 可以在返回前就调 `fx.field`（比如一创建就摆好位置），那时 `OnHostFx` 已经会被调用。现有 `Initialize()` 的结构是：先 `SetValue("__ctx")` / `SetValue("__params")`，再 `Evaluate(create)`——把 `_floorSeq = context.FloorSeq;` 加在 `SetValue` 之前即可。`_debugName` 更早，在 `ScriptHost.Create()` 构造时就有了。
+
+Core 侧：
+
+```csharp
+// 同一次调用里带过来的身份，用来把脚本的 key 限定到实例内
+static string Scoped(Dictionary<string, object> args, string key)
+{
+    args.TryGetValue("__instance", out var inst);
+    return (inst?.ToString() ?? "") + "/" + (key ?? "");
+}
+```
+
+`NoiseFieldRenderer` 的所有 key 都过 `Scoped`。`Tile` 基准点需要的 `floorSeq` 也从同一份 args 里取（`__floor`），不必让脚本再传一次。
+
+**`DestroyAll` 的清理顺序**：先遍历 `Entry` 释放 `Texture2D`（`Object.Destroy(tex)`），再销毁 `GameObject`。反过来写会先丢掉引用，纹理泄漏。
+
+**挂在哪里**：`RuntimeHost.Teardown()` 调用 `GameBridge.DestroyAll()` `[代码]`，而 `GameBridge.DestroyAll()` 当前是：
+
+```csharp
+public static void DestroyAll()
+{
+    try { ContinuousEffects.DestroyAll(); } catch { }
+    try { EffectCanvas.DestroyAll(); } catch { }
+}
+```
+
+加一行：
+
+```csharp
+    try { NoiseFieldRenderer.DestroyAll(); } catch { }
+```
+
+**顺序要求**：必须在 `EffectCanvas.DestroyAll()` **之前**。它销毁的是所有 GameObject，纹理若还挂在已销毁的对象上，`Object.Destroy(tex)` 仍然有效，但先释放纹理逻辑更清晰、也便于断言计数。三个 `try` 各自独立，一个抛异常不影响其余——这是现有写法，保留。
+
+### 7.3 `NoiseFieldRenderer`
+
+```
+public static class NoiseFieldRenderer
+{
+    // public：ByTag 要把它作为返回类型。嵌套在静态类里，不污染命名空间。
+    public sealed class Entry
+    {
+        public GameObject     GameObject;
+        public SpriteRenderer Renderer;
+        public Sprite[]       Sprites;     // K 个，与 Frames 一一对应
+        public Texture2D[]    Frames;      // K 张
+        public string         ParamHash;   // 参数指纹，变化时重生成
+        public string         Tag;
+        public string         Scope;       // instance 前缀，解绑时用
+        public int            FloorSeq;
+        public float          Opacity;
+        public bool           Visible;
+        public int            SortingOrder;
+    }
+
+    public static bool Set(string key, Dictionary<string, object> args, out string error);
+    public static bool Destroy(string key, out string error);
+    public static void DestroyAll();
+    public static IReadOnlyList<Entry> ByTag(string tag);
+}
+```
+
+`Entry` 必须 `public`（或至少 `internal`）。私有嵌套类型不能作为公有方法的返回类型——写出来就编译不过，这是 C# 的可访问性规则。把它留在 `NoiseFieldRenderer` 内部，避免在 `PEV.Scripting` 命名空间里多一个顶层类型。
+
+注意 `Entry` **不持有** `FrameCursor` / `UvOffset` / `ScrollSpeed`。这些由 JS 按 `t` 算好后每次传下来（§7.4），Core 只做应用。少一份状态就少一处暂停/重开不对齐的可能。
+
+`DestroyAll()` 必须释放 `Texture2D`：`Object.Destroy(tex)`。`GameObject` 销毁不会连带释放贴图 `[代码事实：现有 EffectCanvas.DestroyAll 只销毁 GameObject]`。
+
+> ⚠️ 这是本方案引入的**新泄漏源**：`Texture2D`、`Material` 不是 GameObject，`DestroyAll()` 现在回收不到。写 `Destroy` / `DestroyAll` 时逐个显式释放。
+
+### 7.4 每帧流程
+
+`EventInstance.Tick` → `Host.Update(t, stateJson)` → JS `update(t)` → `fx.field(key, {...})` → `NoiseFieldRenderer.Set`。
+
+`Set` 内：
+
+```
+1. 若参数指纹变化 → 重生成 Sprites + Frames（释放旧的），更新 tiling/color/sortingOrder
+2. 计算世界位置与尺寸（§7.5），写 transform
+3. sr.sprite = Sprites[frame % K]
+4. material.mainTextureOffset = uv
+5. sr.color = tint * opacity * (visible ? 1 : 0)
+```
+
+**`frame` 与 `uv` 由 JS 从 `t` 算**，Core 不做时间推进：
+
+```js
+var frame = Math.floor(t * params.noiseEvolveSpeed) % K;
+var uvx = t * params.noiseMoveSpeed[0];
+var uvy = t * params.noiseMoveSpeed[1];
+fx.field(key, { frame: frame, uv: [uvx, uvy], ... });
+```
+
+这样暂停、重开、检查点跳转全部自动正确，因为 `t` 来自歌曲时钟。**任何在 Core 侧累加的写法都会在跳转时错位。**
+
+注：`K = max(2, round(params.noiseFrameCount))`，且生成期会把它写进参数指纹——改帧数要重生成。
+
+### 7.5 几何计算
+
+```
+[推断] 1 方块 = ADOBase.controller.tileSize 世界单位（≈1.0）
+```
+
+`[源码文档]` 依据：原生事件里 `positionOffset * tileSize` 才是世界偏移，说明 tileSize 就是「一块方块的宽度」。`scrController.tileSize = baseFloorDimensions.x * 2f`。
+
+`tileSize` 不要硬编码，每次取。
+
+**半屏尺寸**（正交相机）：
+
+```csharp
+halfH = cam.orthographicSize;          // 世界单位
+halfW = halfH * cam.aspect;
+```
+
+**九宫格锚点**：锚点的语义是「基准点贴住矩形的哪个角/边」。给定矩形 `w × h`（世界单位，已乘 `tileSize`），矩形**中心**相对基准点的偏移：
+
+```
+xSign = (anchor 在左列) ? +1 : (anchor 在右列) ? -1 : 0
+ySign = (anchor 在下行) ? +1 : (anchor 在上行) ? -1 : 0
+
+center = basePos
+       + right * (xSign * w/2)
+       + up    * (ySign * h/2)
+       + (positionOffset * tileSize)
+```
+
+符号容易写反，记一句话：**锚点在左上角时，矩形中心在基准点的右下方**，所以 x 为正、y 为负（Unity 世界 y 向上）。
+
+`Center` 时两项都是 0，矩形以基准点为中心。
+
+**`size` / `radius` 的单位**：
+
+| `relativeTo` | `size` 的含义 |
+|---|---|
+| `Tile` / `Camera` / `Planet*` | 方块数（× `tileSize` 得世界单位） |
+| `CameraRatio` | 视口比例，`1.0` = 占满整个视口对应方向；`w_world = size.x * (2 * halfW)` |
+
+`Circle` 时 quad 的边长是 `2 * radius * tileSize`。
+
+**基准点 `basePos`**：
+
+| `relativeTo` | basePos |
+|---|---|
+| `Tile` | `floors[floorSeq].transform.position`（用 `ADOBase.lm.listFloors`） |
+| `Camera` | `cam.transform.position`（跟随相机，屏幕相对） |
+| `CameraRatio` | 同上，`size` 改按视口比例解释 |
+| `PlanetRed` / `Blue` / `Green` | `ADOBase.controller.planetRed/Blue/Green.transform.position` `[源码文档]` `scrController.planetRed/planetBlue/planetGreen` |
+| 行星不存在时 | 退回 `Tile` 基准，写一次日志 |
+
+**`lockSize`**：`true` 时区域在屏幕上保持固定像素尺寸。实现：`worldScale = cam.orthographicSize / 5f`（5 是 `scrCamera.DefaultCameraOrthoSize` `[源码文档]`），把 `w`、`h` 都乘上它，抵消镜头缩放。默认 `false`（随镜头缩放，与装饰一致）。
+
+**`rotation`**：`lockRotation=true` 时不叠加基准对象的旋转；`false` 时叠加。
+
+**深度**：`sortingOrder = 900 + depth * 10`。900 让它在轨道之上、闪屏（`short.MaxValue`）之下。`[未知]` 需要测一下轨道与装饰的 sortingOrder 实际范围，确保 900 不遮住 UI。
+
+**视差**：`parallax` 是相对相机的位移乘数。`1,1` = 完全随相机（贴在屏幕上不动）。实现上在基准点计算时乘 `parallax`，或者在 `LateUpdate` 里补偿相机位移。v1 可以让 `Tile` 基准不等视差，只对 `Camera` 基准生效——**先把参数留着，行为后做**。
+
+---
+
+## 8. 噪声纹理生成
+
+### 8.1 分辨率
+
+不要用全屏分辨率。原版区域掩膜就是 1/8 分辨率 `[源码文档]`。
+
+```
+目标贴图宽 = clamp(round(区域屏幕像素宽 / blockPixels), 32, 512)
+目标贴图高 = 同上
+blockPixels = 6 / noiseSampleRate      // 采样密度越高，块越小
+```
+
+`区域屏幕像素宽` = `w_world / (2*halfH) * Screen.height`（正交相机下横向同理）。
+
+块状（低分辨率 + 双线性放大）**是特征不是缺陷**——原版的颗粒就是能数得清方格的。
+
+### 8.2 生成算法
+
+对每一帧 `k ∈ [0, K)`、每个 texel `(x, y)`：
+
+```
+1. 量化到 cell：(cx, cy) = (x / cellSize, y / cellSize)
+2. 确定性哈希 seed = Hash(cx, cy, k, instanceSeed)
+3. 该 cell 是否点亮：r < density（density 由 noiseBrightness 与 noiseSaturation 共同决定）
+4. 点亮时亮度 = 0.35 + 0.65 * Hash2(seed)   // 避免全同亮度
+5. 颜色 = tint * 亮度，alpha = 遮罩(x,y) * 亮度
+6. 横向噪线：若该行 r < lineOpacity，整行 alpha += lineOpacity * 行因子
+```
+
+哈希用整数运算，不要用 `UnityEngine.Random`（不可控、有全局状态）：
+
+```csharp
+static uint Hash(uint a, uint b, uint c)
+{
+    uint h = a * 374761393u + b * 668265263u + c * 2147483647u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return h ^ (h >> 16);
+}
+```
+
+### 8.3 遮罩
+
+遮罩在生成时逐 texel 算。`u,v ∈ [0,1]` 是 texel 在贴图内的归一化坐标。
+
+```csharp
+float Mask(float u, float v)
+{
+    if (shape == Rect)
+    {
+        // 到最近竖边/横边的世界距离
+        float dx = Mathf.Min(u, 1f - u) * widthWorld;
+        float dy = Mathf.Min(v, 1f - v) * heightWorld;
+        float d  = Mathf.Min(dx, dy);
+
+        if (feather <= 0f) return 1f;                 // 硬边；边界 texel 也算内
+        return Mathf.Clamp01(d / feather);
+    }
+    else // Circle：按椭圆归一化，半径以世界单位给出
+    {
+        float nx = (u - 0.5f) * widthWorld;           // 相对中心的偏移，世界单位
+        float ny = (v - 0.5f) * heightWorld;
+        float d  = Mathf.Sqrt(nx * nx + ny * ny);     // 到中心的距离
+
+        if (feather <= 0f) return d <= radiusWorld ? 1f : 0f;
+        return Mathf.Clamp01((radiusWorld - d) / feather);
+    }
+}
+```
+
+`widthWorld` / `heightWorld` 是 quad 的**世界尺寸**（`size * tileSize` 或 `2 * radius * tileSize`）。`radiusWorld` 是 `radius * tileSize`。
+
+**边界情况**：`size` 或 `radius` ≤ 0 时不要除零——直接返回一张全透明贴图，记一次日志，不抛异常。作者填 0 是误操作，不是程序错误。
+
+圆形用椭圆的归一化距离：
+
+```csharp
+float nx = (u - 0.5f) * 2f, ny = (v - 0.5f) * 2f;
+float d  = Mathf.Sqrt(nx*nx + ny*ny);          // 1.0 = 贴图边缘
+float edge = radiusWorld / (widthWorld * 0.5f); // 半径占半宽的比例
+return feather <= 0 ? (d < edge ? 1 : 0)
+                    : Mathf.Clamp01((edge - d) * (widthWorld*0.5f) / feather);
+```
+
+**边界情况**：`size` 或 `radius` 为 0 时不要生成除零；直接返回空纹理并记一次日志。
+
+### 8.4 上传
+
+```csharp
+var tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+tex.wrapMode = TextureWrapMode.Repeat;      // noiseMoveSpeed 依赖它
+tex.filterMode = FilterMode.Bilinear;       // 低分辨率放大要双线性
+tex.SetPixels32(buffer);
+tex.Apply(false);                            // 不生成 mipmap
+```
+
+`WrapMode.Repeat` 是必须的：`noiseMoveSpeed` 靠 `mainTextureOffset` 滚动，`Clamp` 会让边缘出现一条静止带。
+
+### 8.5 共享与缓存
+
+多个实例参数相同时共享同一组 `Frames`。缓存键 = 影响纹理的全部参数（`noiseBrightness`、`noiseSaturation`、`noiseSampleRate`、`lineOpacity`、`noiseFrameCount`、`color`、`shape`、`size`/`radius`、`feather`、纹理分辨率）的字符串指纹。
+
+引用计数：最后一个使用者销毁时释放。**没有引用计数的共享缓存会变成内存泄漏**。
+
+### 8.6 成本
+
+```
+128×72 texel × 8 帧 ≈ 9,216 × 8 = 73,728 texel
+每 texel：1 次哈希 + 1 次遮罩 + 写 4 字节
+```
+
+在 Mono 上单帧生成一组大概 5–15 ms——**只在参数变化时发生**，不是每帧。每帧只做一次 `sr.sprite = Sprites[i]` 和一次 `mainTextureOffset` 赋值，成本可忽略。
+
+如果连续拖动参数滑块导致卡顿，加防抖：参数变化后 150 ms 才重生成。`[推断]`，看实测。
+
+---
+
+## 9. 呈现与混合
+
+### 9.1 混合模式
+
+`SpriteRenderer` 默认材质 `Sprites/Default` 是 alpha 混合、无光照。对深色背景上的亮红颗粒，alpha 混合的观感已经足够接近加色。
+
+**想更接近原版**（原版 `DisabledBlock` 用 Additive、`ActiveBlock` 用 Premultiplied Alpha）可以用加色材质：
+
+```csharp
+var sh = Shader.Find("Legacy Shaders/Particles/Additive");
+if (sh != null) mat = new Material(sh);
+```
+
+`[未知]`：该 shader 是否被游戏构建保留。**必须有 fallback**——`Shader.Find` 返回 null 时静默用 `Sprites/Default`。不要因为拿不到加色材质就抛异常。
+
+可以尝试的候选（按优先级）：`Legacy Shaders/Particles/Additive`、`Particles/Standard Unlit`、`Sprites/Default`。加载期各试一次并缓存结果，日志里写清楚用了哪个。
+
+### 9.2 排序
+
+`sortingOrder` 见 §7.5。多个噪声域之间用 `depth` 区分。
+
+### 9.3 水平切片（`glitchRange`）
+
+原版 `GlitchSettings` 有「水平切片与 RGB 偏移」`[源码文档]`。不用 shader 也能做：**额外生成 2–3 个窄条 SpriteRenderer，每帧给它们不同的 x 偏移和 alpha**，宽度为区域的 100%，高度随机 2–8 像素当量。
+
+v1 **不做**。等主体视觉调到位后再看差值多少。
+
+---
+
+## 10. `.event` 包
+
+### 10.1 `main.js`
+
+```js
+function create(ctx, params) {
+  // key 只在实例内部唯一即可：Core 会再叠一层 __instance 前缀，
+  // 所以同一格放两个噪声域也不会互相覆盖。
+  var key = "noisefield";
+  var alive = false;
+
+  function push(t) {
+    var frames = Math.max(2, Math.round(params.noiseFrameCount));
+    var frame = Math.floor(t * params.noiseEvolveSpeed) % frames;
+    if (frame < 0) frame += frames;
+
+    fx.field(key, {
+      shape: params.shape,
+      size: params.size,                 // [w,h] 方块
+      radius: params.radius,
+      relativeTo: params.relativeTo,
+      anchor: params.anchor,
+      position: params.positionOffset,
+      rotation: params.rotation,
+      lockRotation: params.lockRotation,
+      lockSize: params.lockSize,
+      depth: params.depth,
+      parallax: params.parallax,
+      visible: params.visible,
+      opacity: params.opacity / 100,
+      feather: params.feather,
+
+      frame: frame,
+      uv: [t * params.noiseMoveSpeed[0], t * params.noiseMoveSpeed[1]],
+      brightness: params.noiseBrightness,
+      saturation: params.noiseSaturation,
+      sampleRate: params.noiseSampleRate,
+      lineOpacity: params.lineOpacity,
+      tiling: params.noiseScale,
+      color: params.color
+    });
+  }
+
+  return {
+    update: function (t) {
+      if (t < 0) return;
+      if (!alive) { alive = true; }
+      push(t);
+    },
+    dispose: function () {
+      if (alive) fx.fieldDestroy(key);
+      alive = false;
+    }
+  };
+}
+```
+
+要点：
+
+1. **`key` 不需要全局唯一**。Core 在分发时会叠 `__instance`（`"{id}#{uid}"`）前缀，所以写死 `"noisefield"` 也不会和别的实例撞。
+
+   这是刻意的双层设计：脚本层可以偷懒，宿主层兜底。代价只是 `GameBridge` 里每个 key 都要过一次 `Scoped()`，成本可忽略。
+
+   历史上 `fx.create` 的这类撞 key 问题（P4 已证）是让作者自己负责的；新 API 不要重蹈覆辙。
+2. **时间全部来自 `t`**，不用累加。
+3. **`dispose` 里也要销毁**。宿主会兜底，但显式更干净。
+
+### 10.2 `event.json`
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "pev.noise-field",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "main.js",
+  "icon": "icon.png",
+  "category": "DecorationFx",
+  "name": { "en": "Noise Field", "zh-CN": "噪声域" },
+  "description": {
+    "en": "A rectangular or circular noise region. Visual re-implementation of the Phigros chapter 9 effect.",
+    "zh-CN": "矩形或圆形的噪声区域。Phigros 第九章噪域效果的视觉重实现。"
+  },
+  "params": [
+    { "name": "relativeTo",       "type": "Enum:PEV.Scripting.NoiseFieldRelativeTo, PEV.Core", "default": "Tile" },
+    { "name": "anchor",           "type": "Enum:PEV.Scripting.NoiseFieldAnchor, PEV.Core",     "default": "Center" },
+    { "name": "shape",            "type": "Enum:PEV.Scripting.NoiseFieldShape, PEV.Core",      "default": "Rect" },
+
+    { "name": "size",             "type": "Vector2", "default": [4, 3] },
+    { "name": "radius",           "type": "Float",   "default": 2,   "min": 0,  "max": 64 },
+    { "name": "positionOffset",   "type": "Vector2", "default": [0, 0] },
+    { "name": "rotation",         "type": "Float",   "default": 0,   "min": -180, "max": 180 },
+    { "name": "lockRotation",     "type": "Bool",    "default": false },
+    { "name": "lockSize",         "type": "Bool",    "default": false },
+    { "name": "depth",            "type": "Int",     "default": 0,   "min": -20, "max": 20 },
+    { "name": "parallax",         "type": "Vector2", "default": [1, 1] },
+    { "name": "tag",              "type": "String",  "default": "" },
+    { "name": "visible",          "type": "Bool",    "default": true },
+    { "name": "opacity",          "type": "Float",   "default": 100, "min": 0, "max": 100, "unit": "%" },
+
+    { "name": "noiseBrightness",  "type": "Float",   "default": 1.0,  "min": 0, "max": 3 },
+    { "name": "noiseSaturation",  "type": "Float",   "default": 1.0,  "min": 0, "max": 3 },
+    { "name": "noiseSampleRate",  "type": "Float",   "default": 1.0,  "min": 0.25, "max": 4 },
+    { "name": "lineOpacity",      "type": "Float",   "default": 0.35, "min": 0, "max": 1 },
+    { "name": "noiseFrameCount",  "type": "Int",     "default": 8,    "min": 2, "max": 32 },
+    { "name": "noiseEvolveSpeed", "type": "Float",   "default": 12,   "min": 0, "max": 60, "unit": "fps" },
+    { "name": "noiseMoveSpeed",   "type": "Vector2", "default": [0.15, 0] },
+    { "name": "noiseScale",       "type": "Vector2", "default": [1, 1] },
+    { "name": "glitchRange",      "type": "Float",   "default": 0,    "min": 0, "max": 1 },
+    { "name": "color",            "type": "Color",   "default": "ff2020" },
+    { "name": "feather",          "type": "Float",   "default": 0,    "min": 0, "max": 8 }
+  ]
+}
+```
+
+**注意两处**：
+
+1. `"default": [4, 3]` 是 `Vector2`。manifest 解析成 `JArray` 后，必须经 `ParamCoercion.ToVector2` 才能进编辑器——`Storage/ParamCoercion.cs` 已处理，但**放置路径**（`EditorIntegration.AddEventPatch`）也走同一个 `Coerce`，别漏。
+2. 枚举 `default` 必须是成员名。写 `"center"`（小写）或 `"0"` 都不可靠：`ParamCoercion.ToEnum` 会 `Enum.Parse(..., true)` 忽略大小写，但 `PropertyInfo` 构造期就要校验默认值，报错后控件直接不出现。**一律用精确成员名**。
+
+`category` 必须取 `LevelEventCategory` 的 8 个成员之一 `[源码文档]`：`Gameplay` `TrackFx` `DecorationFx` `VisualFx` `FxModifiers` `Conveniences` `Jank` `Favorites`。噪声域用 `DecorationFx` 最贴切。
+
+---
+
+## 11. 实现顺序
+
+按「哪一步最便宜地退掉最大的风险」排，不按依赖排。
+
+### P-N1：静态噪声方块（约 1 天）
+
+**目标**：屏幕上出现一块会滚动的红色噪声。
+
+- `NoiseTextureFactory`：生成 K 张纹理（矩形遮罩先写死全 1）。
+- `NoiseFieldRenderer`：`Set` / `Destroy` / `DestroyAll`，贴到相机前的 quad，按 `size` 定世界尺寸。
+- `fx.field` 白名单接线。
+- 一个最小 `.event`（只有 `size`、`color`、`noiseEvolveSpeed` 三个参数）。
+- **不接遮罩、不接锚点、不接相对对象。**
+
+**验收**：截图里能看到红色噪声在动；`liveEffectCount` 在退出关卡后归零；连续开关 20 次无内存增长（任务管理器看）。
+
+**退掉的风险**：纹理生成是否可行、`SpriteRenderer` 是否在正确层级、`mainTextureOffset` 是否生效。
+
+### P-N2：几何与遮罩（约 1–2 天）
+
+- 三个枚举 + 九宫格锚点 + 六种 `relativeTo`。
+- 矩形/圆形遮罩与羽化。
+- `lockSize` / `lockRotation` / `opacity` / `visible` / `depth`。
+- 完整参数表。
+
+**验收**：
+- 同一参数下，切换六种 `relativeTo` 区域位置符合预期。
+- 九个锚点分别贴住参照物的对应角。
+- 镜头缩放到 2× 和 0.5× 时，`lockSize=false` 的区域等比缩放，`lockSize=true` 的屏幕尺寸不变。
+- 圆形的边缘没有锯齿或方形残留。
+
+**退掉的风险**：`tileSize` 语义、坐标换算、锚点方向。
+
+### P-N3：生命周期与多实例（约 1 天）
+
+- `SetNoiseFieldState`（`visible` / `active` 缓动），`MoveNoiseField`（tag 驱动）。
+- tag 索引。
+- 同包多实例互不干扰。
+
+**验收**：同一谱面放 3 个噪声域，参数不同，同时存在且互不覆盖；暂停时画面静止；重开后与原时间点一致。
+
+### P-N4：观感调优（不定）
+
+- 对着 Phigros 参考视频逐参数比。
+- 决定是否需要加色混合、是否要做水平切片。
+
+**这一步无法排期**，因为「像不像」是主观的。建议先做完 P-N1 再评估。
+
+---
+
+## 12. 风险登记
+
+| 风险 | 概率 | 影响 | 应对 |
+|---|---|---|---|
+| `SpriteRenderer` 被轨道遮住 | 中 | 效果不可见 | 用 `sortingOrder ≥ 900` 并截图验证；P4 已证明 32000 可见 |
+| 找不到加色 shader | 高 | 观感偏灰 | fallback 到 `Sprites/Default`；用高亮度弥补 |
+| `tileSize` 语义理解错 | 中 | 尺寸整体差一个倍数 | 先写一个「1 方块 = ? 世界单位」的探针，实测一次 |
+| `Texture2D` 泄漏 | 高 | 反复进出关卡内存增长 | `Destroy`/`DestroyAll` 里显式 `Object.Destroy(tex)`，并加一个 live 计数供测试断言 |
+| 参数滑块拖动导致卡顿 | 中 | 编辑器体验差 | 参数指纹 + 150ms 防抖 |
+| 多实例共享纹理时释放过早 | 中 | 后创建的黑块 | 引用计数 |
+| 枚举成员改名 | 低 | 旧谱面参数读不出来 | 发布后不改；`StorageValue` 写的是名字 |
+| 与 `fx.create` 的 key 命名空间冲突 | 低 | 互相覆盖 | 两套表完全分开（`ContinuousEffects` / `NoiseFieldRenderer`），且都叠 `__instance` 前缀 |
+
+---
+
+## 13. 验证清单
+
+交付前逐条跑。每条都要有可粘贴进日志的断言，不接受"看起来对"。
+
+| # | 检验 | 通过条件 |
+|---|---|---|
+| V-N1 | 参数类型全部建出控件 | 属性面板里每个参数都有对应控件，没有一个退化成文本框 |
+| V-N2 | 枚举下拉可用 | 三个自定义枚举显示为下拉，选项为成员名 |
+| V-N3 | 落盘可读 | 注释里枚举是名字，`size` 是 `[4,3]` |
+| V-N4 | 原版可开 | 不装模组打开含噪声域事件的谱面，`actions` 完整 |
+| V-N5 | 撤销后保存不丢 | 放置 → 撤销 → 重做 → 保存，实例数一致 |
+| V-N6 | 复制换 uid | 复制后两个实例 uid 不同，参数独立 |
+| V-N7 | 暂停冻结 | 暂停 2 秒，`fx.field` 调用数为 0 |
+| V-N8 | 重开对齐 | 重开后同一时刻的 `frame` 与首次播放一致 |
+| V-N9 | 检查点跳转 | 跳到中途，区域立即出现在正确位置，不残留旧对象 |
+| V-N10 | 退出清理 | 退出关卡后 live 实例数 = 0，纹理数 = 0 |
+| V-N11 | 多实例独立 | 3 个实例同时存在，参数互不污染 |
+| V-N12 | 视觉可见 | 截图里能看到，且不在 UI 之下 |
+| V-N13 | 尺寸正确 | 4 方块宽的区域恰好覆盖 4 格轨道宽度 |
+| V-N14 | 长时运行 | 连续播放 3 分钟，帧率无下降，纹理数不增长 |
+
+---
+
+## 14. 必须实测才能定的未知
+
+按影响排序。**这些结论会改变设计，不是细节**。
+
+### Q1. `SpriteRenderer` 的材质 UV 偏移是否生效（**最高优先级**）—— **已实测：生效**
+
+`[实测]` P-N1：`mainTextureOffset` 在 `Sprites/Default` 上确实驱动滚动，采样日志里 uv 从 3.098 推进到 5.725。
+退路方案 1/2/3 都不需要。
+
+原始描述保留如下：
+
+见 §4.3。设很大的 `noiseMoveSpeed`，看画面有没有横向滚动。不滚动就走退路。
+
+**为什么排第一**：它决定 `NoiseTextureFactory` 的纹理宽度形态。先验证再写生成器，能省一轮返工。半天以内能验完。
+
+### Q2. `scrDecorationManager.CreateDecoration` 对未知类型的反应
+
+只有走「装饰升级路径」才需要。影响：决定 P5 能不能白送一套编辑器交互。
+
+方法：注册一个 `isDecoration=true` 的类型，调用 `CreateDecoration(type)`，看返回值和异常。
+
+### Q3. 轨道与装饰的 `sortingOrder` 实际范围
+
+影响：`depth` 映射公式。取值不当会让噪声域盖住 UI 或被轨道盖住。
+
+方法：遍历场景里 `Renderer` 的 `sortingLayerName` / `sortingOrder` 打表。
+
+### Q4. `ADOBase.controller.tileSize` 的实测值 —— **已实测：1.5**
+
+`[实测]` P-N1：`size=[6,4]` 的场世界尺寸为 `9.0 x 6.0`，即 1 方块 = 1.5 世界单位。
+
+原始描述保留如下：
+
+影响：全部尺寸换算。
+
+方法：读一次，并与 `floors[0]` 到 `floors[1]` 的世界距离对照。
+
+### Q5. 加色 shader 是否可用
+
+影响：观感，不影响功能。
+
+方法：`Shader.Find` 各候选，打日志。
+
+### Q6. `SpriteRenderer` 在 `EffectCanvas` 的层下是否受相机 `cullingMask` 影响
+
+P4 已间接证明可见，但 P4 用的是同一路径、同样的 layer 0。基本可以认为已解决，**不需要重复验证**。
+
+### 不建议现在验证的
+
+- 装饰升级路径（Q2）：不影响 v1，且结论只影响「能不能省 P5 的工程量」。
+- 水平切片 / RGB 偏移：先看主体像不像，不像再谈。
+
+---
+
+## 15. 交付物
+
+### 15.1 代码
+
+| 文件 | 状态 | 说明 |
+|---|---|---|
+| `src/PEV.Core/Scripting/NoiseFieldRenderer.cs` | 新增 | 实例管理、每帧应用 |
+| `src/PEV.Core/Scripting/NoiseTextureFactory.cs` | 新增 | 纹理生成、遮罩、共享缓存 |
+| `src/PEV.Core/Scripting/NoiseFieldParams.cs` | 新增 | 三个枚举 |
+| `src/PEV.Core/Scripting/Placement.cs` | 新增 | 锚点、相对对象、世界坐标换算 |
+| `src/PEV.Core/Scripting/EventContext.cs` | 修改 | `GameBridge.TryPlayNative` 白名单加 `field` / `fieldDestroy`（`GameBridge` 在这个文件里，不单独存在） |
+| `src/PEV.Core/Scripting/ScriptHost.cs` | 修改 | Bootstrap 加 `fx.field` / `fx.fieldDestroy`；`OnHostFx` 注入 `__instance` / `__floor` |
+| `src/PEV.Core/Scripting/EffectCanvas.cs` | 修改 | `DestroyAll` 增加纹理回收钩子 |
+| `src/Events/NoiseField.event/` | 新增 | `event.json` / `main.js` / `icon.png` |
+| `src/PEV.Core/Diagnostics/PN1Harness.cs` | 新增 | 按现有 harness 风格 |
+
+### 15.2 构建与部署
+
+**环境事实（已核实）**：
+
+| 路径 | 内容 |
+|---|---|
+| `D:\Program Files (x86)\Steam\steamapps\common\A Dance of Fire and Ice` | **完整安装**，含 `A Dance of Fire and Ice_Data\Managed\Assembly-CSharp.dll` |
+| `E:\SteamLibrary\steamapps\common\A Dance of Fire and Ice` | 只有 `User` 目录（存档/关卡数据），**没有程序集** |
+
+`csproj` 的 `GameDir` 指向 D 盘，是**正确**的，不要改。改到 E 盘会立刻在引用解析阶段失败。
+
+```bash
+# 编译前确认引用存在
+ls "D:/Program Files (x86)/Steam/steamapps/common/A Dance of Fire and Ice/A Dance of Fire and Ice_Data/Managed/Assembly-CSharp.dll"
+```
+
+部署目标（模组目录、`Levels` 目录）在 E 盘。两边是分开的：**D 盘编译，E 盘运行**。
+
+```bash
+E="/e/SteamLibrary/steamapps/common/A Dance of Fire and Ice"
+
+# 编译并打包
+python tools/build_release.py --version 0.1.0      # 产出 dist/PEV.Core-<version>.zip
+
+# 开发期更快：直接拷 DLL 和事件包
+cp src/PEV.Core/bin/Release/PEV.Core.dll      "$E/Mods/PEV.Core/"
+cp -r src/Events/NoiseField.event             "$E/Mods/PEV.Core/Events/"
+```
+
+改一行就要重拷一次，建议写个 watch 脚本。
+
+**日志**：`$E/Mods/PEV.Core/pev-core.log`，游戏每次启动会被清空（`Plugin.TryResetLog`）。所有 `Plugin.Log` 都写这里。排查「效果不可见」时第一件事是看这个文件，第二件是把 `EffectCanvas.Describe()` 的输出打出来——相机列表、`cullingMask`、`sortingOrder` 全在那行。
+
+### 15.3 测试
+
+- 一张 `NoiseFieldTest.adofai`：3 个实例，覆盖矩形/圆形/两种 `relativeTo`。
+- V-N1…V-N14 的输出写进 `PN1-RESULTS.md`，格式照 `P4-RESULTS.md`。
+
+### 15.3 文档
+
+- 本文更新：`[未知]` 的结论回填。
+- `docs/EVENT-SDK.md` 增加 `fx.field` 一节。
+- `docs/NOISEFIELD.md`：面向作者的参数说明与配方（怎么做出「区域内变红」的观感）。
+
+---
+
+## 16. 一句话总结
+
+这个效果的难点不在渲染，在**几何与生命周期**。噪声本身是低分辨率的程序化纹理，预生成若干帧、靠 UV 滚动和翻页演化，成本可以忽略；真正需要小心的是坐标系（方块 / 镜头 / 行星 × 九宫格锚点 × 缩放锁定）、时间（必须来自歌曲时钟，任何增量累加都会在检查点跳转时错位）、以及资源回收（纹理不是 GameObject，现有清理路径回收不到）。

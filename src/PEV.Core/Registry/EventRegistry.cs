@@ -106,6 +106,12 @@ namespace PEV.Registry
 
         private static LevelEventInfo BuildInfo(EventManifest m, LevelEventType type)
         {
+            // Grouped panels are what make a 25-parameter event navigable: the inspector
+            // renders one tab per groupName, exactly as native events do. Only switch it on
+            // when the manifest actually declares groups, since the flag also changes the
+            // panel layout.
+            bool grouped = m.Params.Any(p => !string.IsNullOrEmpty(p.Group));
+
             var info = new LevelEventInfo
             {
                 name = ((int)type).ToString(),
@@ -115,7 +121,8 @@ namespace PEV.Registry
                 executionTime = LevelEventExecutionTime.OnBar,
                 allowFirstFloor = true,
                 isDecoration = false,
-                useGroups = false,
+                useGroups = grouped,
+                groups = BuildGroups(m),
                 stretchViewport = false,
                 taroDLC = false,
                 pro = false
@@ -140,6 +147,31 @@ namespace PEV.Registry
                 }
             }
             return info;
+        }
+
+        /// <summary>
+        /// Sidebar sub-tabs, in first-declaration order. isDefault marks the tab the panel
+        /// opens on, so the geometry group is picked deliberately rather than by luck.
+        /// </summary>
+        private static List<LevelEventInfo.Group> BuildGroups(EventManifest m)
+        {
+            var groups = new List<LevelEventInfo.Group>();
+            var names = new List<string>();
+            foreach (var p in m.Params)
+            {
+                if (string.IsNullOrEmpty(p.Group) || names.Contains(p.Group)) continue;
+                names.Add(p.Group);
+            }
+            for (int i = 0; i < names.Count; i++)
+            {
+                groups.Add(new LevelEventInfo.Group
+                {
+                    name = names[i],
+                    icon = "",
+                    isDefault = i == 0
+                });
+            }
+            return groups;
         }
 
         private static LevelEventCategory ParseCategory(string name)

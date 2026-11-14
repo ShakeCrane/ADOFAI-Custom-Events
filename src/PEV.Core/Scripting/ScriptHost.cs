@@ -6,6 +6,7 @@ using Jint.Native;
 using Jint.Runtime;
 using Newtonsoft.Json;
 using PEV.Scripting;
+using UnityEngine;
 
 namespace PEV.Scripting
 {
@@ -36,6 +37,13 @@ var fx = {
   },
   destroy: function (key) {
     return JSON.parse(__hostFx('destroy', JSON.stringify({ key: key })));
+  },
+  field: function (key, o) {
+    var a = o || {}; a.key = key;
+    return JSON.parse(__hostFx('field', JSON.stringify(a)));
+  },
+  fieldDestroy: function (key) {
+    return JSON.parse(__hostFx('fielddestroy', JSON.stringify({ key: key })));
   }
 };
 var __pevReady = true;
@@ -58,6 +66,12 @@ var __pevReady = true;
 
         private string _debugName;
 
+        /// <summary>
+        /// Tile this instance belongs to, injected into every host call so the field
+        /// renderer can resolve relativeTo=Tile without the script repeating it.
+        /// </summary>
+        private int _floorSeq = -1;
+
         public static ScriptHost Create(string source, string debugName, out string error)
         {
             error = null;
@@ -66,14 +80,13 @@ var __pevReady = true;
             {
                 host._engine = new Engine(options =>
                 {
-                    // MaxStatements is the primary guard: it is deterministic and does not
-                    // punish the first call, which pays interpreter warm-up.
-                    options.MaxStatements(200_000);
-
-                    // A per-call wall clock is a backstop, not the main defence. 8 ms was
-                    // measured to trip on the very first update() of a fresh engine on Mono
-                    // purely from warm-up cost, so leave real headroom.
-                    options.TimeoutInterval(TimeSpan.FromMilliseconds(50));
+                    // MaxStatements is the real guard on runaway scripts, and it is exact.
+                    //
+                    // The wall-clock backstop must be generous, because Jint measures it
+                    // across the whole Evaluate call including our own host delegates: a
+                    // field texture build inside fx.field counts as script time. At 50ms a
+                    // single first-frame texture build faulted two of three instances.
+                    options.TimeoutInterval(TimeSpan.FromMilliseconds(2000));
 
                     options.LimitRecursion(64);
                     options.Strict();
@@ -115,6 +128,12 @@ var __pevReady = true;
                     : JsonConvert.DeserializeObject<Dictionary<string, object>>(argsJson)
                       ?? new Dictionary<string, object>();
 
+                // A script's key is only unique within its own instance. Stamping the
+                // instance identity here means two fields on the same floor cannot collide,
+                // and no script has to invent globally unique keys.
+                args["__instance"] = _debugName ?? "";
+                args["__floor"] = _floorSeq;
+
                 bool ok = GameBridge.TryPlayNative(name, args, out string error);
                 return JsonConvert.SerializeObject(new Dictionary<string, object>
                 {
@@ -132,15 +151,58 @@ var __pevReady = true;
             }
         }
 
+        /// <summary>
+        /// Params cross into JS as JSON, and Unity structs (Vector2 and friends) expose
+        /// self-referencing properties like normalized, which makes JsonConvert fail with a
+        /// loop error before the script ever runs. Flatten them at the boundary.
+        /// </summary>
+        private static Dictionary<string, object> SanitizeParams(IDictionary<string, object> parameters)
+        {
+            var result = new Dictionary<string, object>(StringComparer.Ordinal);
+            if (parameters == null) return result;
+
+            foreach (var kv in parameters)
+                result[kv.Key] = SanitizeValue(kv.Value);
+            return result;
+        }
+
+        private static object SanitizeValue(object value)
+        {
+            if (value == null) return null;
+            if (value is Vector2 v2) return new[] { v2.x, v2.y };
+            if (value is Vector3 v3) return new[] { v3.x, v3.y, v3.z };
+            if (value is Color c) return new[] { c.r, c.g, c.b, c.a };
+
+            if (value is IDictionary<string, object> map)
+            {
+                var copy = new Dictionary<string, object>(StringComparer.Ordinal);
+                foreach (var kv in map) copy[kv.Key] = SanitizeValue(kv.Value);
+                return copy;
+            }
+
+            if (value is System.Collections.IEnumerable list && !(value is string))
+            {
+                var copy = new List<object>();
+                foreach (var item in list) copy.Add(SanitizeValue(item));
+                return copy;
+            }
+
+            return value;
+        }
+
         public bool Initialize(EventContext context, IDictionary<string, object> parameters, out string error)
         {
             error = null;
             try
             {
-                string paramsJson = JsonConvert.SerializeObject(parameters);
+                string paramsJson = JsonConvert.SerializeObject(SanitizeParams(parameters));
                 string ctxJson = context.ToStateJson();
 
                 if (LogInit) PEV.Core.Plugin.Log($"init {_debugName}: params={paramsJson}");
+
+                // Must be set before create() runs: a script may call fx.field on its very
+                // first line, and the host stamps this value into that call.
+                _floorSeq = context != null ? context.FloorSeq : -1;
 
                 _engine.SetValue("__ctx", ctxJson);
                 _engine.SetValue("__params", paramsJson);

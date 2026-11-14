@@ -71,6 +71,16 @@ namespace PEV.Editor
                         catch { }
                     }
 
+                    // Without angleOffset in the event data the editor never draws a badge
+                    // on the tile: ShowEventIndicators skips any event whose data lacks that
+                    // key. Native events all carry one, so authors expect the same.
+                    EnsureAngleOffset(ev);
+
+                    // AddEvent has already drawn this tile's indicators by the time our
+                    // postfix runs, so that pass saw an event without angleOffset and drew
+                    // nothing. Redraw now that the data is complete.
+                    RedrawIndicators(floorID);
+
                     Plugin.Log($"placed '{manifest.Id}' uid={data.Uid} at floor {floorID}");
                 }
                 catch (Exception e)
@@ -103,6 +113,9 @@ namespace PEV.Editor
 
                     var clone = source.Clone(StableUid());
                     LevelStorage.Attach(__result, clone);
+                    // The clone copies the source's data, angleOffset included, but guard
+                    // anyway: a legacy event copied from an old chart may lack it.
+                    EnsureAngleOffset(__result);
                     Plugin.Log($"copied '{clone.Id}' -> uid={clone.Uid} at floor {__result.floor}");
                 }
                 catch (Exception e)
@@ -156,5 +169,43 @@ namespace PEV.Editor
         }
 
         private static string StableUid() => PEV.Util.StableId.NewUid();
+
+        /// <summary>
+        /// The editor's tile badge (EventIndicator) is only created for events whose data
+        /// contains angleOffset; every native event carries one. Custom events do not, so
+        /// without this they place and edit fine but show nothing on the tile.
+        ///
+        /// The key is not declared as a PEV param, so it never surfaces in the properties
+        /// panel, but it still encodes into the file — where vanilla simply ignores it.
+        /// </summary>
+        /// <summary>
+        /// Redraws one tile's event badges. The editor only keeps indicators alive for the
+        /// selected floor, so any code that mutates an event must refresh it explicitly.
+        /// </summary>
+        internal static void RedrawIndicators(int floor)
+        {
+            try
+            {
+                var editor = ADOBase.editor;
+                if (editor == null) return;
+                if (editor.floors == null || floor < 0 || floor >= editor.floors.Count) return;
+                editor.ShowEventIndicators(editor.floors[floor]);
+            }
+            catch (Exception e)
+            {
+                Plugin.Log("indicator refresh failed: " + e.Message);
+            }
+        }
+
+        internal static void EnsureAngleOffset(LevelEvent ev)
+        {
+            if (ev == null) return;
+            try
+            {
+                object existing = ev.Get<object>("angleOffset");
+                if (existing == null) ev["angleOffset"] = 0f;
+            }
+            catch { }
+        }
     }
 }
