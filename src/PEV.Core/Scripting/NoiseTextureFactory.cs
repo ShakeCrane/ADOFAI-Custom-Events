@@ -7,53 +7,71 @@ using UnityEngine;
 namespace PEV.Scripting
 {
     /// <summary>
-    /// Procedural noise frames for the NoiseField event.
+    /// Procedural noise-field textures, modelled on the original BlockRender pipeline.
     ///
-    /// The Phigros effect is a pre-generated sequence of K noise textures stepped through
-    /// time, not a per-frame shader. We reproduce that: generate K blocky textures once from
-    /// a deterministic integer hash, then the renderer swaps sprites and scrolls UVs.
-    /// There is no per-pixel work at runtime.
+    /// The reference effect is not "a noise pattern": it composes three layers from one
+    /// low-resolution mask — a translucent fill, a bright edge traced around the mask, and
+    /// sparse spark grains — with a displacement field that warps them so the boundary
+    /// reads as jagged rather than geometric. That is reproduced here per texel:
     ///
-    /// A request carries a list of mask pieces rather than one shape. That is what makes
-    /// same-depth fields merge into a union: several regions are baked into one texture, so
-    /// overlapping areas never double their brightness.
+    ///   1. rasterise the union of every region into a cell grid (boolean union, max)
+    ///   2. trace the edge as "inside cell with an outside neighbour"
+    ///   3. fill = fillColour * fillOpacity, edge = edgeColour * edgeOpacity
+    ///   4. sparks = sparse bright grains, sampled through the displacement field
     ///
-    /// Frames are ref-counted and shared between identical requests. Without the count, the
-    /// second instance to release would leave the first one rendering a destroyed texture.
+    /// Working at cell resolution is what gives the authentic blocky silhouette: the
+    /// original mask is low-resolution too, and its edge is quantised to those same blocks.
+    ///
+    /// Frames are ref-counted and shared. Generation is O(cells) per frame, and the result
+    /// is only rebuilt when the structure key changes — which is why the key must not
+    /// contain anything that drifts every frame (see ResolutionBucket).
     /// </summary>
     public static class NoiseTextureFactory
     {
         public const int MaxSide = 1024;
         public const int MinCells = 8;
-        /// <summary>
-        /// Upper bound on texels across all K frames of one set. Generation runs inside a
-        /// host call from the script thread, so a set that takes longer than a frame hitch
-        /// is a visible stall.
-        /// </summary>
         public const int MaxTexelsPerSet = 2_600_000;
 
         /// <summary>
-        /// Grains are this many screen pixels wide at noiseSampleRate 1. The reference
-        /// effect is fine dust, not blocks: at 6 px the result read as a coarse mosaic.
+        /// Pixel widths are quantised to this step before they enter the structure key.
+        /// The camera zooms on the beat, so a continuous width would invalidate the key on
+        /// every frame and regenerate eight textures per update — the reported stutter.
         /// </summary>
+        private const int ResolutionStep = 96;
+
         private const float GrainPixels = 1.5f;
+        public const float PixelsPerUnit = 100f;
 
         public sealed class Frames
         {
             public Texture2D[] Textures;
             public Sprite[] Sprites;
+            /// <summary>
+            /// World size of one sprite at scale 1. Sprites are built at 100 pixels per
+            /// unit, so this is (texW/100, texH/100). Callers must divide their desired
+            /// world size by it: multiplying a scale by the size directly multiplies the
+            /// quad by the texture resolution as well.
+            /// </summary>
+            public Vector2 NaturalSize;
             public string Key;
             internal int Refs;
         }
 
-        /// <summary>One region participating in the union, in texture-local world space.</summary>
         public struct Piece
         {
-            public Vector2 Offset;   // centre relative to the texture centre
-            public Vector2 Half;     // half extents; for a circle, Half.x is the radius
-            public float Rotation;   // degrees, counter-clockwise
-            public float Feather;    // world units of edge falloff
+            public Vector2 Offset;
+            public Vector2 Half;
+            public float Rotation;
+            public float Feather;
             public bool Circle;
+
+            // Per-piece colours: a union merges geometry, not appearance. Two regions of
+            // different colours at the same depth must each keep their own fill and edge,
+            // with only the silhouette shared.
+            public Color FillColor;
+            public Color EdgeColor;
+            public float FillOpacity;
+            public float EdgeOpacity;
         }
 
         public struct Request
@@ -61,14 +79,22 @@ namespace PEV.Scripting
             public float WidthWorld;
             public float HeightWorld;
             public Piece[] Pieces;
-            public Color Tint;
+
+            public Color FillColor;
+            public Color EdgeColor;
+            public Color SparkColor;
+            public float FillOpacity;
+            public float EdgeOpacity;
+            public float SparkOpacity;
+
             public float Brightness;
             public float Saturation;
             public float SampleRate;
             public float LineOpacity;
+            public float Displace;
+
             public int FrameCount;
             public int Seed;
-            /// <summary>Region width in screen pixels; drives texture resolution.</summary>
             public float TargetPixelWidth;
         }
 
@@ -77,7 +103,13 @@ namespace PEV.Scripting
 
         public static int CachedFrameSets => Cache.Count;
 
-        /// <summary>Returns shared frames for the request, generating them on first use.</summary>
+        /// <summary>
+        /// Monotonic count of texture sets built. The harness samples it across a steady
+        /// window: a value that climbs while nothing changed means a key includes
+        /// per-frame data, which shows up to the player as stutter.
+        /// </summary>
+        public static int Generations;
+
         public static Frames Get(Request req, out string error)
         {
             error = null;
@@ -90,6 +122,7 @@ namespace PEV.Scripting
 
             try
             {
+                Generations++;
                 var frames = Generate(req);
                 frames.Key = key;
                 frames.Refs = 1;
@@ -103,7 +136,6 @@ namespace PEV.Scripting
             }
         }
 
-        /// <summary>Drops one reference; destroys the textures when the last user lets go.</summary>
         public static void Release(Frames frames)
         {
             if (frames == null) return;
@@ -143,32 +175,41 @@ namespace PEV.Scripting
             return true;
         }
 
+        /// <summary>Coarse bucket so camera zoom does not invalidate the texture every frame.</summary>
+        public static int ResolutionBucket(float px)
+        {
+            int steps = Mathf.Clamp(Mathf.RoundToInt(px / ResolutionStep), 1, 12);
+            return steps * ResolutionStep;
+        }
+
+        /// <summary>
+        /// The generation key, exposed so the renderer compares exactly what the factory
+        /// caches. A separate key in the renderer drifts from this one and causes either
+        /// missed rebuilds or a rebuild on every frame.
+        /// </summary>
+        public static string Key(Request req) => Fingerprint(req);
+
         private static string Fingerprint(Request r)
         {
-            var sb = new StringBuilder(220);
-            sb.Append(F(r.WidthWorld)).Append('|')
-              .Append(F(r.HeightWorld)).Append('|')
-              .Append(F(r.Tint.r)).Append(',')
-              .Append(F(r.Tint.g)).Append(',')
-              .Append(F(r.Tint.b)).Append('|')
-              .Append(F(r.Brightness)).Append('|')
-              .Append(F(r.Saturation)).Append('|')
-              .Append(F(r.SampleRate)).Append('|')
-              .Append(F(r.LineOpacity)).Append('|')
-              .Append(r.FrameCount).Append('|')
-              .Append(r.Seed).Append('|')
-              .Append(Mathf.RoundToInt(r.TargetPixelWidth)).Append('|');
+            var sb = new StringBuilder(240);
+            sb.Append(F(r.WidthWorld)).Append('|').Append(F(r.HeightWorld)).Append('|')
+              .Append(C(r.FillColor)).Append('|').Append(C(r.EdgeColor)).Append('|')
+              .Append(C(r.SparkColor)).Append('|')
+              .Append(F(r.FillOpacity)).Append('|').Append(F(r.EdgeOpacity)).Append('|')
+              .Append(F(r.SparkOpacity)).Append('|')
+              .Append(F(r.Brightness)).Append('|').Append(F(r.Saturation)).Append('|')
+              .Append(F(r.SampleRate)).Append('|').Append(F(r.LineOpacity)).Append('|')
+              .Append(F(r.Displace)).Append('|')
+              .Append(r.FrameCount).Append('|').Append(r.Seed).Append('|')
+              .Append(ResolutionBucket(r.TargetPixelWidth)).Append('|');
 
             if (r.Pieces != null)
             {
                 foreach (var p in r.Pieces)
                 {
-                    sb.Append(F(p.Offset.x)).Append(',')
-                      .Append(F(p.Offset.y)).Append(',')
-                      .Append(F(p.Half.x)).Append(',')
-                      .Append(F(p.Half.y)).Append(',')
-                      .Append(F(p.Rotation)).Append(',')
-                      .Append(F(p.Feather)).Append(',')
+                    sb.Append(F(p.Offset.x)).Append(',').Append(F(p.Offset.y)).Append(',')
+                      .Append(F(p.Half.x)).Append(',').Append(F(p.Half.y)).Append(',')
+                      .Append(F(p.Rotation)).Append(',').Append(F(p.Feather)).Append(',')
                       .Append(p.Circle ? 'c' : 'r').Append(';');
                 }
             }
@@ -176,54 +217,77 @@ namespace PEV.Scripting
         }
 
         private static string F(float v) => v.ToString("F3", CultureInfo.InvariantCulture);
+        private static string C(Color c) => F(c.r) + "," + F(c.g) + "," + F(c.b);
 
-        /// <summary>
-        /// Builds the K frames. One texel block is one grain; cells are quantised to block
-        /// pixels so the blocky look survives bilinear upscaling.
-        /// </summary>
         private static Frames Generate(Request req)
         {
             int frames = Mathf.Clamp(req.FrameCount, 2, 32);
             float sampleRate = Mathf.Clamp(req.SampleRate, 0.1f, 8f);
-            float worldToPx = req.WidthWorld > 1e-4f ? req.TargetPixelWidth / req.WidthWorld : 1f;
-            // One grain may occupy a single texel: when the texture cannot be large enough, a
-            // 1-texel grain still reads as fine dust, whereas forcing a 2-texel minimum
-            // doubles the grain size exactly when the region is largest.
             int block = Mathf.Clamp(Mathf.RoundToInt(GrainPixels / sampleRate), 1, 16);
 
-            float worldToPxY = req.HeightWorld > 1e-4f
-                ? (req.TargetPixelWidth * (req.HeightWorld / req.WidthWorld)) / req.HeightWorld
-                : worldToPx;
-            int pxW = Mathf.Max(16, Mathf.RoundToInt(req.WidthWorld * worldToPx));
-            int pxH = Mathf.Max(16, Mathf.RoundToInt(req.HeightWorld * worldToPxY));
+            int pxW = ResolutionBucket(req.TargetPixelWidth);
+            float aspect = req.WidthWorld > 1e-4f ? req.HeightWorld / req.WidthWorld : 1f;
+            int pxH = Mathf.Max(16, Mathf.RoundToInt(pxW * aspect));
 
             int maxCells = Mathf.Max(MinCells, MaxSide / block);
             int cellsX = Mathf.Clamp(Mathf.RoundToInt(pxW / (float)block), MinCells, maxCells);
             int cellsY = Mathf.Clamp(Mathf.RoundToInt(pxH / (float)block), MinCells, maxCells);
 
-            // Over budget, cut the flipbook length first. Shrinking the texture would force
-            // every grain to cover more screen pixels, which is exactly the blocky look we
-            // are trying to avoid; a shorter flipbook with the same UV scroll reads almost
-            // identically because the scroll carries most of the motion.
+            // Over budget, cut the flipbook length first: shrinking the texture would force
+            // every grain to cover more screen pixels, which is the blockiness we avoid.
             while (cellsX * block * cellsY * block * frames > MaxTexelsPerSet && frames > 2)
                 frames--;
 
             int texW = cellsX * block;
             int texH = cellsY * block;
 
-            // Tint with saturation applied at generation time. Per-frame we then only touch
-            // opacity, so the common case never re-uploads pixels.
-            float lum = 0.299f * req.Tint.r + 0.587f * req.Tint.g + 0.114f * req.Tint.b;
-            var grey = new Color(lum, lum, lum, 1f);
-            var grain = Color.LerpUnclamped(grey, req.Tint, Mathf.Clamp01(req.Saturation));
+            float cellW = req.WidthWorld / cellsX;
+            float cellH = req.HeightWorld / cellsY;
 
-            // Sparse on purpose: the reference is fine dust with scattered bright specks,
-            // not a filled red rectangle. Density rises with brightness so the parameter
-            // still reads as "how much noise".
-            float density = Mathf.Clamp01(0.10f * Mathf.Clamp01(req.Brightness));
-            float lineProb = Mathf.Clamp01(req.LineOpacity);
-            uint seed = (uint)req.Seed;
             var pieces = req.Pieces ?? Array.Empty<Piece>();
+
+            // --- boolean union -------------------------------------------------------
+            // One insideness grid shared by every frame: the silhouette itself does not
+            // animate, only the grains and the displacement inside it do. Tracing the edge
+            // on the union is what keeps two overlapping regions from drawing two borders.
+            var inside = new bool[cellsX * cellsY];
+            for (int cy = 0; cy < cellsY; cy++)
+            {
+                for (int cx = 0; cx < cellsX; cx++)
+                {
+                    float wx = (cx + 0.5f) / cellsX * req.WidthWorld - req.WidthWorld * 0.5f;
+                    float wy = (cy + 0.5f) / cellsY * req.HeightWorld - req.HeightWorld * 0.5f;
+                    inside[cy * cellsX + cx] = InUnion(pieces, wx, wy);
+                }
+            }
+
+            var edge = new bool[cellsX * cellsY];
+            for (int cy = 0; cy < cellsY; cy++)
+            {
+                for (int cx = 0; cx < cellsX; cx++)
+                {
+                    int i = cy * cellsX + cx;
+                    if (!inside[i]) continue;
+                    // Edge = inside cell with at least one outside 4-neighbour, the same
+                    // test EdgeMask performs with its dilate pass.
+                    bool border =
+                        cx == 0 || !inside[i - 1] ||
+                        cx == cellsX - 1 || !inside[i + 1] ||
+                        cy == 0 || !inside[i - cellsX] ||
+                        cy == cellsY - 1 || !inside[i + cellsX];
+                    edge[i] = border;
+                }
+            }
+
+            // --- colours -------------------------------------------------------------
+            float lum = 0.299f * req.SparkColor.r + 0.587f * req.SparkColor.g + 0.114f * req.SparkColor.b;
+            var grey = new Color(lum, lum, lum, 1f);
+            var sparkTint = Color.LerpUnclamped(grey, req.SparkColor, Mathf.Clamp01(req.Saturation));
+
+            float sparkDensity = Mathf.Clamp01(0.075f * Mathf.Clamp01(req.Brightness));
+            float lineProb = Mathf.Clamp01(req.LineOpacity);
+            float displace = Mathf.Clamp01(req.Displace) * 1.6f;
+            uint seed = (uint)req.Seed;
 
             var outFrames = new Frames
             {
@@ -231,16 +295,28 @@ namespace PEV.Scripting
                 Sprites = new Sprite[frames]
             };
 
+            // Which piece owns each cell, resolved once. -1 means outside the union.
+            var owner = new int[cellsX * cellsY];
+            for (int cy = 0; cy < cellsY; cy++)
+            {
+                for (int cx = 0; cx < cellsX; cx++)
+                {
+                    float wx = (cx + 0.5f) / cellsX * req.WidthWorld - req.WidthWorld * 0.5f;
+                    float wy = (cy + 0.5f) / cellsY * req.HeightWorld - req.HeightWorld * 0.5f;
+                    owner[cy * cellsX + cx] = OwnerPiece(pieces, wx, wy);
+                }
+            }
+
             for (int k = 0; k < frames; k++)
             {
                 var pixels = new Color32[texW * texH];
                 uint kseed = (uint)(k * 7919) + seed * 2654435761u;
 
-                var rowAlpha = new float[cellsY];
+                var rowLine = new float[cellsY];
                 for (int cy = 0; cy < cellsY; cy++)
                 {
                     uint h = Hash(0x9E37u, (uint)cy, kseed);
-                    rowAlpha[cy] = (h & 0xFFFF) / 65535f < lineProb
+                    rowLine[cy] = (h & 0xFFFF) / 65535f < lineProb
                         ? lineProb * (0.25f + 0.75f * ((h >> 16) & 0xFFFF) / 65535f)
                         : 0f;
                 }
@@ -249,45 +325,82 @@ namespace PEV.Scripting
                 {
                     for (int cx = 0; cx < cellsX; cx++)
                     {
-                        uint h = Hash((uint)cx, (uint)cy, kseed);
-                        float r = (h & 0xFFFF) / 65535f;
-                        if (r >= density) continue;
+                        int idx = cy * cellsX + cx;
+                        if (!inside[idx]) continue;
 
-                        // Skew toward dim grains with a few hot ones: a uniform brightness
-                        // distribution reads as flat speckle instead of dust.
-                        float r2 = ((h >> 16) & 0xFFFF) / 65535f;
-                        float lit = 0.35f + 0.65f * Mathf.Sqrt(r2);
-                        float a = lit;
+                        // Appearance comes from the piece that owns this cell, so a union
+                        // keeps every region's own colour instead of tinting the cluster.
+                        int own = owner[idx];
+                        var fillC = own >= 0 ? pieces[own].FillColor : req.FillColor;
+                        var edgeC = own >= 0 ? pieces[own].EdgeColor : req.EdgeColor;
+                        float edgeOpacity = own >= 0 ? pieces[own].EdgeOpacity : req.EdgeOpacity;
+                        float fillOpacity = own >= 0 ? pieces[own].FillOpacity : req.FillOpacity;
 
-                        float lineA = rowAlpha[cy];
-                        if (lineA > 0f) a = Mathf.Clamp01(a + lineA * (0.35f + 0.65f * lit));
+                        bool isEdge = edge[idx];
 
-                        var c = new Color32(
-                            (byte)Mathf.RoundToInt(grain.r * 255f),
-                            (byte)Mathf.RoundToInt(grain.g * 255f),
-                            (byte)Mathf.RoundToInt(grain.b * 255f),
-                            (byte)Mathf.RoundToInt(a * 255f));
+                        Color32 c;
+                        if (isEdge)
+                        {
+                            // The boundary is opaque and saturated; that is what makes the
+                            // region read as a cut-out rather than a soft glow.
+                            float wobble = 0.85f + 0.15f * ((Hash((uint)cx, (uint)cy, kseed + 31u) & 0xFFFF) / 65535f);
+                            c = new Color32(
+                                (byte)Mathf.RoundToInt(edgeC.r * 255f * wobble),
+                                (byte)Mathf.RoundToInt(edgeC.g * 255f * wobble),
+                                (byte)Mathf.RoundToInt(edgeC.b * 255f * wobble),
+                                (byte)Mathf.RoundToInt(Mathf.Clamp01(edgeOpacity) * 255f));
+                        }
+                        else
+                        {
+                            // Fill is translucent and carries most of the region's colour.
+                            float a = Mathf.Clamp01(fillOpacity);
 
+                            // Sparse bright grains, sampled through the displacement field:
+                            // the warp is what makes the texture look torn rather than tiled.
+                            float du = 0f, dv = 0f;
+                            if (displace > 0f)
+                            {
+                                uint dh = Hash((uint)cx, (uint)cy, kseed ^ 0x51EDu);
+                                du = (((dh & 0xFF) / 255f) - 0.5f) * displace;
+                                dv = ((((dh >> 8) & 0xFF) / 255f) - 0.5f) * displace;
+                            }
+                            int sx = Mathf.Clamp(cx + Mathf.RoundToInt(du * 2f), 0, cellsX - 1);
+                            int sy = Mathf.Clamp(cy + Mathf.RoundToInt(dv * 2f), 0, cellsY - 1);
+
+                            uint gh = Hash((uint)sx, (uint)sy, kseed);
+                            float gr = (gh & 0xFFFF) / 65535f;
+                            float lit = 0f;
+                            if (gr < sparkDensity)
+lit = req.SparkOpacity * (0.30f + 0.70f * Mathf.Pow(((gh >> 16) & 0xFFFF) / 65535f, 2f));
+
+                            float lineA = rowLine[cy];
+                            if (lineA > 0f) lit = Mathf.Clamp01(lit + lineA * 0.5f);
+
+                            float r = fillC.r + (sparkTint.r - fillC.r) * lit;
+                            float g = fillC.g + (sparkTint.g - fillC.g) * lit;
+                            float b = fillC.b + (sparkTint.b - fillC.b) * lit;
+                            a = Mathf.Clamp01(a + lit * (1f - a));
+
+                            c = new Color32(
+                                (byte)Mathf.RoundToInt(Mathf.Clamp01(r) * 255f),
+                                (byte)Mathf.RoundToInt(Mathf.Clamp01(g) * 255f),
+                                (byte)Mathf.RoundToInt(Mathf.Clamp01(b) * 255f),
+                                (byte)Mathf.RoundToInt(a * 255f));
+                        }
+
+                        // One texel block is one cell: quantisation is the look, not an
+                        // artefact. Bilinear upscaling keeps it soft like the original.
                         int x0 = cx * block, y0 = cy * block;
                         for (int y = y0; y < y0 + block; y++)
                         {
                             int row = y * texW;
-                            for (int x = x0; x < x0 + block; x++)
-                            {
-                                float u = (x + 0.5f) / texW;
-                                float v = (y + 0.5f) / texH;
-                                float m = Mask(req, pieces, u, v);
-                                if (m <= 0f) continue;
-                                c.a = (byte)Mathf.RoundToInt(a * m * 255f);
-                                pixels[row + x] = c;
-                            }
+                            for (int x = x0; x < x0 + block; x++) pixels[row + x] = c;
                         }
                     }
                 }
 
                 var tex = new Texture2D(texW, texH, TextureFormat.RGBA32, false)
                 {
-                    // Scrolling depends on Repeat: Clamp would show a frozen band at the edge.
                     wrapMode = TextureWrapMode.Repeat,
                     filterMode = FilterMode.Bilinear,
                     name = "PEV.Noise." + k
@@ -297,21 +410,47 @@ namespace PEV.Scripting
 
                 outFrames.Textures[k] = tex;
                 outFrames.Sprites[k] = Sprite.Create(
-                    tex, new Rect(0f, 0f, texW, texH), new Vector2(0.5f, 0.5f), 100f);
+                    tex, new Rect(0f, 0f, texW, texH), new Vector2(0.5f, 0.5f), PixelsPerUnit);
                 outFrames.Sprites[k].name = "PEV.NoiseSprite." + k;
             }
 
+            outFrames.NaturalSize = new Vector2(texW / PixelsPerUnit, texH / PixelsPerUnit);
             return outFrames;
         }
 
-        /// <summary>Union of every piece's mask at this texel. Overlaps take the max, never sum.</summary>
-        private static float Mask(Request req, Piece[] pieces, float u, float v)
+        /// <summary>
+        /// Index of the piece containing this point, or -1. Pieces are independent shapes,
+        /// so the first match decides the colour; later pieces only extend the silhouette.
+        /// </summary>
+        private static int OwnerPiece(Piece[] pieces, float px, float py)
         {
-            if (pieces.Length == 0) return 1f;
+            for (int i = 0; i < pieces.Length; i++)
+            {
+                var p = pieces[i];
+                float dx = px - p.Offset.x;
+                float dy = py - p.Offset.y;
 
-            float px = (u - 0.5f) * req.WidthWorld;
-            float py = (v - 0.5f) * req.HeightWorld;
-            float best = 0f;
+                float rad = p.Rotation * Mathf.Deg2Rad;
+                float cos = Mathf.Cos(rad), sin = Mathf.Sin(rad);
+                float lx = dx * cos + dy * sin;
+                float ly = -dx * sin + dy * cos;
+
+                if (p.Circle)
+                {
+                    if (Mathf.Sqrt(lx * lx + ly * ly) <= p.Half.x) return i;
+                }
+                else if (Mathf.Abs(lx) <= p.Half.x && Mathf.Abs(ly) <= p.Half.y)
+                {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        /// <summary>Boolean union of every piece at this world position.</summary>
+        private static bool InUnion(Piece[] pieces, float px, float py)
+        {
+            if (pieces.Length == 0) return true;
 
             for (int i = 0; i < pieces.Length; i++)
             {
@@ -319,37 +458,24 @@ namespace PEV.Scripting
                 float dx = px - p.Offset.x;
                 float dy = py - p.Offset.y;
 
-                // Rotate into the piece's local frame (inverse of a CCW Z rotation).
                 float rad = p.Rotation * Mathf.Deg2Rad;
                 float cos = Mathf.Cos(rad), sin = Mathf.Sin(rad);
                 float lx = dx * cos + dy * sin;
                 float ly = -dx * sin + dy * cos;
 
-                float m;
                 if (p.Circle)
                 {
                     float d = Mathf.Sqrt(lx * lx + ly * ly);
-                    float edge = Mathf.Max(1e-4f, p.Half.x);
-                    m = p.Feather <= 0f
-                        ? (d <= edge ? 1f : 0f)
-                        : Mathf.Clamp01((edge - d) / p.Feather);
+                    if (d <= Mathf.Max(0f, p.Half.x - p.Feather * 0.5f)) return true;
                 }
                 else
                 {
-                    float inside = Mathf.Min(p.Half.x - Mathf.Abs(lx), p.Half.y - Mathf.Abs(ly));
-                    m = p.Feather <= 0f
-                        ? (inside >= 0f ? 1f : 0f)
-                        : Mathf.Clamp01(inside / Mathf.Max(1e-4f, p.Feather));
+                    if (Mathf.Abs(lx) <= p.Half.x && Mathf.Abs(ly) <= p.Half.y) return true;
                 }
-
-                if (m > best) best = m;
-                if (best >= 1f) break;
             }
-
-            return best;
+            return false;
         }
 
-        /// <summary>Deterministic integer hash. Never UnityEngine.Random: no global state.</summary>
         private static uint Hash(uint a, uint b, uint c)
         {
             uint h = a * 374761393u + b * 668265263u + c * 2147483647u;

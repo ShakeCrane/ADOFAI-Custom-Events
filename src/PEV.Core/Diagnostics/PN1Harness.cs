@@ -85,6 +85,65 @@ namespace PEV.Diagnostics
         }
 
         /// <summary>
+        /// Two decisions depend on facts this build cannot assume:
+        /// 1. the decoration route (reuse MoveDecorations instead of our own mover) needs
+        ///    scrDecorationManager to survive an unknown decoration type;
+        /// 2. the background-warp look needs a grab shader that still exists at runtime.
+        /// Both are cheap to measure and expensive to guess wrong.
+        /// </summary>
+        private static void ProbePlatform()
+        {
+            string[] shaders =
+            {
+                "Hidden/BlendModes/VisualDeco/Grab",
+                "Legacy Shaders/Particles/Additive",
+                "Sprites/Default"
+            };
+            foreach (var name in shaders)
+            {
+                Shader sh = null;
+                try { sh = Shader.Find(name); } catch { }
+                Row("SHADER", sh != null ? "FOUND" : "MISSING", name);
+            }
+
+            try
+            {
+                var dm = ADOBase.controller != null ? ADOBase.controller.decorationManager : null;
+                Row("DECMANAGER", dm != null ? "OK" : "NULL",
+                    dm != null ? dm.GetType().Name : "scrDecorationManager instance unavailable");
+
+                if (dm != null)
+                {
+                    var methods = dm.GetType().GetMethods()
+                        .Where(m => m.Name.Contains("Decoration"))
+                        .Select(m => m.Name + "(" + string.Join(",", m.GetParameters().Select(x => x.ParameterType.Name)) + ")")
+                        .Distinct().Take(12).ToList();
+                    Row("DECMANAGER-API", methods.Count.ToString(), string.Join(" | ", methods));
+
+                    var deco = dm.GetType().GetMethod("CreateDecoration", new[] { typeof(LevelEventType) });
+                    Row("DECMANAGER-CREATE", deco != null ? "SIGNATURE-OK" : "SIGNATURE-MISSING",
+                        deco != null ? "CreateDecoration(LevelEventType)" : "no single-arg overload");
+
+                    if (deco != null)
+                    {
+                        var ourType = (LevelEventType)PEV.Util.StableId.FromEventId("pev.noise-field");
+                        object result = null;
+                        string err = null;
+                        try { result = deco.Invoke(dm, new object[] { ourType }); }
+                        catch (Exception e) { err = (e.InnerException ?? e).GetType().Name + ": " + (e.InnerException ?? e).Message; }
+
+                        Row("DECMANAGER-UNKNOWN-TYPE", err == null ? "SURVIVED" : "THREW",
+                            err ?? ("returned " + (result == null ? "null" : result.GetType().Name)));
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Row("DECMANAGER", "EXCEPTION", e.Message);
+            }
+        }
+
+        /// <summary>
         /// Placement is a pure function, so the anchor and scaling rules can be asserted
         /// exactly rather than judged from a screenshot. Anchor signs are the easiest thing
         /// in the whole feature to get backwards, and a screenshot only shows it at the one
@@ -184,6 +243,7 @@ namespace PEV.Diagnostics
             ScriptHost.LogInit = true;
 
             RunGeometryAssertions();
+            ProbePlatform();
 
             var manifest = EventRegistry.All.FirstOrDefault(m => m.Id == "pev.noise-field");
             if (manifest == null)
@@ -372,6 +432,16 @@ namespace PEV.Diagnostics
             {
                 Row("ANIMATES", "FAIL", "no field existed during the sampling window");
             }
+
+            // Steady-state regeneration: with parameters unchanged the texture cache must
+            // not rebuild. A climbing counter is the difference between a smooth scene and
+            // the reported stutter, and it is invisible to any check that only looks at
+            // "did the effect appear".
+            int genStart = NoiseTextureFactory.Generations;
+            yield return new WaitForSeconds(2.0f);
+            int genEnd = NoiseTextureFactory.Generations;
+            Row("REGEN-IDLE", (genEnd - genStart) == 0 ? "PASS" : "FAIL",
+                $"texture sets built during 2s of steady playback = {genEnd - genStart} (expect 0)");
 
             // Sorting probe: report the range the scene actually uses, so depth mapping can
             // be checked against reality rather than an assumption.

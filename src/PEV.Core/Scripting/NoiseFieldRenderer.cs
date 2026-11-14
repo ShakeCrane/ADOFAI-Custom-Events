@@ -42,7 +42,16 @@ namespace PEV.Scripting
             public Placement.Frame World;
             public NoiseFieldShape Shape;
             public float Feather;
-            public Color Tint;
+            // The reference effect composes three layers from one mask: a translucent
+            // fill, an opaque edge traced around it, and sparse spark grains. Keeping them
+            // separate is what makes the region read as a cut-out rather than a smear.
+            public Color FillColor;
+            public Color EdgeColor;
+            public Color SparkColor;
+            public float FillOpacity = 0.35f;
+            public float EdgeOpacity = 1f;
+            public float SparkOpacity = 1f;
+            public float Displace;
             public float Brightness;
             public float Saturation;
             public float SampleRate;
@@ -97,9 +106,13 @@ namespace PEV.Scripting
             foreach (var kv in Layers)
             {
                 var t = kv.Value.GameObject != null ? kv.Value.GameObject.transform : null;
-                sb.Append(kv.Key).Append('=')
-                  .Append(t != null ? $"{t.localScale.x:F1}x{t.localScale.y:F1}" : "gone")
-                  .Append("; ");
+                string dims = "gone";
+                if (kv.Value.Renderer != null && kv.Value.Renderer.sprite != null)
+                {
+                    var b = kv.Value.Renderer.bounds.size;
+                    dims = $"{b.x:F1}x{b.y:F1}";
+                }
+                sb.Append(kv.Key).Append('=').Append(dims).Append("; ");
             }
             return sb.ToString();
         }
@@ -245,7 +258,14 @@ namespace PEV.Scripting
             entry.World = frame;
             entry.Shape = ParseEnum(args, "shape", NoiseFieldShape.Rect);
             entry.Feather = Mathf.Max(0f, ParseFloat(args, "feather", 0f));
-            entry.Tint = ParseColor(args, "color", new Color(1f, 0.125f, 0.125f));
+            var baseColor = ParseColor(args, "color", new Color(1f, 0.12f, 0.12f));
+            entry.FillColor = baseColor;
+            entry.EdgeColor = ParseColor(args, "edgeColor", baseColor);
+            entry.SparkColor = ParseColor(args, "sparkColor", baseColor);
+            entry.FillOpacity = Mathf.Clamp01(ParseFloat(args, "fillOpacity", 0.35f));
+            entry.EdgeOpacity = Mathf.Clamp01(ParseFloat(args, "edgeOpacity", 1f));
+            entry.SparkOpacity = Mathf.Clamp01(ParseFloat(args, "sparkOpacity", 1f));
+            entry.Displace = Mathf.Clamp01(ParseFloat(args, "displace", 0f));
             entry.Brightness = Mathf.Max(0f, ParseFloat(args, "brightness", 1f));
             entry.Saturation = Mathf.Max(0f, ParseFloat(args, "saturation", 1f));
             entry.SampleRate = Mathf.Max(0.1f, ParseFloat(args, "sampleRate", 1f));
@@ -361,7 +381,11 @@ namespace PEV.Scripting
                     Half = new Vector2(m.World.Size.x * 0.5f * sizeFactor, m.World.Size.y * 0.5f * sizeFactor),
                     Rotation = m.World.Rotation + m.OverrideRotation,
                     Feather = m.Feather,
-                    Circle = m.Shape == NoiseFieldShape.Circle
+                    Circle = m.Shape == NoiseFieldShape.Circle,
+                    FillColor = m.FillColor,
+                    EdgeColor = m.EdgeColor,
+                    FillOpacity = m.FillOpacity * Mathf.Clamp01(m.OverrideAlpha),
+                    EdgeOpacity = m.EdgeOpacity * Mathf.Clamp01(m.OverrideAlpha)
                 };
             }
 
@@ -370,17 +394,27 @@ namespace PEV.Scripting
                 WidthWorld = size.x,
                 HeightWorld = size.y,
                 Pieces = pieces,
-                Tint = lead.Tint,
+                FillColor = lead.FillColor,
+                EdgeColor = lead.EdgeColor,
+                SparkColor = lead.SparkColor,
+                FillOpacity = lead.FillOpacity,
+                EdgeOpacity = lead.EdgeOpacity,
+                SparkOpacity = lead.SparkOpacity,
+                Displace = lead.Displace,
                 Brightness = lead.Brightness,
                 Saturation = lead.Saturation,
                 SampleRate = lead.SampleRate,
                 LineOpacity = lead.LineOpacity,
                 FrameCount = lead.FrameCount,
                 Seed = StableSeed(lead.Scope),
+                // The cluster box is wider than the lead field, so scale the hint by area
+                // ratio to keep grains at a constant on-screen size.
                 TargetPixelWidth = lead.PxWidthHint * (size.x / Mathf.Max(1e-4f, lead.World.Size.x))
             };
 
-            string structureKey = StructureKey(request);
+            // One key, owned by the factory: a second copy in the renderer is how a
+            // structure that never changes still manages to regenerate every frame.
+            string structureKey = NoiseTextureFactory.Key(request);
 
             if (!Layers.TryGetValue(key, out var layer) || layer.GameObject == null)
             {
@@ -409,7 +443,14 @@ namespace PEV.Scripting
             if (idx < 0) idx += layer.FrameCount;
 
             layer.GameObject.transform.position = new Vector3(centre.x, centre.y, 0f);
-            layer.GameObject.transform.localScale = new Vector3(size.x, size.y, 1f);
+            // Divide by the sprite's natural world size: the sprite is 100 PPU, so its
+            // quad is already texW/100 units wide. Multiplying by size directly rendered
+            // the layer about ten times too large and flooded the screen with grain.
+            Vector2 natural = layer.Frames.NaturalSize;
+            layer.GameObject.transform.localScale = new Vector3(
+                size.x / Mathf.Max(1e-4f, natural.x),
+                size.y / Mathf.Max(1e-4f, natural.y),
+                1f);
             layer.GameObject.transform.rotation = Quaternion.identity;
 
             layer.Renderer.sprite = layer.Frames.Sprites[idx];
@@ -467,26 +508,6 @@ namespace PEV.Scripting
                     if (p.y > max.y) max.y = p.y;
                 }
             }
-        }
-
-        private static string StructureKey(NoiseTextureFactory.Request r)
-        {
-            var sb = new StringBuilder(160);
-            sb.Append(F(r.WidthWorld)).Append('|').Append(F(r.HeightWorld)).Append('|')
-              .Append(F(r.Tint.r)).Append(',').Append(F(r.Tint.g)).Append(',').Append(F(r.Tint.b)).Append('|')
-              .Append(F(r.Brightness)).Append('|').Append(F(r.Saturation)).Append('|')
-              .Append(F(r.SampleRate)).Append('|').Append(F(r.LineOpacity)).Append('|')
-              .Append(r.FrameCount).Append('|').Append(r.Seed).Append('|')
-              .Append(Mathf.RoundToInt(r.TargetPixelWidth)).Append('|');
-            if (r.Pieces != null)
-            {
-                foreach (var p in r.Pieces)
-                    sb.Append(F(p.Offset.x)).Append(',').Append(F(p.Offset.y)).Append(',')
-                      .Append(F(p.Half.x)).Append(',').Append(F(p.Half.y)).Append(',')
-                      .Append(F(p.Rotation)).Append(',').Append(F(p.Feather)).Append(',')
-                      .Append(p.Circle ? 'c' : 'r').Append(';');
-            }
-            return sb.ToString();
         }
 
         private static string F(float v) => v.ToString("F3", CultureInfo.InvariantCulture);

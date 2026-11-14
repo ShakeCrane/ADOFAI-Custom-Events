@@ -231,6 +231,56 @@
       "order": 23
     },
     {
+      "name": "fillOpacity",
+      "type": "Float",
+      "default": 0.35,
+      "min": 0,
+      "max": 1,
+      "group": "Layers",
+      "order": 23
+    },
+    {
+      "name": "edgeColor",
+      "type": "Color",
+      "default": "ff2a2a",
+      "group": "Layers",
+      "order": 24
+    },
+    {
+      "name": "edgeOpacity",
+      "type": "Float",
+      "default": 1,
+      "min": 0,
+      "max": 1,
+      "group": "Layers",
+      "order": 25
+    },
+    {
+      "name": "sparkColor",
+      "type": "Color",
+      "default": "ff5040",
+      "group": "Layers",
+      "order": 26
+    },
+    {
+      "name": "sparkOpacity",
+      "type": "Float",
+      "default": 1,
+      "min": 0,
+      "max": 3,
+      "group": "Layers",
+      "order": 27
+    },
+    {
+      "name": "displace",
+      "type": "Float",
+      "default": 0.35,
+      "min": 0,
+      "max": 1,
+      "group": "Layers",
+      "order": 28
+    },
+    {
       "name": "feather",
       "type": "Float",
       "default": 0,
