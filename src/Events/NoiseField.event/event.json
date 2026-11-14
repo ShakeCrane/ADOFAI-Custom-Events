@@ -292,6 +292,71 @@
         "shape",
         "Circle"
       ]
+    },
+    {
+      "name": "edgeDistance",
+      "type": "Float",
+      "default": 0.7,
+      "min": 0,
+      "max": 2,
+      "group": "Edge",
+      "order": 30,
+      "label": {
+        "en": "Edge Distance",
+        "zh-CN": "边缘侵蚀距离"
+      }
+    },
+    {
+      "name": "edgeDetail",
+      "type": "Float",
+      "default": 8,
+      "min": 1,
+      "max": 32,
+      "group": "Edge",
+      "order": 31,
+      "label": {
+        "en": "Edge Detail",
+        "zh-CN": "边缘细节密度"
+      }
+    },
+    {
+      "name": "edgeThickness",
+      "type": "Int",
+      "default": 1,
+      "min": 1,
+      "max": 6,
+      "group": "Edge",
+      "order": 32,
+      "label": {
+        "en": "Edge Thickness",
+        "zh-CN": "边框厚度"
+      }
+    },
+    {
+      "name": "edgeMargin",
+      "type": "Float",
+      "default": 0.6,
+      "min": 0,
+      "max": 2,
+      "group": "Edge",
+      "order": 33,
+      "label": {
+        "en": "Fragment Margin",
+        "zh-CN": "碎片留白"
+      }
+    },
+    {
+      "name": "edgeFragment",
+      "type": "Float",
+      "default": 1,
+      "min": 0,
+      "max": 1,
+      "group": "Edge",
+      "order": 34,
+      "label": {
+        "en": "Fragment Amount",
+        "zh-CN": "碎片数量"
+      }
     }
   ]
 }

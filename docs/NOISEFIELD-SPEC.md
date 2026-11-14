@@ -303,7 +303,33 @@ v1 只做 `AddNoiseField`。另外两个在 P2 阶段做。
 | `color` | `Color` | `ff2020` | — | 颗粒主色 |
 | `feather` | `Float` | `0` | — | 边缘羽化宽度，单位：方块 |
 
-### 5.3 枚举定义
+### 5.3 边缘（海岸线形态）
+
+区域边界不是几何轮廓的描边，而是一条**在几何范围附近游走的等值线**：覆盖判定是
+`sdf(x) → 阈值 → 采样滚动噪声 → 是否在阈值以上`，即「随带符号距离滑动的噪声阈值」。
+它决定了「剥离、分离、合并、碎片化」这些拓扑变化——这些是等值线的必然结果，
+用顶点位移做不出来（见 §8.3）。因此下面这组参数调节的是这条等值线的形态，
+不是某一条描边的粗细。
+
+| 参数名 | 类型 | 默认 | 范围 | 说明 |
+|---|---|---|---|---|
+| `edgeDistance` | `Float` | `0.7` | 0–2 | 侵蚀带宽度，按场自身短边的比例。带内是海岸线；越大，缺口越深、内部越容易被啃出洞 |
+| `edgeDetail` | `Float` | `8` | 1–32 | 短边上的噪声特征数。越大，海岸线越细碎、岛和湾越密 |
+| `edgeThickness` | `Int` | `1` | 1–6 | 边框线厚度，单位为遮罩格。`1` 即参考图的单格描边 |
+| `edgeMargin` | `Float` | `0.6` | 0–2 | 几何范围外多留的采样边距（按场短边比例）。碎片能在边界外飘多远就取决于它；0 = 一切都被裁在几何框内 |
+| `edgeFragment` | `Float` | `1` | 0–1 | 场外碎片的存活量。0 时带外完全清空，边界干净但失去「纷飞」 |
+
+`glitchRange`（§5.2）在这套算法下作用于整幅纹理的行位移，与 Phigros 的 `GlitchMap` 同义：
+它是**观感层**的横向切片错位，不参与覆盖判定，因此不会让区域「断开」。
+
+**带宽是按场算的，不是按合并后的包围盒**：同一深度上的一个小场和一个大场合并渲染时，
+各自用自己的短边推 `Band`。否则小场会被大场的带宽整个吞掉，退化成碎片。
+
+**参数只在重建纹理时生效**：这些值参与 `Fingerprint`，改动会重建纹理组（8 帧），
+运行期改它们与改 `noiseScale` 同代价。跟随动画变化的量（位置、透明度、可见性）走
+`fx.fieldMove` / `fx.fieldState`，不要塞进这里。
+
+### 5.4 枚举定义
 
 ```csharp
 namespace PEV.Scripting
@@ -581,27 +607,37 @@ center = basePos
 
 不要用全屏分辨率。原版区域掩膜就是 1/8 分辨率 `[源码文档]`。
 
-```
-目标贴图宽 = clamp(round(区域屏幕像素宽 / blockPixels), 32, 512)
-目标贴图高 = 同上
-blockPixels = 6 / noiseSampleRate      // 采样密度越高，块越小
+实际实现（`NoiseTextureFactory.Generate`）：
+
+```csharp
+int    block   = Mathf.Clamp(Mathf.RoundToInt(GrainPixels / sampleRate), 1, 16); // GrainPixels = 1.5
+int    pxW     = ResolutionBucket(req.TargetPixelWidth);                          // 96 px 一档
+int    cellsX  = Mathf.Clamp(Mathf.RoundToInt(pxW / (float)block), MinCells, MaxSide / block);
+int    texW    = cellsX * block;                                                  // MinCells = 8, MaxSide = 1024
+while (cellsX * block * cellsY * block * frames > MaxTexelsPerSet && frames > 2) frames /= 2;
 ```
 
-`区域屏幕像素宽` = `w_world / (2*halfH) * Screen.height`（正交相机下横向同理）。
+两点必须保持：
+
+- **`TargetPixelWidth` 按 96 px 分档**。分辨率随场的屏幕尺寸连续变化时，镜头每缩放一点点就会
+  换一个新指纹，纹理被反复重建——`REGEN-IDLE` 断言正是抓这个的。分档后只有跨过档位才重建。
+- **texel 总量有上限**（`MaxTexelsPerSet = 2.6M`），超了就减帧数而不是减分辨率。
+  减分辨率会把颗粒和海岸线一起糊掉；减帧数只是翻页慢一点。
 
 块状（低分辨率 + 双线性放大）**是特征不是缺陷**——原版的颗粒就是能数得清方格的。
 
 ### 8.2 生成算法
 
-对每一帧 `k ∈ [0, K)`、每个 texel `(x, y)`：
+对每一帧 `k ∈ [0, K)`、每个 cell `(cx, cy)`：
 
 ```
-1. 量化到 cell：(cx, cy) = (x / cellSize, y / cellSize)
-2. 确定性哈希 seed = Hash(cx, cy, k, instanceSeed)
-3. 该 cell 是否点亮：r < density（density 由 noiseBrightness 与 noiseSaturation 共同决定）
+1. 确定性哈希 seed = Hash(cx, cy, k, instanceSeed)
+2. 覆盖判定 = 阈值化的滚动噪声（§8.3）；未覆盖的 cell 整块透明
+3. 覆盖时该 cell 是否点亮：r < density
 4. 点亮时亮度 = 0.35 + 0.65 * Hash2(seed)   // 避免全同亮度
-5. 颜色 = tint * 亮度，alpha = 遮罩(x,y) * 亮度
+5. 颜色 = tint * 亮度，alpha = 覆盖 * 亮度
 6. 横向噪线：若该行 r < lineOpacity，整行 alpha += lineOpacity * 行因子
+7. 水平切片：该行整体位移 rowShift[y]（§8.3.5）
 ```
 
 哈希用整数运算，不要用 `UnityEngine.Random`（不可控、有全局状态）：
@@ -615,50 +651,114 @@ static uint Hash(uint a, uint b, uint c)
 }
 ```
 
+**覆盖判定要独立于颗粒点亮**：颗粒是「这个 cell 有多亮」，覆盖是「这个 cell 在不在区域里」。
+早期版本把两者合在一起（未覆盖时就当成暗颗粒），结果碎片看起来像脏点而不是碎片——
+碎片需要 1 cell 宽的**边框线**才读得出来是碎片（§8.3.3）。
+
 ### 8.3 遮罩
 
-遮罩在生成时逐 texel 算。`u,v ∈ [0,1]` 是 texel 在贴图内的归一化坐标。
+> **本节在 P-N1 实现期间被整体替换。** 原设计是「到几何边的距离 + 羽化斜坡」，那是**几何轮廓的软边**，
+> 无论怎么调都不可能产生参考视频里那种「缺口咬进去、岛被切下来、碎片飘在外面」的形态——
+> 那些是**等值线的拓扑变化**，顶点位移或距离斜坡在数学上做不到。真正的机制是从 Phira 的
+> `noise_area`（`ActiveBlock` shader + `render.rs::mask_polygons`）读出来的：**随着带符号距离滑动的噪声阈值**。
+
+#### 8.3.1 判定式
+
+对每个采样点，先求它到整个场（同深度的并集，`pieces` 取 `min` 距离）的带符号距离 `d`，
+再把它归一化到 `t ∈ [-1, 1]`，然后用 `t` **滑动**噪声阈值：
 
 ```csharp
-float Mask(float u, float v)
+float t   = Mathf.Clamp(-d / pieceBand, -1f, 1f);        // d<0 在内部，d>0 在外部
+float n   = Fbm(wx * noiseFreq + drift, wy * noiseFreq, LoopPeriod, kseed);
+float thr = 0.5f - (t > 0f ? swingIn : swingOut) * t;
+bool  cover = n > thr;
+```
+
+三个区段的含义，这也正是观感来源：
+
+| 位置 | `t` | `thr` | 结果 |
+|---|---|---|---|
+| 深内部 | `→ +1` | `0.5 − swingIn`（≈0.05） | 几乎全实心，只有极少数噪声低谷漏光 |
+| 海岸带 | `≈ 0` | `0.5`（噪声中位数） | 噪声的等值线，走势即海岸线；**岛、湾、合并、分离都发生在这里** |
+| 带外 | `→ −1` | `0.5 + swingOut`（≈0.82） | 只有噪声峰值存活 → 飘在外面的碎片 |
+
+`swingIn = 0.45`，`swingOut = 0.32 * edgeFragment`。
+
+**`pieceBand` 是每个场自己的**：`displace * edgeDistance * min(场宽, 场高)`。
+用合并后包围盒的短边是错的——同深度上一个小场挨着一个大场时，小场会被大场的带宽整个吃掉，
+只剩下碎片。因此 `Piece` 带自己的 `Band`，`SignedDistance` 返回最近使用者的带宽。
+
+#### 8.3.2 周期性噪声
+
+`Fbm` 是一层 `PeriodicNoise` 加一层半幅倍频，格点索引按 `LoopPeriod = 8` 取模：
+
+```csharp
+private const int LoopPeriod = 8;
+
+private static float Fbm(float x, float y, int period, uint seed)
 {
-    if (shape == Rect)
-    {
-        // 到最近竖边/横边的世界距离
-        float dx = Mathf.Min(u, 1f - u) * widthWorld;
-        float dy = Mathf.Min(v, 1f - v) * heightWorld;
-        float d  = Mathf.Min(dx, dy);
-
-        if (feather <= 0f) return 1f;                 // 硬边；边界 texel 也算内
-        return Mathf.Clamp01(d / feather);
-    }
-    else // Circle：按椭圆归一化，半径以世界单位给出
-    {
-        float nx = (u - 0.5f) * widthWorld;           // 相对中心的偏移，世界单位
-        float ny = (v - 0.5f) * heightWorld;
-        float d  = Mathf.Sqrt(nx * nx + ny * ny);     // 到中心的距离
-
-        if (feather <= 0f) return d <= radiusWorld ? 1f : 0f;
-        return Mathf.Clamp01((radiusWorld - d) / feather);
-    }
+    float n = PeriodicNoise(x, y, period, seed);
+    n += 0.5f * PeriodicNoise(x * 2f, y * 2f, period * 2, seed + 977u);
+    return n / 1.5f;
 }
 ```
 
-`widthWorld` / `heightWorld` 是 quad 的**世界尺寸**（`size * tileSize` 或 `2 * radius * tileSize`）。`radiusWorld` 是 `radius * tileSize`。
-
-**边界情况**：`size` 或 `radius` ≤ 0 时不要除零——直接返回一张全透明贴图，记一次日志，不抛异常。作者填 0 是误操作，不是程序错误。
-
-圆形用椭圆的归一化距离：
+格点取模保证 `x` 走满 8 格后噪声回到原值。于是**每一帧把采样坐标沿 x 平移 `LoopPeriod / frames`，
+第 K 帧恰好接回第 0 帧**——8 帧循环是无缝的，翻页看不出跳变：
 
 ```csharp
-float nx = (u - 0.5f) * 2f, ny = (v - 0.5f) * 2f;
-float d  = Mathf.Sqrt(nx*nx + ny*ny);          // 1.0 = 贴图边缘
-float edge = radiusWorld / (widthWorld * 0.5f); // 半径占半宽的比例
-return feather <= 0 ? (d < edge ? 1 : 0)
-                    : Mathf.Clamp01((edge - d) * (widthWorld*0.5f) / feather);
+float drift = k * (LoopPeriod / (float)frames);
 ```
 
-**边界情况**：`size` 或 `radius` 为 0 时不要生成除零；直接返回空纹理并记一次日志。
+这是「滚动」而不是「换一批随机噪声」，也解释了为什么参考里碎片的生灭是连续的。
+
+#### 8.3.3 两级栅格与阶梯边
+
+参考图的海岸线是**明显的阶梯状**（10–14 屏幕像素一级），不是光滑曲线。实现上分两级：
+
+1. **粗格**：`maskDiv = 11 / block`（每个粗格覆盖约 11 个纹理块），每个粗格取**一格样本**判定覆盖；
+2. **细格**：每格纹理就近继承所属粗格的判定（最近格继承，不做插值）。
+
+覆盖边界因此是沿粗格网格走的直角台阶，正是要的观感。但**描边必须在细格上勾勒**：
+
+```csharp
+int thickness = Mathf.Clamp(req.EdgeThickness, 1, 6);
+// 对一个已覆盖的细格，检查它到「未覆盖」的距离是否 < thickness（Chebyshev 邻域）
+for (int oy = -thickness + 1; oy < thickness && !nearOutside; oy++)
+for (int ox = -thickness + 1; ox < thickness; ox++)
+    if (!inside[ny * cellsX + nx]) { nearOutside = true; break; }
+```
+
+若在粗格上勾勒，线宽会跟着粗格一起变成十几个像素；在细格上勾勒，轮廓台阶粗、
+**线本身细**——参考图正是这样。越界的细格算作「外部」，所以贴边处的线不会断。
+
+#### 8.3.4 边距（碎片）
+
+几何框外的碎片必须画得出来，否则它们会被 quad 直接裁掉。`edgeMargin` 把采样域和 quad
+在四边各撑开 `margin = displace * edgeMargin * min(场宽, 场高)`：
+
+```csharp
+float totalW = req.WidthWorld  + margin * 2f;
+float totalH = req.HeightWorld + margin * 2f;
+...
+layer.GameObject.transform.localScale = new Vector3(
+    (size.x + margin * 2f) / Mathf.Max(1e-4f, natural.x),
+    (size.y + margin * 2f) / Mathf.Max(1e-4f, natural.y), 1f);
+```
+
+**区域本身的世界坐标不变**：只有贴图与 quad 变大，几何位置仍按 `size` 计算。这一点容易写错，
+写成 `size + margin` 会让整个场随边距漂移。
+
+#### 8.3.5 水平切片（`glitchRange`）
+
+每帧为每一行生成一个位移量，命中概率随 `glitchRange` 上升，位移量环绕（`sx %= texW`）以保持无缝：
+
+```csharp
+int span = Mathf.Max(1, Mathf.RoundToInt(glitch * texW * 0.18f));
+rowShift[y] = Mathf.RoundToInt(hashFrac * 2f - 1f) * span;
+```
+
+这是**观感层**，在像素写入时应用，不影响覆盖判定，所以不会让场「断开」或让碎片重新连上。
 
 ### 8.4 上传
 
@@ -714,9 +814,30 @@ if (sh != null) mat = new Material(sh);
 
 ### 9.3 水平切片（`glitchRange`）
 
-原版 `GlitchSettings` 有「水平切片与 RGB 偏移」`[源码文档]`。不用 shader 也能做：**额外生成 2–3 个窄条 SpriteRenderer，每帧给它们不同的 x 偏移和 alpha**，宽度为区域的 100%，高度随机 2–8 像素当量。
+原版 `GlitchSettings` 有「水平切片与 RGB 偏移」`[源码文档]`。
 
-v1 **不做**。等主体视觉调到位后再看差值多少。
+**已实现，不需要额外 SpriteRenderer**：行位移在生成纹理时直接烘进像素，与覆盖判定分开。
+每帧（8 帧循环里的每一帧）逐行抽一个位移量：
+
+```csharp
+int span = Mathf.Max(1, Mathf.RoundToInt(glitch * texW * 0.18f));
+rowShift[y] = Mathf.RoundToInt(hashFrac * 2f - 1f) * span;   // 命中概率 ∝ glitch
+```
+
+写像素时按行环绕，保证贴图仍然无缝：
+
+```csharp
+int sx = x + shift;
+if (shift != 0) { sx %= texW; if (sx < 0) sx += texW; }
+```
+
+之所以做成生成期而不是渲染期：渲染期只能位移整张 quad 或其 UV，位移不到「某些行」；
+按行切 Sprite 又会把 8 帧 × 行数变成上百个对象。烘进纹理的代价是零——总 texel 预算不变。
+
+RGB 偏移未做：需要单独的通道副本，收益小于成本。
+
+**注意**：`glitchRange > 0` 会让纹理指纹变化，因此也参与重建判定，和改 `noiseScale` 同代价。
+它不应该被逐帧驱动（那等于每帧重建）；脚本里写常量，或在事件级参数里改。
 
 ---
 
@@ -759,7 +880,22 @@ function create(ctx, params) {
       sampleRate: params.noiseSampleRate,
       lineOpacity: params.lineOpacity,
       tiling: params.noiseScale,
-      color: params.color
+      color: params.color,
+
+      // 层与海岸线参数。宿主只读调用参数，不读 manifest：漏传一项就静默换成
+      // 宿主默认值，最典型的表现是 displace 丢失后整个场变成一块平直矩形。
+      fillOpacity: params.fillOpacity,
+      edgeColor: params.edgeColor,
+      edgeOpacity: params.edgeOpacity,
+      sparkColor: params.sparkColor,
+      sparkOpacity: params.sparkOpacity,
+      displace: params.displace,
+      edgeDistance: params.edgeDistance,
+      edgeDetail: params.edgeDetail,
+      edgeThickness: params.edgeThickness,
+      edgeMargin: params.edgeMargin,
+      edgeFragment: params.edgeFragment,
+      glitch: params.glitchRange
     });
   }
 
@@ -830,10 +966,29 @@ function create(ctx, params) {
     { "name": "noiseScale",       "type": "Vector2", "default": [1, 1] },
     { "name": "glitchRange",      "type": "Float",   "default": 0,    "min": 0, "max": 1 },
     { "name": "color",            "type": "Color",   "default": "ff2020" },
-    { "name": "feather",          "type": "Float",   "default": 0,    "min": 0, "max": 8 }
+    { "name": "feather",          "type": "Float",   "default": 0,    "min": 0, "max": 8 },
+
+    { "name": "fillOpacity",      "type": "Float",   "default": 0.35, "min": 0, "max": 1, "group": "Layers" },
+    { "name": "edgeColor",        "type": "Color",   "default": "ff2a2a", "group": "Layers" },
+    { "name": "edgeOpacity",      "type": "Float",   "default": 1,    "min": 0, "max": 1, "group": "Layers" },
+    { "name": "sparkColor",       "type": "Color",   "default": "ff5040", "group": "Layers" },
+    { "name": "sparkOpacity",     "type": "Float",   "default": 1,    "min": 0, "max": 3, "group": "Layers" },
+    { "name": "displace",         "type": "Float",   "default": 0.35, "min": 0, "max": 1, "group": "Layers" },
+
+    { "name": "edgeDistance",     "type": "Float",   "default": 0.7,  "min": 0, "max": 2,   "group": "Edge" },
+    { "name": "edgeDetail",       "type": "Float",   "default": 8,    "min": 1, "max": 32,  "group": "Edge" },
+    { "name": "edgeThickness",    "type": "Int",     "default": 1,    "min": 1, "max": 6,   "group": "Edge" },
+    { "name": "edgeMargin",       "type": "Float",   "default": 0.6,  "min": 0, "max": 2,   "group": "Edge" },
+    { "name": "edgeFragment",     "type": "Float",   "default": 1,    "min": 0, "max": 1,   "group": "Edge" }
   ]
 }
 ```
+
+实际包里的 `event.json` 每项还带 `group`、`order`、`label`（中英）。这里省略以保持可读。
+
+**`displace` 是总开关。** 它为 0 时海岸带宽度为 0，整个场退化成一块边缘平直的纯几何——这不是 bug，
+是「关掉噪域形态」的语义。但它必须**每次调用都传下去**：宿主读的是调用参数而不是 manifest，
+少传一个就静默换成宿主默认值。
 
 **注意两处**：
 
@@ -929,6 +1084,9 @@ function create(ctx, params) {
 | V-N12 | 视觉可见 | 截图里能看到，且不在 UI 之下 |
 | V-N13 | 尺寸正确 | 4 方块宽的区域恰好覆盖 4 格轨道宽度 |
 | V-N14 | 长时运行 | 连续播放 3 分钟，帧率无下降，纹理数不增长 |
+| V-N15 | 空闲不重建 | 稳定播放 2 秒内纹理组重建次数 = 0（分辨率分档与指纹稳定） |
+| V-N16 | 边缘参数生效 | 改 `edgeMargin` 后合成四边形的世界尺寸随之增大；改 `edgeDistance` 后场从实心变为带缺口的形态 |
+| V-N17 | 碎片不被裁 | `edgeMargin > 0` 时，几何框外能看到孤立的噪域碎块 |
 
 ---
 

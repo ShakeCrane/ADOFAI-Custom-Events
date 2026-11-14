@@ -48,7 +48,26 @@ function create(ctx, params) {
     evolveSpeed: num(params.noiseEvolveSpeed, 12),
     moveSpeed: vec(params.noiseMoveSpeed, 0.15, 0),
     tiling: vec(params.noiseScale, 1, 1),
-    color: params.color || "ff2020"
+    color: params.color || "ff2020",
+
+    // Layer parameters. These must be forwarded or the host falls back to its own
+    // defaults — with displace at 0 the coastline band collapses and the field renders as
+    // plain geometry, whatever the texture code does.
+    fillOpacity: num(params.fillOpacity, 0.35),
+    edgeColor: params.edgeColor || "ff2a2a",
+    edgeOpacity: num(params.edgeOpacity, 1),
+    sparkColor: params.sparkColor || "ff5040",
+    sparkOpacity: num(params.sparkOpacity, 1),
+    displace: num(params.displace, 0.35),
+
+    // Coastline controls. Same story as above: anything not forwarded is replaced by the
+    // host's default, so these four have to travel with every call.
+    edgeDistance: num(params.edgeDistance, 0.7),
+    edgeDetail: num(params.edgeDetail, 8),
+    edgeThickness: Math.max(1, Math.round(num(params.edgeThickness, 1))),
+    edgeMargin: num(params.edgeMargin, 0.6),
+    edgeFragment: num(params.edgeFragment, 1),
+    glitch: num(params.glitchRange, 0)
   };
 
   var alive = false;
@@ -84,7 +103,23 @@ function create(ctx, params) {
       sampleRate: p.sampleRate,
       lineOpacity: p.lineOpacity,
       tiling: p.tiling,
-      color: p.color
+      color: p.color,
+
+      // Layer parameters. The host reads these from the call, not from the manifest, so
+      // omitting them here silently renders with the host defaults.
+      fillOpacity: p.fillOpacity,
+      edgeColor: p.edgeColor,
+      edgeOpacity: p.edgeOpacity,
+      sparkColor: p.sparkColor,
+      sparkOpacity: p.sparkOpacity,
+      displace: p.displace,
+
+      edgeDistance: p.edgeDistance,
+      edgeDetail: p.edgeDetail,
+      edgeThickness: p.edgeThickness,
+      edgeMargin: p.edgeMargin,
+      edgeFragment: p.edgeFragment,
+      glitch: p.glitch
     });
   }
 

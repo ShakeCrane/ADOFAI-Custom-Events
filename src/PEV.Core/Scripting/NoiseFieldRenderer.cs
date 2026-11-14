@@ -52,10 +52,20 @@ namespace PEV.Scripting
             public float EdgeOpacity = 1f;
             public float SparkOpacity = 1f;
             public float Displace;
+            public float Glitch;
             public float Brightness;
             public float Saturation;
             public float SampleRate;
             public float LineOpacity;
+
+            // Author-facing coastline controls. Defaults match the reference's calibration;
+            // events override them per instance.
+            public float EdgeDistance = DefaultEdgeDistance;
+            public float EdgeDetail = DefaultEdgeDetail;
+            public int EdgeThickness = DefaultEdgeThickness;
+            public float EdgeMargin = DefaultEdgeMargin;
+            public float EdgeFragment = DefaultEdgeFragment;
+
             public int FrameCount;
             public float PxWidthHint;
             public Vector2 Tiling = Vector2.one;
@@ -87,6 +97,17 @@ namespace PEV.Scripting
 
         private static readonly Dictionary<string, Entry> Live =
             new Dictionary<string, Entry>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Defaults for the author-facing edge controls, used when an event does not send
+        /// them. Calibrated offline against reference frames: band 0.7 keeps the interior
+        /// ~99% solid while biting bays into the border and leaving flakes outside.
+        /// </summary>
+        public const float DefaultEdgeDistance = 0.7f;
+        public const float DefaultEdgeDetail = 8f;
+        public const int DefaultEdgeThickness = 1;
+        public const float DefaultEdgeMargin = 0.6f;
+        public const float DefaultEdgeFragment = 1f;
 
         /// <summary>
         /// One quad per overlapping cluster of same-depth fields, keyed "depth#cluster".
@@ -266,10 +287,18 @@ namespace PEV.Scripting
             entry.EdgeOpacity = Mathf.Clamp01(ParseFloat(args, "edgeOpacity", 1f));
             entry.SparkOpacity = Mathf.Clamp01(ParseFloat(args, "sparkOpacity", 1f));
             entry.Displace = Mathf.Clamp01(ParseFloat(args, "displace", 0f));
+            entry.Glitch = Mathf.Clamp01(ParseFloat(args, "glitch", 0f));
             entry.Brightness = Mathf.Max(0f, ParseFloat(args, "brightness", 1f));
             entry.Saturation = Mathf.Max(0f, ParseFloat(args, "saturation", 1f));
             entry.SampleRate = Mathf.Max(0.1f, ParseFloat(args, "sampleRate", 1f));
             entry.LineOpacity = Mathf.Clamp01(ParseFloat(args, "lineOpacity", 0.35f));
+
+            entry.EdgeDistance = Mathf.Clamp(ParseFloat(args, "edgeDistance", DefaultEdgeDistance), 0f, 2f);
+            entry.EdgeDetail = Mathf.Clamp(ParseFloat(args, "edgeDetail", DefaultEdgeDetail), 1f, 32f);
+            entry.EdgeThickness = Mathf.Clamp(ParseInt(args, "edgeThickness", DefaultEdgeThickness), 1, 6);
+            entry.EdgeMargin = Mathf.Clamp(ParseFloat(args, "edgeMargin", DefaultEdgeMargin), 0f, 2f);
+            entry.EdgeFragment = Mathf.Clamp01(ParseFloat(args, "edgeFragment", DefaultEdgeFragment));
+
             entry.FrameCount = Mathf.Clamp(ParseInt(args, "frameCount", 8), 2, 32);
             entry.Visible = ParseBool(args, "visible", true);
             entry.Opacity = Mathf.Clamp01(ParseFloat(args, "opacity", 1f));
@@ -382,6 +411,11 @@ namespace PEV.Scripting
                     Rotation = m.World.Rotation + m.OverrideRotation,
                     Feather = m.Feather,
                     Circle = m.Shape == NoiseFieldShape.Circle,
+                    // Coastline band from this field's own size, so a small field inside a
+                    // cluster with a big one keeps its own shape instead of being eroded by
+                    // the neighbour's band.
+                    Band = m.Displace * m.EdgeDistance * Mathf.Min(
+                        m.World.Size.x * sizeFactor, m.World.Size.y * sizeFactor),
                     FillColor = m.FillColor,
                     EdgeColor = m.EdgeColor,
                     FillOpacity = m.FillOpacity * Mathf.Clamp01(m.OverrideAlpha),
@@ -389,10 +423,17 @@ namespace PEV.Scripting
                 };
             }
 
+            // The quad is grown beyond the geometry so detached flakes have somewhere to
+            // drift; the coastline itself is unchanged. Margin scales with the field's own
+            // short side, and follows the same displace parameter as the coastline band —
+            // with no displacement there is no coast, so no need for the extra area.
+            float margin = lead.Displace * lead.EdgeMargin * Mathf.Min(size.x, size.y);
+
             var request = new NoiseTextureFactory.Request
             {
                 WidthWorld = size.x,
                 HeightWorld = size.y,
+                Margin = margin,
                 Pieces = pieces,
                 FillColor = lead.FillColor,
                 EdgeColor = lead.EdgeColor,
@@ -401,6 +442,12 @@ namespace PEV.Scripting
                 EdgeOpacity = lead.EdgeOpacity,
                 SparkOpacity = lead.SparkOpacity,
                 Displace = lead.Displace,
+                Glitch = lead.Glitch,
+                EdgeDistance = lead.EdgeDistance,
+                EdgeDetail = lead.EdgeDetail,
+                EdgeThickness = lead.EdgeThickness,
+                EdgeMargin = lead.EdgeMargin,
+                EdgeFragment = lead.EdgeFragment,
                 Brightness = lead.Brightness,
                 Saturation = lead.Saturation,
                 SampleRate = lead.SampleRate,
@@ -446,10 +493,12 @@ namespace PEV.Scripting
             // Divide by the sprite's natural world size: the sprite is 100 PPU, so its
             // quad is already texW/100 units wide. Multiplying by size directly rendered
             // the layer about ten times too large and flooded the screen with grain.
+            // The texture now also covers the margin on each side, so the quad spans the
+            // geometry box plus that margin — the region itself stays exactly `size`.
             Vector2 natural = layer.Frames.NaturalSize;
             layer.GameObject.transform.localScale = new Vector3(
-                size.x / Mathf.Max(1e-4f, natural.x),
-                size.y / Mathf.Max(1e-4f, natural.y),
+                (size.x + margin * 2f) / Mathf.Max(1e-4f, natural.x),
+                (size.y + margin * 2f) / Mathf.Max(1e-4f, natural.y),
                 1f);
             layer.GameObject.transform.rotation = Quaternion.identity;
 
