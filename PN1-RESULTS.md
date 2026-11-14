@@ -14,6 +14,7 @@
 | 事件注册与参数 | **PASS**：`pev.noise-field v1.0.0 (25 params)`，5 个事件类型发布 |
 | 砖块徽标 | **PASS**：3/3 格都有 `EventIndicator` |
 | 属性分组 | **PASS**：`useGroups=True`，tab = Geometry, Appearance, Noise |
+| 条件显示 | **PASS**：`size` 只在 `shape=Rect`、`radius`/`feather` 只在 `Circle` 时出现 |
 | 编辑器内实时预览 | **PASS**：按播放前就有 3 个场；改参数后下一帧生效 |
 | 三实例同时存活 | **PASS**：`live=3` |
 | 同深度并集 | **PASS**：3 个场 → 2 个 quad（floor 4 与 floor 8 同为 depth 2） |
@@ -21,6 +22,23 @@
 | **UV 偏移是否生效** | **PASS**：`mainTextureOffset` 在 `Sprites/Default` 上确实驱动滚动 |
 | 退出清理 | **PASS**：两轮 `live=0, texSets=0` |
 | 视觉可见 | **PASS**：截图见 `docs/images/pn1-play.png`、`pn1-editor.png` |
+| 几何换算（纯函数断言） | **PASS**：9/9，见下表 |
+
+### 几何断言明细
+
+`Placement.Compute` 是纯函数，锚点方向这类最容易写反的东西可以精确断言，不必靠截图：
+
+| 断言 | 期望 | 实测 |
+|---|---|---|
+| Center 锚点 | 中心在基准点 | `(0,0)` |
+| TopLeft 锚点 | 中心在右下方 | `(1.00,-1.00)` |
+| BottomRight 锚点 | 中心在左上方 | `(-1.00,1.00)` |
+| 两角互为镜像 | `topLeft = -bottomRight` | **PASS** |
+| `size` 单位 | 4×3 方块 @ tileSize 1.5 = 6×4.5 | `(6.00,4.50)` |
+| `CameraRatio` | 0.5×0.25 @ 18×10 视口 = 9×2.5 | `(9.00,2.50)` |
+| `lockSize` | 2×2 @ 2× 缩放 = 1×1 | `(1.00,1.00)` |
+| Circle | 半径 3 @ tileSize 1 = 直径 6 | `(6.00,6.00)` |
+| 旋转后的锚点偏移 | TopLeft 转 90° = (1,1) | `(1.00,1.00)` |
 
 ### 截图证据
 

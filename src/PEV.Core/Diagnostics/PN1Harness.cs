@@ -84,10 +84,106 @@ namespace PEV.Diagnostics
             }
         }
 
+        /// <summary>
+        /// Placement is a pure function, so the anchor and scaling rules can be asserted
+        /// exactly rather than judged from a screenshot. Anchor signs are the easiest thing
+        /// in the whole feature to get backwards, and a screenshot only shows it at the one
+        /// camera angle the test happened to use.
+        /// </summary>
+        private static void RunGeometryAssertions()
+        {
+            var cameraFrame = new Placement.Input
+            {
+                RelativeTo = NoiseFieldRelativeTo.Tile,
+                Shape = NoiseFieldShape.Rect,
+                Size = new Vector2(2f, 2f),
+                TileSize = 1f,
+                CameraRight = Vector3.right,
+                CameraUp = Vector3.up,
+                HalfWidth = 9f,
+                HalfHeight = 5f,
+                BasePosition = Vector3.zero
+            };
+
+            // Anchor centre: the quad centre sits on the base point.
+            var centre = Input(cameraFrame, NoiseFieldAnchor.Center);
+            Row("GEO-anchor-center", Near(Placement.Compute(centre).Center, Vector3.zero) ? "PASS" : "FAIL",
+                $"{Placement.Compute(centre).Center}");
+
+            // Top-left anchor: the rectangle's top-left corner touches the base point, so its
+            // centre is right and below (Unity y is up, OpenGL-style texture v is up).
+            var topLeft = Placement.Compute(Input(cameraFrame, NoiseFieldAnchor.TopLeft)).Center;
+            Row("GEO-anchor-topleft", Near(topLeft, new Vector3(1f, -1f, 0f)) ? "PASS" : "FAIL",
+                $"expected (1.00,-1.00) got {topLeft}");
+
+            var bottomRight = Placement.Compute(Input(cameraFrame, NoiseFieldAnchor.BottomRight)).Center;
+            Row("GEO-anchor-bottomright", Near(bottomRight, new Vector3(-1f, 1f, 0f)) ? "PASS" : "FAIL",
+                $"expected (-1.00,1.00) got {bottomRight}");
+
+            // Corner anchors must be mirrors of each other across the base point.
+            bool mirrored = Near(topLeft, -bottomRight);
+            Row("GEO-anchor-mirror", mirrored ? "PASS" : "FAIL", $"topleft {topLeft} vs bottomright {bottomRight}");
+
+            // size is in tiles: 4 x 3 at tileSize 1.5 is 6 x 4.5 world units.
+            var sized = Input(cameraFrame, NoiseFieldAnchor.Center);
+            sized.Size = new Vector2(4f, 3f);
+            sized.TileSize = 1.5f;
+            var frame = Placement.Compute(sized);
+            Row("GEO-tiles", Near(frame.Size, new Vector2(6f, 4.5f)) ? "PASS" : "FAIL",
+                $"4x3 tiles at tileSize 1.5 => {frame.Size} (expected 6.0,4.5)");
+
+            // CameraRatio: 1.0 spans the viewport, which is 2*halfW by 2*halfH.
+            var ratio = Input(cameraFrame, NoiseFieldAnchor.Center);
+            ratio.RelativeTo = NoiseFieldRelativeTo.CameraRatio;
+            ratio.Size = new Vector2(0.5f, 0.25f);
+            var ratioFrame = Placement.Compute(ratio);
+            Row("GEO-ratio", Near(ratioFrame.Size, new Vector2(9f, 2.5f)) ? "PASS" : "FAIL",
+                $"0.5x0.25 of an 18x10 viewport => {ratioFrame.Size} (expected 9.0,2.5)");
+
+            // lockSize cancels zoom against the default ortho size: at orthoSize 2.5 (2x
+            // zoomed in) the world extent halves, keeping the same screen size.
+            var locked = Input(cameraFrame, NoiseFieldAnchor.Center);
+            locked.LockSize = true;
+            locked.HalfHeight = 2.5f;
+            var lockedFrame = Placement.Compute(locked);
+            Row("GEO-locksize", Near(lockedFrame.Size, new Vector2(1f, 1f)) ? "PASS" : "FAIL",
+                $"2x2 tiles at 2x zoom, locked => {lockedFrame.Size} (expected 1.0,1.0)");
+
+            // Circle ignores size and uses the diameter.
+            var circle = Input(cameraFrame, NoiseFieldAnchor.Center);
+            circle.Shape = NoiseFieldShape.Circle;
+            circle.Radius = 3f;
+            circle.TileSize = 1f;
+            var circleFrame = Placement.Compute(circle);
+            Row("GEO-circle", Near(circleFrame.Size, new Vector2(6f, 6f)) ? "PASS" : "FAIL",
+                $"radius 3 at tileSize 1 => {circleFrame.Size} (expected 6.0,6.0)");
+
+            // Rotation must rotate the anchor offset with the rectangle.
+            var rotated = Input(cameraFrame, NoiseFieldAnchor.TopLeft);
+            rotated.Rotation = 90f;
+            var rotatedCentre = Placement.Compute(rotated).Center;
+            Row("GEO-rotation", Near(rotatedCentre, new Vector3(1f, 1f, 0f)) ? "PASS" : "FAIL",
+                $"topleft rotated 90deg => {rotatedCentre} (expected 1.00,1.00)");
+        }
+
+        private static Placement.Input Input(Placement.Input template, NoiseFieldAnchor anchor)
+        {
+            var copy = template;
+            copy.Anchor = anchor;
+            return copy;
+        }
+
+        private static bool Near(Vector2 a, Vector2 b) => Mathf.Abs(a.x - b.x) < 1e-3f && Mathf.Abs(a.y - b.y) < 1e-3f;
+
+        private static bool Near(Vector3 a, Vector3 b) =>
+            Mathf.Abs(a.x - b.x) < 1e-3f && Mathf.Abs(a.y - b.y) < 1e-3f && Mathf.Abs(a.z - b.z) < 1e-3f;
+
         private static IEnumerator Run(scnEditor editor)
         {
             yield return new WaitForSeconds(2f);
             ScriptHost.LogInit = true;
+
+            RunGeometryAssertions();
 
             var manifest = EventRegistry.All.FirstOrDefault(m => m.Id == "pev.noise-field");
             if (manifest == null)
