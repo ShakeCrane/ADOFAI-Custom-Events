@@ -91,6 +91,67 @@ namespace PEV.Diagnostics
         /// 2. the background-warp look needs a grab shader that still exists at runtime.
         /// Both are cheap to measure and expensive to guess wrong.
         /// </summary>
+        /// <summary>
+        /// The background-refraction look needs a grab pass. Phira's active fill samples a
+        /// captured scene texture; without one the fill can only be a flat translucent
+        /// colour. Whether that channel exists is a fact this build cannot assume, so it is
+        /// measured: the shader must be found AND expose a grab-like property. A shader that
+        /// exists but reads nothing is worse than none, because it renders black.
+        /// </summary>
+        private static void ProbeGrabShader()
+        {
+            Shader sh = null;
+            try { sh = Shader.Find("Hidden/BlendModes/VisualDeco/Grab"); } catch { }
+            if (sh == null) { Row("GRAB", "MISSING", "shader not found"); return; }
+
+            Row("GRAB", "FOUND", "instance=" + (sh.isSupported ? "supported" : "UNSUPPORTED"));
+            string[] probes =
+            {
+                "_GrabTexture", "_GrabBlurDistance", "_Distortion", "_Distort",
+                "_MainTex", "_Color", "_Opacity", "_Tile", "RepeatX", "RepeatY"
+            };
+
+            // Property lookup lives on Material, not Shader: the shader object only answers
+            // "is this supported", the exposed uniforms are per-material.
+            try
+            {
+                var mat = new Material(sh);
+                var present = new List<string>();
+                foreach (var p in probes)
+                {
+                    try { if (mat.HasProperty(p)) present.Add(p + "(" + mat.GetTag(p, false) + ")"); }
+                    catch { }
+                }
+                Row("GRAB-PROPS", present.Count.ToString(), string.Join(" ", present));
+                Row("GRAB-MATERIAL", "OK",
+                    "shader=" + mat.shader.name + " pass=" + mat.passCount + " queue=" + mat.renderQueue);
+                UnityEngine.Object.Destroy(mat);
+            }
+            catch (Exception e) { Row("GRAB-MATERIAL", "THREW", e.GetType().Name + ": " + e.Message); }
+
+            // How the game itself drives it: find a live decoration's mesh renderer material.
+            try
+            {
+                var dm = ADOBase.controller != null ? ADOBase.controller.decorationManager : null;
+                var all = dm != null ? dm.allDecorations : null;
+                if (all != null && all.Count > 0)
+                {
+                    var first = all[0] as scrVisualDecoration;
+                    var mr = first != null ? first.meshRenderer : null;
+                    if (mr != null && mr.sharedMaterial != null)
+                    {
+                        var gm = mr.sharedMaterial;
+                        Row("GRAB-LIVE", gm.shader != null ? gm.shader.name : "no-shader",
+                            "tex=" + (gm.HasProperty("_MainTex") && gm.GetTexture("_MainTex") != null ? "yes" : "no")
+                            + " queue=" + gm.renderQueue);
+                    }
+                    else Row("GRAB-LIVE", "NO-MESHRENDERER", "first decoration has no mesh renderer");
+                }
+                else Row("GRAB-LIVE", "NO-DECORATIONS", "");
+            }
+            catch (Exception e) { Row("GRAB-LIVE", "EXCEPTION", e.Message); }
+        }
+
         private static void ProbePlatform()
         {
             string[] shaders =
@@ -105,6 +166,8 @@ namespace PEV.Diagnostics
                 try { sh = Shader.Find(name); } catch { }
                 Row("SHADER", sh != null ? "FOUND" : "MISSING", name);
             }
+
+            ProbeGrabShader();
 
             try
             {

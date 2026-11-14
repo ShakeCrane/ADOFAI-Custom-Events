@@ -67,9 +67,37 @@ namespace PEV.Model
         /// <summary>Where the package came from (zip path or directory). Diagnostics only.</summary>
         public string SourcePath;
 
+        /// <summary>Per-locale display name and description, keyed by SystemLanguage name.</summary>
+        public Dictionary<string, string> Names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string> Descriptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The name to show for <paramref name="locale"/>, which is a SystemLanguage name
+        /// ("ChineseSimplified", "Korean", …). Falls back to English, then to the id, so a
+        /// package that ships only one translation still renders.
+        ///
+        /// Earlier this ignored the argument entirely: the manifest's zh-CN was parsed and
+        /// then thrown away, which is why a Chinese game still showed English names.
+        /// </summary>
         public string LocaleName(string locale)
         {
-            return DisplayName;
+            if (!string.IsNullOrEmpty(locale) && Names.TryGetValue(locale, out var localized)
+                && !string.IsNullOrEmpty(localized))
+                return localized;
+            if (Names.TryGetValue("English", out var en) && !string.IsNullOrEmpty(en))
+                return en;
+            if (!string.IsNullOrEmpty(DisplayName)) return DisplayName;
+            return Id;
+        }
+
+        public string LocaleDescription(string locale)
+        {
+            if (!string.IsNullOrEmpty(locale) && Descriptions.TryGetValue(locale, out var localized)
+                && !string.IsNullOrEmpty(localized))
+                return localized;
+            if (Descriptions.TryGetValue("English", out var en) && !string.IsNullOrEmpty(en))
+                return en;
+            return Description;
         }
 
         public static EventManifest Parse(string json, string sourcePath, out string error)
@@ -89,6 +117,13 @@ namespace PEV.Model
             m.Category = root.Value<string>("category") ?? "VisualFx";
             m.Description = LocalizedValue(root["description"]) ?? "";
             m.DisplayName = LocalizedValue(root["name"]) ?? m.Id;
+
+            // Keep every locale the package ships, keyed by SystemLanguage name. The game
+            // only knows 14 language identifiers and none of them is "zh-CN", so the old
+            // parse kept "en" and silently dropped the rest — a Chinese client showed
+            // English names even though the package had a translation.
+            ReadLocales(root["name"], m.Names);
+            ReadLocales(root["description"], m.Descriptions);
 
             if (string.IsNullOrWhiteSpace(m.Id))
             {
@@ -169,6 +204,63 @@ namespace PEV.Model
             if (token is JObject obj)
             {
                 return obj.Value<string>("en") ?? obj.Properties().FirstOrDefault()?.Value.ToString();
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Collects a manifest's per-locale map into <paramref name="into"/>, translating the
+        /// author-friendly keys into the game's SystemLanguage names.
+        ///
+        /// Authors write "zh-CN" or "en"; the game looks up "ChineseSimplified" or "English".
+        /// Accepting both is the difference between a package that localizes and one that
+        /// silently shows English everywhere.
+        /// </summary>
+        private static void ReadLocales(JToken token, Dictionary<string, string> into)
+        {
+            if (!(token is JObject obj)) return;
+            foreach (var prop in obj.Properties())
+            {
+                string value = prop.Value?.ToString();
+                if (string.IsNullOrEmpty(value)) continue;
+                string key = NormalizeLocale(prop.Name);
+                if (key != null) into[key] = value;
+            }
+        }
+
+        private static string NormalizeLocale(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return null;
+            string s = raw.Replace("_", "-").Trim();
+
+            // Exact SystemLanguage names first: a package may already use them.
+            switch (s)
+            {
+                case "English": case "Korean": case "Japanese":
+                case "ChineseSimplified": case "ChineseTraditional":
+                case "Spanish": case "Portuguese": case "French": case "Polish":
+                case "Romanian": case "Russian": case "Vietnamese":
+                case "Czech": case "German":
+                    return s;
+            }
+
+            // Then the BCP-47 tags an author is most likely to write.
+            switch (s.ToLowerInvariant())
+            {
+                case "en": return "English";
+                case "ko": return "Korean";
+                case "ja": return "Japanese";
+                case "zh": case "zh-cn": case "zh-hans": return "ChineseSimplified";
+                case "zh-tw": case "zh-hk": case "zh-hant": return "ChineseTraditional";
+                case "es": return "Spanish";
+                case "pt": return "Portuguese";
+                case "fr": return "French";
+                case "pl": return "Polish";
+                case "ro": return "Romanian";
+                case "ru": return "Russian";
+                case "vi": return "Vietnamese";
+                case "cs": return "Czech";
+                case "de": return "German";
             }
             return null;
         }

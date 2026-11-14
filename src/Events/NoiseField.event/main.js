@@ -48,17 +48,21 @@ function create(ctx, params) {
     evolveSpeed: num(params.noiseEvolveSpeed, 12),
     moveSpeed: vec(params.noiseMoveSpeed, 0.15, 0),
     tiling: vec(params.noiseScale, 1, 1),
-    color: params.color || "ff2020",
+    color: params.color || "ff5454",
 
     // Layer parameters. These must be forwarded or the host falls back to its own
     // defaults — with displace at 0 the coastline band collapses and the field renders as
     // plain geometry, whatever the texture code does.
-    fillOpacity: num(params.fillOpacity, 0.35),
-    edgeColor: params.edgeColor || "ff2a2a",
-    edgeOpacity: num(params.edgeOpacity, 1),
-    sparkColor: params.sparkColor || "ff5040",
+    fillOpacity: num(params.fillOpacity, 0.667),
+    edgeColor: params.edgeColor || "ff5454",
+    edgeOpacity: num(params.edgeOpacity, 0.8),
+    sparkColor: params.sparkColor || "ff5a5a",
     sparkOpacity: num(params.sparkOpacity, 1),
+    glowColor: params.glowColor || "ff5454",
+    glowOpacity: num(params.glowOpacity, 0.8),
+    glowPasses: num(params.glowPasses, 5),
     displace: num(params.displace, 0.35),
+    preDuration: num(params.preDuration, 0),
 
     // Coastline controls. Same story as above: anything not forwarded is replaced by the
     // host's default, so these four have to travel with every call.
@@ -112,7 +116,11 @@ function create(ctx, params) {
       edgeOpacity: p.edgeOpacity,
       sparkColor: p.sparkColor,
       sparkOpacity: p.sparkOpacity,
+      glowColor: p.glowColor,
+      glowOpacity: p.glowOpacity,
+      glowPasses: p.glowPasses,
       displace: p.displace,
+      pre: t < p.preDuration,
 
       edgeDistance: p.edgeDistance,
       edgeDetail: p.edgeDetail,

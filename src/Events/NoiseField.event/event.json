@@ -226,14 +226,14 @@
     {
       "name": "color",
       "type": "Color",
-      "default": "ff2020",
+      "default": "ff5454",
       "group": "Appearance",
       "order": 23
     },
     {
       "name": "fillOpacity",
       "type": "Float",
-      "default": 0.35,
+      "default": 0.667,
       "min": 0,
       "max": 1,
       "group": "Layers",
@@ -242,14 +242,14 @@
     {
       "name": "edgeColor",
       "type": "Color",
-      "default": "ff2a2a",
+      "default": "ff5454",
       "group": "Layers",
       "order": 24
     },
     {
       "name": "edgeOpacity",
       "type": "Float",
-      "default": 1,
+      "default": 0.8,
       "min": 0,
       "max": 1,
       "group": "Layers",
@@ -258,7 +258,7 @@
     {
       "name": "sparkColor",
       "type": "Color",
-      "default": "ff5040",
+      "default": "ff5a5a",
       "group": "Layers",
       "order": 26
     },
@@ -356,6 +356,56 @@
       "label": {
         "en": "Fragment Amount",
         "zh-CN": "碎片数量"
+      }
+    },
+    {
+      "name": "glowColor",
+      "type": "Color",
+      "default": "ff5454",
+      "group": "Layers",
+      "order": 29,
+      "label": {
+        "en": "Glow Color",
+        "zh-CN": "辉光颜色"
+      }
+    },
+    {
+      "name": "glowOpacity",
+      "type": "Float",
+      "default": 0.8,
+      "min": 0,
+      "max": 1,
+      "group": "Layers",
+      "order": 30,
+      "label": {
+        "en": "Glow Opacity",
+        "zh-CN": "辉光不透明度"
+      }
+    },
+    {
+      "name": "glowPasses",
+      "type": "Float",
+      "default": 5,
+      "min": 0,
+      "max": 6,
+      "group": "Layers",
+      "order": 31,
+      "label": {
+        "en": "Glow Passes",
+        "zh-CN": "辉光层数"
+      }
+    },
+    {
+      "name": "preDuration",
+      "type": "Float",
+      "default": 0,
+      "min": 0,
+      "max": 5,
+      "group": "Edge",
+      "order": 35,
+      "label": {
+        "en": "Pre-Flash Duration",
+        "zh-CN": "预警时长"
       }
     }
   ]

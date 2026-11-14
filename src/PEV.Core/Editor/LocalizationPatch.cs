@@ -53,7 +53,13 @@ namespace PEV.Editor
 
                 if (!EventRegistry.TryGetByType((LevelEventType)typeId, out var manifest)) return;
 
-                string name = manifest.DisplayName;
+                // Resolve against the game's current language. The manifest stores its
+                // translations under SystemLanguage names ("ChineseSimplified"), which is
+                // the only vocabulary the client understands; asking for the name without
+                // one is how a Chinese client used to get English.
+                string locale = null;
+                try { locale = RDString.language.ToString(); } catch { }
+                string name = manifest.LocaleName(locale);
                 if (string.IsNullOrEmpty(name)) name = manifest.Id;
                 if (string.IsNullOrEmpty(name)) return;
 

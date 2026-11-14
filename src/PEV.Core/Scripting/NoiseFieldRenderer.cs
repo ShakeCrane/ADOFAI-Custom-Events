@@ -42,15 +42,19 @@ namespace PEV.Scripting
             public Placement.Frame World;
             public NoiseFieldShape Shape;
             public float Feather;
-            // The reference effect composes three layers from one mask: a translucent
-            // fill, an opaque edge traced around it, and sparse spark grains. Keeping them
-            // separate is what makes the region read as a cut-out rather than a smear.
+            // The reference effect composes four layers from one mask: a translucent fill,
+            // an opaque edge traced around it, outer glow ridges, and sparse spark grains.
+            // Keeping them separate is what makes the region read as a cut-out rather than
+            // a smear.
             public Color FillColor;
             public Color EdgeColor;
+            public Color GlowColor;
             public Color SparkColor;
-            public float FillOpacity = 0.35f;
-            public float EdgeOpacity = 1f;
+            public float FillOpacity = 0.667f;
+            public float EdgeOpacity = 0.8f;
+            public float GlowOpacity = 0.8f;
             public float SparkOpacity = 1f;
+            public float GlowPasses = 5f;
             public float Displace;
             public float Glitch;
             public float Brightness;
@@ -65,6 +69,19 @@ namespace PEV.Scripting
             public int EdgeThickness = DefaultEdgeThickness;
             public float EdgeMargin = DefaultEdgeMargin;
             public float EdgeFragment = DefaultEdgeFragment;
+
+            /// <summary>
+            /// Seconds of pre-state before the border arrives. The reference flashes a flat,
+            /// borderless copy of the region first; at 0 the field simply appears.
+            /// </summary>
+            public float PreDuration;
+
+            /// <summary>
+            /// True while the field is still in its pre-state: the flat, borderless copy the
+            /// reference shows before the border arrives. Driven by the script so it stays
+            /// in sync with the song clock rather than a wall clock.
+            /// </summary>
+            public bool Ready;
 
             public int FrameCount;
             public float PxWidthHint;
@@ -279,14 +296,22 @@ namespace PEV.Scripting
             entry.World = frame;
             entry.Shape = ParseEnum(args, "shape", NoiseFieldShape.Rect);
             entry.Feather = Mathf.Max(0f, ParseFloat(args, "feather", 0f));
-            var baseColor = ParseColor(args, "color", new Color(1f, 0.12f, 0.12f));
+            var baseColor = ParseColor(args, "color", new Color(1f, 0.330f, 0.330f));
             entry.FillColor = baseColor;
             entry.EdgeColor = ParseColor(args, "edgeColor", baseColor);
+            entry.GlowColor = ParseColor(args, "glowColor", baseColor);
             entry.SparkColor = ParseColor(args, "sparkColor", baseColor);
-            entry.FillOpacity = Mathf.Clamp01(ParseFloat(args, "fillOpacity", 0.35f));
-            entry.EdgeOpacity = Mathf.Clamp01(ParseFloat(args, "edgeOpacity", 1f));
+            // Reference defaults: fill 0.667, edge 0.8, glow 0.8. They are much more
+            // saturated than the earlier guess, and that guess is why the region read as a
+            // pale orange wash instead of a dark red cut-out.
+            entry.FillOpacity = Mathf.Clamp01(ParseFloat(args, "fillOpacity", 0.667f));
+            entry.EdgeOpacity = Mathf.Clamp01(ParseFloat(args, "edgeOpacity", 0.8f));
+            entry.GlowOpacity = Mathf.Clamp01(ParseFloat(args, "glowOpacity", 0.8f));
             entry.SparkOpacity = Mathf.Clamp01(ParseFloat(args, "sparkOpacity", 1f));
-            entry.Displace = Mathf.Clamp01(ParseFloat(args, "displace", 0f));
+            entry.GlowPasses = Mathf.Clamp(ParseFloat(args, "glowPasses", 5f), 0f, 6f);
+            entry.PreDuration = Mathf.Max(0f, ParseFloat(args, "preDuration", 0f));
+            entry.Ready = ParseBool(args, "pre", false);
+            entry.Displace = Mathf.Clamp01(ParseFloat(args, "displace", 0.35f));
             entry.Glitch = Mathf.Clamp01(ParseFloat(args, "glitch", 0f));
             entry.Brightness = Mathf.Max(0f, ParseFloat(args, "brightness", 1f));
             entry.Saturation = Mathf.Max(0f, ParseFloat(args, "saturation", 1f));
@@ -437,12 +462,16 @@ namespace PEV.Scripting
                 Pieces = pieces,
                 FillColor = lead.FillColor,
                 EdgeColor = lead.EdgeColor,
+                GlowColor = lead.GlowColor,
                 SparkColor = lead.SparkColor,
                 FillOpacity = lead.FillOpacity,
                 EdgeOpacity = lead.EdgeOpacity,
+                GlowOpacity = lead.GlowOpacity,
                 SparkOpacity = lead.SparkOpacity,
+                GlowPasses = lead.GlowPasses,
                 Displace = lead.Displace,
                 Glitch = lead.Glitch,
+                Ready = lead.Ready,
                 EdgeDistance = lead.EdgeDistance,
                 EdgeDetail = lead.EdgeDetail,
                 EdgeThickness = lead.EdgeThickness,

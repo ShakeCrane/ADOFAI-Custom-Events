@@ -40,6 +40,14 @@ namespace PEV.Scripting
         private const int ResolutionStep = 96;
 
         private const float GrainPixels = 1.5f;
+
+        /// <summary>
+        /// Brightness of the fill relative to the outline colour. The reference composites
+        /// premultiplied, so its fill lands at roughly a third of the border's brightness;
+        /// once both per-piece and cluster colours go through this same scale, the region
+        /// reads as a dark red cut-out with a lit rim instead of one flat wash.
+        /// </summary>
+        private const float FillValueScale = 0.24f;
         public const float PixelsPerUnit = 100f;
 
         public sealed class Frames
@@ -89,9 +97,11 @@ namespace PEV.Scripting
 
             public Color FillColor;
             public Color EdgeColor;
+            public Color GlowColor;
             public Color SparkColor;
             public float FillOpacity;
             public float EdgeOpacity;
+            public float GlowOpacity;
             public float SparkOpacity;
 
             public float Brightness;
@@ -101,20 +111,27 @@ namespace PEV.Scripting
             public float Displace;
 
             /// <summary>
-            /// How far the coastline may wander, as a fraction of the field's shorter side.
-            /// This is the "edge distance": at 0 the region is its plain geometry, at 1 the
-            /// bays reach about half a field-width inward.
+            /// Displacement strength of the coverage mask, in mask cells. Coverage itself is
+            /// plain rectangle geometry; the noise only wobbles WHERE it is sampled, which is
+            /// what gives the boundary its ragged, streaming bite. The reference's
+            /// `_NoiseDisplaceStrength` is 1.0, i.e. about one cell of drift.
             /// </summary>
             public float EdgeDistance;
 
             /// <summary>
-            /// Number of noise features across the shorter side. Low values give a few big
-            /// bays; high values give a finely shredded coast.
+            /// Noise features across the shorter side. Low values give slow, broad wobble;
+            /// high values give a finely shredded coast.
             /// </summary>
             public float EdgeDetail;
 
-            /// <summary>Border line thickness, in mask cells.</summary>
+            /// <summary>Border line thickness, in mask cells. The reference uses exactly 1.</summary>
             public int EdgeThickness;
+
+            /// <summary>
+            /// Ridges of glow outside the border. Each pass dilates one more cell and
+            /// contributes a lower weight, which is the reference's 5-pass bloom.
+            /// </summary>
+            public float GlowPasses;
 
             /// <summary>
             /// How far detached fragments survive outside the geometry, as a fraction of
@@ -146,6 +163,14 @@ namespace PEV.Scripting
             /// stay visible, which is what the reference shows.
             /// </summary>
             public float Margin;
+
+            /// <summary>
+            /// Pre-state ("ready") fill: the region exactly where it will be, flat and
+            /// translucent, with grains but no border and no glow. The reference flashes this
+            /// for a moment before the border arrives, which is what makes its entrance read
+            /// as a warning rather than a pop-in.
+            /// </summary>
+            public bool Ready;
         }
 
         private static readonly Dictionary<string, Frames> Cache =
@@ -311,16 +336,12 @@ namespace PEV.Scripting
             var pieces = req.Pieces ?? Array.Empty<Piece>();
 
             // --- coverage parameters --------------------------------------------------
-            // Mirrors the reference's ActiveBlock pass. Its mask is not a warped
-            // silhouette: coverage is a level set of a scrolling noise field, with the
-            // threshold slid by the signed distance to the region. That is the mechanism
-            // behind the behaviour a warped outline cannot produce — bays pinching off
-            // into islands, islands drifting back and merging, flakes detaching from the
-            // coast, holes flickering open inside the fill.
-            //
-            // The numbers that shape the coast are author-facing parameters now (see
-            // Request.EdgeDistance &c.), so events can dial the look without rebuilding.
-            // Displace still gates the whole effect: at 0 the region is plain geometry.
+            // This mirrors the reference's compose pass, which is the correction that
+            // matters most: coverage is NOT a level set of a noise field. It is the plain
+            // union of the rectangles, rasterised on a coarse grid, with the noise only
+            // displacing WHERE each cell is sampled. That is why the reference's coast is a
+            // mostly-straight edge with small ragged bites and detached specks, rather than
+            // the deep bays and islands a thresholded field produces.
             float displace = Mathf.Clamp01(req.Displace);
             uint seed = (uint)req.Seed;
 
@@ -331,34 +352,43 @@ namespace PEV.Scripting
             int maskW = Mathf.Max(3, Mathf.CeilToInt(cellsX / (float)maskDiv));
             int maskH = Mathf.Max(3, Mathf.CeilToInt(cellsY / (float)maskDiv));
 
-            // Feature size: EdgeDetail noise cells across the shorter side. Larger features
-            // give big smooth bays, smaller ones give confetti.
-            float minSide = Mathf.Max(0.01f, Mathf.Min(req.WidthWorld, req.HeightWorld));
-            float detail = Mathf.Clamp(req.EdgeDetail <= 0f ? 8f : req.EdgeDetail, 1f, 32f);
-            float noiseFreq = detail / minSide;
+            // Displacement strength, in coarse cells. The reference uses ~1 cell of drift;
+            // EdgeDistance scales that so an author can go from "almost straight" to
+            // "badly torn" without changing anything else.
+            float edgeDistance = Mathf.Clamp(req.EdgeDistance <= 0f ? 0.5f : req.EdgeDistance, 0f, 2f);
+            float dispCells = edgeDistance * displace;
 
-            // Threshold swing, asymmetric on purpose. Inside, the threshold sits well below
-            // the noise median so the fill stays solid with only occasional holes. Outside,
-            // it sits below the noise maximum so isolated peaks survive as detached flakes
-            // rather than vanishing — symmetric swings lose those flakes entirely.
-            float swingIn = 0.45f;
-            // EdgeFragment 1.0 (the default) keeps the reference's amount of debris; 0 makes
-            // the exterior threshold unreachable so the coast is clean.
-            float fragment = Mathf.Clamp01(req.EdgeFragment <= 0f ? 1f : req.EdgeFragment);
-            float swingOut = 0.32f * fragment;
+            // Feature size: EdgeDetail noise cells across the shorter side of the *texture*,
+            // not the world, so the wobble keeps the same screen frequency at any field size.
+            float detail = Mathf.Clamp(req.EdgeDetail <= 0f ? 8f : req.EdgeDetail, 1f, 32f);
+            float noiseFreq = detail / Mathf.Max(8f, Mathf.Min(maskW, maskH) * 0.5f);
+
+            // How much of the exterior survives as detached specks. Expressed as a threshold
+            // on the noise level: higher fragment means peaks further from the region survive.
+            float fragment = Mathf.Clamp01(req.EdgeFragment <= 0f ? 0f : req.EdgeFragment);
 
             // --- layers ---------------------------------------------------------------
             // One mask per frame, so these live outside the per-frame loop and are reused.
             var insideGrid = new bool[cellsX * cellsY];
             var edgeGrid = new bool[cellsX * cellsY];
+            var glowGrid = new float[cellsX * cellsY];
             var ownerGrid = new int[cellsX * cellsY];
             var coarseIn = new bool[maskW * maskH];
             var coarseOwner = new int[maskW * maskH];
 
             // --- colours -------------------------------------------------------------
-            float lum = 0.299f * req.SparkColor.r + 0.587f * req.SparkColor.g + 0.114f * req.SparkColor.b;
-            var grey = new Color(lum, lum, lum, 1f);
-            var sparkTint = Color.LerpUnclamped(grey, req.SparkColor, Mathf.Clamp01(req.Saturation));
+            // The reference composites premultiplied: the fill contributes
+            // `fill * 0.7132 * 0.667` while the border contributes `edge * 0.8`, so the
+            // border ends up about 1.7x brighter than the fill. That ratio is the whole
+            // reason the region reads as a dark cut-out with a lit rim; drawing both at
+            // full saturation makes them blend into one bright wash.
+            //
+            // Measured from the reference video, the fill sits at ~0.36 of the outline's
+            // brightness. Everything stays derived from the one colour, so recolouring
+            // still gives a consistent set.
+            Color fillColor = HsvVariant(req.FillColor, 1.0f, FillValueScale);
+            Color glowColor = HsvVariant(req.GlowColor, 1.2f, 1.0f);
+            var sparkTint = HsvVariant(req.SparkColor, 1.07f, 1.0f);
 
             float sparkDensity = Mathf.Clamp01(0.075f * Mathf.Clamp01(req.Brightness));
             float lineProb = Mathf.Clamp01(req.LineOpacity);
@@ -373,7 +403,12 @@ namespace PEV.Scripting
             for (int k = 0; k < frames; k++)
             {
                 var pixels = new Color32[texW * texH];
+                // Two clocks, on purpose. The grain is micro: it re-rolls every frame, which
+                // is what makes the texture shimmer. The coverage is macro: it keeps one seed
+                // and drifts slowly, so the silhouette flows instead of jumping. Re-rolling
+                // both per frame is what made the whole field read as a strobe.
                 uint kseed = (uint)(k * 7919) + seed * 2654435761u;
+                uint macroSeed = seed * 2246822519u;
 
                 // Per-row horizontal tear, the reference's GlitchMap. Rows are addressed in
                 // texture space so a shift wraps instead of smearing, and only a fraction of
@@ -392,16 +427,13 @@ namespace PEV.Scripting
                     }
                 }
 
-                // Drift the noise field by whole lattice periods across the frame set, so
-                // the flipbook loops seamlessly instead of snapping back to the first
-                // frame. This is the "evolve" axis: the reference scrolls its noise map at
-                // _NoiseEvoSpeed and lets the coastline redraw itself.
+                // Slow drift: whole lattice periods across the frame set, so the flipbook
+                // loops seamlessly while the coast keeps travelling.
                 float drift = k * (LoopPeriod / (float)frames);
 
-                BuildFrameMask(pieces, req, cellsX, cellsY, kseed, drift, noiseFreq,
-                    swingIn, swingOut,
-                    maskDiv, maskW, maskH, coarseIn, coarseOwner,
-                    insideGrid, edgeGrid, ownerGrid);
+                BuildFrameMask(pieces, req, cellsX, cellsY, macroSeed, drift, noiseFreq,
+                    dispCells, fragment, maskDiv, maskW, maskH, coarseIn, coarseOwner,
+                    insideGrid, edgeGrid, glowGrid, ownerGrid);
 
                 var rowLine = new float[cellsY];
                 for (int cy = 0; cy < cellsY; cy++)
@@ -417,37 +449,60 @@ namespace PEV.Scripting
                     for (int cx = 0; cx < cellsX; cx++)
                     {
                         int idx = cy * cellsX + cx;
-                        if (!insideGrid[idx]) continue;
+                        bool covered = insideGrid[idx];
+                        float glowAmount = glowGrid[idx];
+                        if (!covered && glowAmount <= 0f) continue;
 
                         // Appearance comes from the piece that owns this cell, so a union
                         // keeps every region's own colour instead of tinting the cluster.
+                        // The value scale has to be applied here too: a per-piece colour is
+                        // still a base colour, and using it raw would make a merged field's
+                        // fill as bright as its border.
                         int own = ownerGrid[idx];
-                        var fillC = own >= 0 ? pieces[own].FillColor : req.FillColor;
+                        var fillC = own >= 0 ? HsvVariant(pieces[own].FillColor, 1f, FillValueScale) : fillColor;
                         var edgeC = own >= 0 ? pieces[own].EdgeColor : req.EdgeColor;
                         float edgeOpacity = own >= 0 ? pieces[own].EdgeOpacity : req.EdgeOpacity;
                         float fillOpacity = own >= 0 ? pieces[own].FillOpacity : req.FillOpacity;
 
-                        bool isEdge = edgeGrid[idx];
+                        // The pre-state has fill only: no border, no glow. That absence is
+                        // exactly what makes it read as a warning rather than as the field
+                        // arriving early.
+                        bool isEdge = covered && !req.Ready && edgeGrid[idx];
 
                         Color32 c;
                         if (isEdge)
                         {
-                            // The boundary is opaque and saturated; that is what makes the
-                            // region read as a cut-out rather than a soft glow.
-                            float wobble = 0.85f + 0.15f * ((Hash((uint)cx, (uint)cy, kseed + 31u) & 0xFFFF) / 65535f);
+                            // Opaque and saturated: the boundary is a cut-out, not a soft
+                            // glow. A little cell-level wobble keeps it from looking drawn
+                            // with a ruler.
+                            float wobble = 0.88f + 0.12f * ((Hash((uint)cx, (uint)cy, kseed + 31u) & 0xFFFF) / 65535f);
                             c = new Color32(
                                 (byte)Mathf.RoundToInt(edgeC.r * 255f * wobble),
                                 (byte)Mathf.RoundToInt(edgeC.g * 255f * wobble),
                                 (byte)Mathf.RoundToInt(edgeC.b * 255f * wobble),
                                 (byte)Mathf.RoundToInt(Mathf.Clamp01(edgeOpacity) * 255f));
                         }
+                        else if (!covered)
+                        {
+                            // Outer glow ridges. They sit outside the fill, so their alpha
+                            // has to fade with distance or they read as a second border.
+                            float a = Mathf.Clamp01(glowAmount * req.GlowOpacity);
+                            if (a <= 0.002f) continue;
+                            c = new Color32(
+                                (byte)Mathf.RoundToInt(glowColor.r * 255f),
+                                (byte)Mathf.RoundToInt(glowColor.g * 255f),
+                                (byte)Mathf.RoundToInt(glowColor.b * 255f),
+                                (byte)Mathf.RoundToInt(a * 255f));
+                        }
                         else
                         {
                             // Fill is translucent and carries most of the region's colour.
                             float a = Mathf.Clamp01(fillOpacity);
 
-                            // Sparse bright grains, sampled through the displacement field:
-                            // the warp is what makes the texture look torn rather than tiled.
+                            // Sparse bright grains, sampled through a per-frame jitter. The
+                            // jitter is what makes the texture look alive rather than tiled;
+                            // it is also why the grain must re-roll every frame while the
+                            // silhouette does not.
                             float du = 0f, dv = 0f;
                             if (displace > 0f)
                             {
@@ -462,7 +517,7 @@ namespace PEV.Scripting
                             float gr = (gh & 0xFFFF) / 65535f;
                             float lit = 0f;
                             if (gr < sparkDensity)
-lit = req.SparkOpacity * (0.30f + 0.70f * Mathf.Pow(((gh >> 16) & 0xFFFF) / 65535f, 2f));
+                                lit = req.SparkOpacity * (0.30f + 0.70f * Mathf.Pow(((gh >> 16) & 0xFFFF) / 65535f, 2f));
 
                             float lineA = rowLine[cy];
                             if (lineA > 0f) lit = Mathf.Clamp01(lit + lineA * 0.5f);
@@ -520,27 +575,29 @@ lit = req.SparkOpacity * (0.30f + 0.70f * Mathf.Pow(((gh >> 16) & 0xFFFF) / 6553
         }
 
         /// <summary>
-        /// Rasterises one frame's coverage mask, in two stages:
+        /// Rasterises one frame's coverage, border and glow.
         ///
-        ///   1. a coarse mask, one sample per <paramref name="maskDiv"/> texture cells, of
-        ///      a thresholded scrolling noise field biased by the signed distance to the
-        ///      region. That is the mechanism the reference shader uses (ActiveBlock:
-        ///      SDF cell + `_NoiseMap` sampled at `uv * _NoiseEvoSpeed`, compared against
-        ///      `_NoiseRadius`), and it is what produces the behaviour a warped outline
-        ///      cannot: bays that pinch off into islands, islands that drift back and
-        ///      merge, holes flickering open inside the fill;
-        ///   2. the fine grid inherits that mask, and the border is traced at fine
-        ///      resolution so the line stays one texel thick while its shape follows the
-        ///      coarse steps.
+        /// The important correction over the first implementation: coverage is the plain
+        /// union of the rectangles. The noise does not decide *whether* a point is inside —
+        /// it only shifts *which* point is sampled, by about one coarse cell. That is what
+        /// the reference compose pass does (`uv + disp * 0.1`, then a mask lookup), and it
+        /// is why its coast is a mostly-straight edge with small ragged bites and stray
+        /// specks, not the deep bays and islands a thresholded noise field produces.
         ///
-        /// Tracing at coarse resolution would make the border as thick as a step, which
-        /// reads as a filled band rather than a line.
+        /// Stages, matching the reference:
+        ///   1. coarse coverage from the displaced sample, per piece, unioned;
+        ///   2. fine grid inherits it, so the silhouette steps at coarse resolution while
+        ///      the border is traced at fine resolution and stays one cell thick;
+        ///   3. border = covered cell with an uncovered neighbour (the reference dilates the
+        ///      mask and subtracts it, which is the same set);
+        ///   4. glow = successive dilations outside the border with decaying weight, which is
+        ///      the reference's 5-pass bloom without needing a render target.
         /// </summary>
         private static void BuildFrameMask(Piece[] pieces, Request req,
             int cellsX, int cellsY, uint kseed, float drift, float noiseFreq,
-            float swingIn, float swingOut,
+            float dispCells, float fragment,
             int maskDiv, int maskW, int maskH, bool[] coarseIn, int[] coarseOwner,
-            bool[] inside, bool[] edge, int[] owner)
+            bool[] inside, bool[] edge, float[] glow, int[] owner)
         {
             // Sampling covers the padded quad, not just the geometry: the margin is where
             // detached flakes live.
@@ -554,29 +611,49 @@ lit = req.SparkOpacity * (0.30f + 0.70f * Mathf.Pow(((gh >> 16) & 0xFFFF) / 6553
             {
                 for (int i = 0; i < maskW; i++)
                 {
-                    float wx = (i + 0.5f) / maskW * totalW - halfW;
-                    float wy = (j + 0.5f) / maskH * totalH - halfH;
+                    float u = (i + 0.5f) / maskW;
+                    float v = (j + 0.5f) / maskH;
+
+                    // Displace the *sample position*, not the coverage decision. This is the
+                    // whole trick: the region stays a rectangle, but the cell that gets read
+                    // for a given point can come from a neighbour, so the coast tears and
+                    // scatters instead of bending.
+                    float shiftU = 0f, shiftV = 0f;
+                    if (dispCells > 0f)
+                    {
+                        // Value noise in lattice space; drift scrolls it so the tearing
+                        // travels along the edge rather than flickering in place.
+                        float nx = Fbm(u * noiseFreq * maskW + drift, v * noiseFreq * maskH,
+                                       LoopPeriod, kseed);
+                        float ny = Fbm(u * noiseFreq * maskW + drift + 37.7f,
+                                       v * noiseFreq * maskH + 11.3f, LoopPeriod, kseed + 977u);
+                        shiftU = (nx * 2f - 1f) * dispCells / maskW;
+                        shiftV = (ny * 2f - 1f) * dispCells / maskH;
+                    }
+
+                    float wx = Mathf.Clamp(u + shiftU, 0f, 1f) * totalW - halfW;
+                    float wy = Mathf.Clamp(v + shiftV, 0f, 1f) * totalH - halfH;
 
                     float d;
-                    int own = SignedDistance(pieces, wx, wy, out d, out float pieceBand);
+                    int own = SignedDistance(pieces, wx, wy, out d, out _);
 
-                    // +1 well inside, 0 on the boundary, -1 outside the band. The band is
-                    // the nearest piece's own, so each region keeps a coastline
-                    // proportional to itself.
-                    float t = Mathf.Clamp(-d / pieceBand, -1f, 1f);
-
-                    float n = Fbm(wx * noiseFreq + drift, wy * noiseFreq, LoopPeriod, kseed);
-
-                    // The threshold moves with the distance; the noise stays put. That is
-                    // what makes the boundary a level set of the noise, so it bites into
-                    // the region in bays and leaves detached fragments behind, instead of
-                    // being a rectangle with a wiggly border.
-                    float thr = 0.5f - (t > 0f ? swingIn : swingOut) * t;
-                    bool cover = n > thr;
-
+                    bool cover = d <= 0f;
                     int m = j * maskW + i;
-                    // Covered but outside every piece: a detached flake. Keeping the owner
-                    // from the geometry would tint it with a neighbour's colour; -1 lets it
+
+                    if (!cover && fragment > 0f)
+                    {
+                        // Stray specks just past the coast. The reference gets these from the
+                        // same displacement pulling a distant covered cell inward, which only
+                        // reaches about one cell; a slightly wider band here reproduces the
+                        // look without needing the displacement to be enormous.
+                        float n = Fbm(u * noiseFreq * maskW + drift, v * noiseFreq * maskH,
+                                      LoopPeriod, kseed + 4111u);
+                        float reach = Mathf.Max(0.001f, d) / Mathf.Max(1e-4f, Mathf.Min(totalW, totalH));
+                        cover = n > 0.62f && reach < fragment * 0.02f;
+                    }
+
+                    // Covered but outside every piece: a stray speck. Keeping the owner from
+                    // the nearest geometry would tint it with a neighbour's colour; -1 lets it
                     // fall back to the cluster's own palette, which is correct.
                     coarseOwner[m] = cover ? own : -1;
                     coarseIn[m] = cover;
@@ -593,6 +670,7 @@ lit = req.SparkOpacity * (0.30f + 0.70f * Mathf.Pow(((gh >> 16) & 0xFFFF) / 6553
                     int idx = cy * cellsX + cx;
                     inside[idx] = coarseIn[m];
                     owner[idx] = coarseOwner[m];
+                    glow[idx] = 0f;
                 }
             }
 
@@ -622,16 +700,65 @@ lit = req.SparkOpacity * (0.30f + 0.70f * Mathf.Pow(((gh >> 16) & 0xFFFF) / 6553
                         }
                     }
                     edge[i] = nearOutside;
-
-                    // Edge = covered cell with an uncovered 4-neighbour. Cell edges, not
-                    // texel edges, so the line is one cell thick at texture resolution.
-                    edge[i] =
-                        cx == 0 || !inside[i - 1] ||
-                        cx == cellsX - 1 || !inside[i + 1] ||
-                        cy == 0 || !inside[i - cellsX] ||
-                        cy == cellsY - 1 || !inside[i + cellsX];
                 }
             }
+
+            // Glow: successive dilations of the border, each ring dimmer. The reference runs
+            // this as five render passes; baking it here is cheaper and lands in the same
+            // place. The weights fall off much faster than a linear ramp, otherwise the
+            // halo reads as a soft gradient smear instead of a lit rim.
+            int passes = Mathf.Clamp(Mathf.RoundToInt(req.GlowPasses), 0, 6);
+            if (passes > 0)
+            {
+                float[] ring = new float[cellsX * cellsY];
+                float[] weight = { 0.45f, 0.22f, 0.10f, 0.045f, 0.018f };
+                bool[] grown = (bool[])inside.Clone();
+
+                for (int p = 0; p < passes; p++)
+                {
+                    float w = weight[Mathf.Min(p, weight.Length - 1)];
+                    for (int cy = 0; cy < cellsY; cy++)
+                    {
+                        for (int cx = 0; cx < cellsX; cx++)
+                        {
+                            int i = cy * cellsX + cx;
+                            if (grown[i]) { ring[i] = 0f; continue; }
+
+                            // Covered by THIS dilation but not before: the new ring.
+                            bool touch = false;
+                            for (int oy = -1; oy <= 1 && !touch; oy++)
+                            {
+                                int ny = cy + oy;
+                                if (ny < 0 || ny >= cellsY) continue;
+                                for (int ox = -1; ox <= 1; ox++)
+                                {
+                                    int nx = cx + ox;
+                                    if (nx < 0 || nx >= cellsX) continue;
+                                    if (inside[ny * cellsX + nx] || grown[ny * cellsX + nx])
+                                    { touch = true; break; }
+                                }
+                            }
+                            ring[i] = touch ? w : 0f;
+                            if (touch) grown[i] = true;
+                        }
+                    }
+
+                    // Only the outermost ring keeps the accumulated value, so the glow fades
+                    // outward instead of double-counting.
+                    for (int i = 0; i < glow.Length; i++)
+                        if (ring[i] > 0f) glow[i] = ring[i];
+                }
+            }
+        }
+
+        /// <summary>
+        /// Hue-preserving variant of a colour: saturation and value are scaled, exactly as
+        /// the reference derives its fill/glow/spark colours from the one outline colour.
+        /// </summary>
+        private static Color HsvVariant(Color c, float satScale, float valScale)
+        {
+            Color.RGBToHSV(c, out float h, out float s, out float v);
+            return Color.HSVToRGB(h, Mathf.Clamp01(s * satScale), Mathf.Clamp01(v * valScale));
         }
 
         /// <summary>Lattice period of the shape noise; drift completes whole periods per loop.</summary>
