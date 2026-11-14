@@ -117,6 +117,11 @@ namespace PEV.Registry
                 {
                     if (string.IsNullOrEmpty(spec.Name)) continue;
 
+                    // Before the early-outs below: the caption table is per parameter type, not
+                    // per row, so an enum whose panel row is native still needs its options.
+                    try { EnumLabels.Register(spec, log); }
+                    catch (Exception e) { log?.Invoke($"enum labels for '{spec.Name}' failed: {e.Message}"); }
+
                     // Native wins. Our manifest still declares the parameter so scripts and
                     // Materialize see it, but the UI row is the game's own.
                     if (info.propertiesInfo.ContainsKey(spec.Name)) continue;

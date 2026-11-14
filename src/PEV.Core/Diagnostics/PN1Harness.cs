@@ -56,6 +56,13 @@ namespace PEV.Diagnostics
             try { File.AppendAllText(_resultPath, line + Environment.NewLine); } catch { }
         }
 
+        /// <summary>Stopwatch ticks as a readable millisecond figure.</summary>
+        private static string Ticks(long ticks)
+        {
+            if (ticks <= 0) return "0ms";
+            return (ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency).ToString("F1") + "ms";
+        }
+
         [HarmonyPatch(typeof(scnLevelSelect), "Start")]
         public static class AutoOpen
         {
@@ -439,14 +446,30 @@ namespace PEV.Diagnostics
 
             if (EventRegistry.TryGetByType(type, out _))
             {
-                var gi = GCS.levelEventsInfo != null
-                         && GCS.levelEventsInfo.TryGetValue(((int)DecorationParams.NativeType).ToString(), out var native)
-                    ? native : null;
+                // Resolve through the same helper Publish used. GCS.levelEventsInfo is keyed
+                // by whatever GCS.levelEventTypeString holds, which is a name for native
+                // events; asking for the numeric form here returned a different (native) entry
+                // and reported every label as empty.
+                DecorationParams.TryGetNativeInfo(out var gi);
                 var injected = DecorationParams.InjectedNames.ToList();
                 Row("GROUPS", gi != null && gi.useGroups ? "PASS" : "CHECK",
                     $"AddDecoration useGroups={gi?.useGroups} tabs={string.Join(",", gi?.groups?.Select(g => g.name) ?? new string[0])}");
                 Row("PARAMS-INJECTED", injected.Count.ToString(),
                     string.Join(",", injected));
+                // The manifest carries Chinese labels; the panel reads one string chosen when
+                // the PropertyInfo was built. Report both the language the game is running in
+                // and the row text, so a client showing English can be told apart from a
+                // package that never shipped a translation.
+                var sampleLabel = gi != null && gi.propertiesInfo.TryGetValue("edgeDistance", out var pi)
+                    ? pi.customLabel : null;
+                Row("LABEL-LANG", RDString.language.ToString(),
+                    $"edgeDistance shows \"{sampleLabel}\"");
+                // Option captions do not go through customLabel: the dropdown asks the game's
+                // localization table for "enum.<type>.<value>" at draw time. Read them back the
+                // same way so an entry that landed in the wrong section shows up here.
+                Row("LABEL-ENUM", RDString.language.ToString(),
+                    EnumLabels.ReadCaptions("PEV.Scripting.NoiseFieldShape, PEV.Core",
+                        new[] { "Rect", "Circle" }));
             }
 
             // Editor preview: a field must exist before playback ever starts, and its
@@ -575,6 +598,23 @@ namespace PEV.Diagnostics
             int genEnd = NoiseTextureFactory.Generations;
             Row("REGEN-IDLE", (genEnd - genStart) == 0 ? "PASS" : "FAIL",
                 $"texture sets built during 2s of steady playback = {genEnd - genStart} (expect 0)");
+
+            // The bake is the only place this effect can cost a frame, so its wall time is
+            // asserted rather than eyeballed. The stage split says which pass to attack when
+            // the budget is missed; these are summed across the parallel frame threads, so
+            // they add up to more than the wall time by design.
+            //
+            // The number that matters is the main thread's share, not the bake's total: the
+            // pixels are built on a background thread now, so only the upload can cost a frame
+            // — and each frame gets a bounded slice of it.
+            Row("BAKE", NoiseTextureFactory.WorstBakeMs <= 120f ? "PASS" : "CHECK",
+                $"sets={NoiseTextureFactory.Bakes} worstMainThread={NoiseTextureFactory.WorstBakeMs:F1}ms " +
+                "(budget 120ms) " +
+                $"stages/compose={Ticks(NoiseComposer.ComposeTicks)} " +
+                $"effects={Ticks(NoiseComposer.EffectsTicks)} main={Ticks(NoiseComposer.MainTicks)}");
+            // One bake's own size and split. The row above sums thirteen bakes, which cannot
+            // say whether the ceiling was missed on compute or on upload.
+            Row("BAKE-DETAIL", NoiseTextureFactory.LastBakeDetail, "size, payload and stage split of the last bake");
 
             // Sorting probe: report the range the scene actually uses, so depth mapping can
             // be checked against reality rather than an assumption.

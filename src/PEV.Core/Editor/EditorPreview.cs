@@ -54,6 +54,11 @@ namespace PEV.Editor
             var editor = ADOBase.editor;
             if (editor == null) return;
 
+            // Upload a slice of any finished bake. Texture creation is main-thread-only, so
+            // this is the frame-time budget for it: enough per frame to finish a set in a
+            // fraction of a second, small enough that the frame it happens in is not felt.
+            NoiseTextureFactory.Pump(1.5f);
+
             // Playback has its own clock-aligned instances; two renders would double the
             // brightness and disagree at pause.
             if (editor.playMode)

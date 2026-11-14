@@ -157,6 +157,12 @@ namespace PEV.Scripting
 
         private void Update()
         {
+            // Upload a slice of any finished bake, before this frame's rendering. Texture
+            // creation is main-thread-only, so this is the only place it can be bounded; the
+            // pixel work itself runs on a background thread. Kept outside the early-outs
+            // below so a bake still finishes while the song is paused or nothing is playing.
+            NoiseTextureFactory.Pump(1.5f);
+
             if (!_live || _instances.Count == 0) return;
 
             double songTime;

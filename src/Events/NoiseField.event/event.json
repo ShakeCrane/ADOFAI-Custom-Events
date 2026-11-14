@@ -25,6 +25,16 @@
       "label": {
         "en": "Shape",
         "zh-CN": "形状"
+      },
+      "optionLabels": {
+        "Rect": {
+          "en": "Rectangle",
+          "zh-CN": "矩形"
+        },
+        "Circle": {
+          "en": "Circle",
+          "zh-CN": "圆形"
+        }
       }
     },
     {
@@ -41,7 +51,7 @@
       ],
       "label": {
         "en": "Circle Softness",
-        "zh-CN": "圆形羽化"
+        "zh-CN": "圆形柔边"
       }
     },
     {
@@ -102,7 +112,7 @@
       "order": 14,
       "label": {
         "en": "Glow Opacity",
-        "zh-CN": "辉光不透明度"
+        "zh-CN": "辉光强度"
       }
     },
     {
@@ -139,7 +149,7 @@
       "order": 17,
       "label": {
         "en": "Spark Amount",
-        "zh-CN": "颗粒数量"
+        "zh-CN": "颗粒强度"
       }
     },
     {
@@ -152,7 +162,7 @@
       "order": 18,
       "label": {
         "en": "Coast Displacement",
-        "zh-CN": "海岸偏移"
+        "zh-CN": "边缘偏移"
       }
     },
     {
@@ -165,7 +175,7 @@
       "order": 20,
       "label": {
         "en": "Brightness",
-        "zh-CN": "亮度"
+        "zh-CN": "纹理亮度"
       }
     },
     {
@@ -178,7 +188,7 @@
       "order": 21,
       "label": {
         "en": "Saturation",
-        "zh-CN": "饱和度"
+        "zh-CN": "纹理饱和度"
       }
     },
     {
@@ -191,7 +201,7 @@
       "order": 22,
       "label": {
         "en": "Sample Rate",
-        "zh-CN": "采样密度"
+        "zh-CN": "纹理尺寸"
       }
     },
     {
@@ -204,15 +214,15 @@
       "order": 23,
       "label": {
         "en": "Grain Lines",
-        "zh-CN": "颗粒线条"
+        "zh-CN": "横向噪线强度"
       }
     },
     {
       "name": "noiseFrameCount",
       "type": "Int",
-      "default": 8,
+      "default": 96,
       "min": 2,
-      "max": 32,
+      "max": 120,
       "group": "Noise",
       "order": 24,
       "label": {
@@ -223,7 +233,7 @@
     {
       "name": "noiseEvolveSpeed",
       "type": "Float",
-      "default": 12,
+      "default": 48,
       "min": 0,
       "max": 60,
       "unit": "fps",
@@ -245,7 +255,7 @@
       "order": 26,
       "label": {
         "en": "Scroll Speed",
-        "zh-CN": "滚动速度"
+        "zh-CN": "漂移速度"
       }
     },
     {
@@ -259,7 +269,7 @@
       "order": 27,
       "label": {
         "en": "Grain Scale",
-        "zh-CN": "颗粒缩放"
+        "zh-CN": "纹理缩放"
       }
     },
     {
@@ -272,7 +282,7 @@
       "order": 28,
       "label": {
         "en": "Glitch",
-        "zh-CN": "故障强度"
+        "zh-CN": "撕裂强度"
       }
     },
     {
@@ -285,7 +295,7 @@
       "order": 30,
       "label": {
         "en": "Edge Distance",
-        "zh-CN": "边缘侵蚀距离"
+        "zh-CN": "海岸线宽度"
       }
     },
     {
@@ -298,7 +308,7 @@
       "order": 31,
       "label": {
         "en": "Edge Detail",
-        "zh-CN": "边缘细节密度"
+        "zh-CN": "海岸线细节"
       }
     },
     {
@@ -311,7 +321,7 @@
       "order": 32,
       "label": {
         "en": "Edge Thickness",
-        "zh-CN": "边框厚度"
+        "zh-CN": "边框粗细"
       }
     },
     {
@@ -350,7 +360,20 @@
       "order": 35,
       "label": {
         "en": "Pre-Flash Duration",
-        "zh-CN": "预警时长"
+        "zh-CN": "预热时长"
+      }
+    },
+    {
+      "name": "exposure",
+      "type": "Float",
+      "default": 0.15,
+      "min": 0,
+      "max": 2,
+      "group": "Layers",
+      "order": 19,
+      "label": {
+        "en": "Background Exposure",
+        "zh-CN": "背景曝光"
       }
     }
   ]

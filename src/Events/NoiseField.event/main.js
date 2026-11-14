@@ -30,8 +30,8 @@ function create(ctx, params) {
     saturation: num(params.noiseSaturation, 1),
     sampleRate: num(params.noiseSampleRate, 1),
     lineOpacity: num(params.lineOpacity, 0.35),
-    frameCount: Math.max(2, Math.round(num(params.noiseFrameCount, 8))),
-    evolveSpeed: num(params.noiseEvolveSpeed, 12),
+    frameCount: Math.max(2, Math.round(num(params.noiseFrameCount, 96))),
+    evolveSpeed: num(params.noiseEvolveSpeed, 48),
     moveSpeed: vec(params.noiseMoveSpeed, 0.15, 0),
     tiling: vec(params.noiseScale, 1, 1),
     color: params.color || "ff5454",
@@ -40,6 +40,7 @@ function create(ctx, params) {
     // defaults — with displace at 0 the coastline band collapses and the field renders as
     // plain geometry, whatever the texture code does.
     fillOpacity: num(params.fillOpacity, 0.667),
+    exposure: num(params.exposure, 0.15),
     edgeColor: params.edgeColor || "ff5454",
     edgeOpacity: num(params.edgeOpacity, 0.8),
     sparkColor: params.sparkColor || "ff5a5a",
@@ -83,6 +84,8 @@ function create(ctx, params) {
       // Layer parameters. The host reads these from the call, not from the manifest, so
       // omitting them here silently renders with the host defaults.
       fillOpacity: p.fillOpacity,
+      exposure: p.exposure,
+      evolveSpeed: p.evolveSpeed,
       edgeColor: p.edgeColor,
       edgeOpacity: p.edgeOpacity,
       sparkColor: p.sparkColor,

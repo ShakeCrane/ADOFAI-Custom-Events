@@ -28,11 +28,57 @@ namespace PEV.Model
         /// </summary>
         public Dictionary<string, string> Labels =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        /// <summary>
+        /// Localized captions for an enum-typed parameter's values, in declaration order.
+        ///
+        /// Separate from Labels because a panel renders them through a different path: a row
+        /// label is read once from customLabel, while a dropdown entry asks the game's
+        /// localization table for "enum.&lt;type&gt;.&lt;value&gt;" at draw time. See
+        /// Registry.EnumLabels, which is the only thing that can put text there.
+        /// </summary>
+        public List<OptionSpec> OptionLabels = new List<OptionSpec>();
         public string Group;         // properties-panel tab; native events group into pages
         public int? Order;           // explicit sort position within the event's list
         /// <summary>Flat key/value pairs: show this row only when another property matches.</summary>
         public List<string> ShowIf;
         public List<string> HideIf;
+
+        /// <summary>
+        /// Picks the label for the language the game is running in.
+        ///
+        /// The manifest carries per-locale labels, but the panel reads exactly one string at
+        /// PropertyInfo-construction time, so the choice has to happen here. RDString.language
+        /// is the editor's own setting, not the OS locale — an author who switched the game to
+        /// Chinese expects the panel to follow the game, not the system.
+        /// </summary>
+        private string ResolveLabel()
+        {
+            if (Labels == null || Labels.Count == 0) return CustomLabel;
+
+            string lang = null;
+            try { lang = RDString.language.ToString(); } catch { }
+
+            if (!string.IsNullOrEmpty(lang) && Labels.TryGetValue(lang, out var exact) &&
+                !string.IsNullOrEmpty(exact))
+                return exact;
+
+            // The game has three Chinese ids and packages write many spellings of them.
+            if (lang != null && lang.StartsWith("Chinese", StringComparison.Ordinal))
+            {
+                foreach (var alt in new[] { "ChineseSimplified", "ChineseTraditional", "Chinese" })
+                {
+                    if (Labels.TryGetValue(alt, out var zh) && !string.IsNullOrEmpty(zh))
+                        return zh;
+                }
+            }
+
+            if (Labels.TryGetValue("English", out var en) && !string.IsNullOrEmpty(en)) return en;
+            if (!string.IsNullOrEmpty(CustomLabel)) return CustomLabel;
+
+            foreach (var pair in Labels)
+                if (!string.IsNullOrEmpty(pair.Value)) return pair.Value;
+            return null;
+        }
 
         /// <summary>
         /// Convert to the dictionary shape the game's PropertyInfo constructor expects.
@@ -50,7 +96,8 @@ namespace PEV.Model
             if (Max.HasValue) d["max"] = (float)Max.Value;
             if (!string.IsNullOrEmpty(Unit)) d["unit"] = Unit;
             if (!string.IsNullOrEmpty(NoteKey)) d["noteKey"] = NoteKey;
-            if (!string.IsNullOrEmpty(CustomLabel)) d["customLabel"] = CustomLabel;
+            string label = ResolveLabel();
+            if (!string.IsNullOrEmpty(label)) d["customLabel"] = label;
             // Grouping is what makes a 25-parameter event usable: without it the panel is
             // one flat scroll list, while every native event organizes its panel into tabs.
             if (!string.IsNullOrEmpty(Group)) d["group"] = Group;
@@ -72,6 +119,17 @@ namespace PEV.Model
             foreach (var v in values) list.Add(v);
             return list;
         }
+    }
+
+    /// <summary>One enum value's caption, per locale.</summary>
+    public class OptionSpec
+    {
+        /// <summary>The value as the enum spells it, which is the key the dropdown asks for.</summary>
+        public string Key;
+
+        /// <summary>Locale name to caption, normalized the same way Labels are.</summary>
+        public Dictionary<string, string> Value =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>A parsed .event manifest. Immutable after load.</summary>
@@ -206,10 +264,49 @@ namespace PEV.Model
                         spec.Options = new List<string>();
                         foreach (var o in opts) spec.Options.Add(o.ToString());
                     }
+                    ReadOptionLabels(p, spec);
                     m.Params.Add(spec);
                 }
             }
             return m;
+        }
+
+        /// <summary>
+        /// Reads a param's enum captions. Accepted shapes:
+        ///
+        ///   "optionLabels": { "Rect": { "en": "Rectangle", "zh-CN": "矩形" } }
+        ///   "optionLabels": [ { "value": "Rect", "label": { "en": "Rectangle" } } ]
+        ///
+        /// The object form is what a package with one language will write; the array form keeps
+        /// declaration order explicit. Keys are matched case-sensitively, because they are enum
+        /// member names and the dropdown looks them up by exactly that spelling.
+        /// </summary>
+        private static void ReadOptionLabels(JObject p, ParamSpec spec)
+        {
+            var token = p["optionLabels"] ?? p["option_labels"];
+            if (token == null) return;
+
+            if (token is JObject map)
+            {
+                foreach (var kv in map.Properties())
+                {
+                    var option = new OptionSpec { Key = kv.Name };
+                    ReadLocales(kv.Value, option.Value);
+                    if (option.Value.Count > 0) spec.OptionLabels.Add(option);
+                }
+            }
+            else if (token is JArray arr)
+            {
+                foreach (var item in arr)
+                {
+                    if (!(item is JObject entry)) continue;
+                    var key = entry.Value<string>("value") ?? entry.Value<string>("name");
+                    if (string.IsNullOrEmpty(key)) continue;
+                    var option = new OptionSpec { Key = key };
+                    ReadLocales(entry["label"] ?? entry["name"], option.Value);
+                    if (option.Value.Count > 0) spec.OptionLabels.Add(option);
+                }
+            }
         }
 
         /// <summary>

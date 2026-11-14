@@ -30,14 +30,17 @@ namespace PEV.Scripting
     {
         public const int MaxSide = 1024;
         public const int MinCells = 8;
-        public const int MaxTexelsPerSet = 2_600_000;
+        public const int MaxTexelsPerSet = 4_200_000;
+
+        /// <summary>Floor for the budget's resolution trade. Below this the grains read as blocks.</summary>
+        public const int MinPxWidth = 192;
 
         /// <summary>
         /// Pixel widths are quantised to this step before they enter the structure key.
         /// The camera zooms on the beat, so a continuous width would invalidate the key on
         /// every frame and regenerate eight textures per update — the reported stutter.
         /// </summary>
-        private const int ResolutionStep = 96;
+        public const int ResolutionStep = 96;
 
         private const float GrainPixels = 1.5f;
 
@@ -76,6 +79,20 @@ namespace PEV.Scripting
             public Vector2 NaturalSize;
             public string Key;
             internal int Refs;
+
+            // --- bake bookkeeping -----------------------------------------------------------
+            // A set is computed on a worker and then uploaded a few frames at a time, so it
+            // exists in three states: placed (pixels only), partly uploaded, and complete.
+            internal Color32[][] Pixels;
+            internal int TexW, TexH;
+            internal int Uploaded;
+            internal bool PixelsReady;
+            internal bool Ready;
+            internal string Error;
+            internal float WorkerMs;
+            internal float UploadTotalMs;
+            internal System.Threading.Thread Worker;
+            internal float WorstUploadSliceMs;
         }
 
         public struct Piece
@@ -104,6 +121,10 @@ namespace PEV.Scripting
 
         public struct Request
         {
+            // Field initialisers make the defaulted values real, but the language then requires
+            // an explicit constructor for the struct.
+            public Request() { }
+
             public float WidthWorld;
             public float HeightWorld;
             public Piece[] Pieces;
@@ -113,6 +134,35 @@ namespace PEV.Scripting
             public Color GlowColor;
             public Color SparkColor;
             public float FillOpacity;
+
+            /// <summary>
+            /// How far the fill is lifted toward the outline's bright tone.
+            ///
+            /// The sprite is alpha-blended over the live scene, so the composite inside the
+            /// region is `fill * alpha + behind * (1 - alpha)`. Raising `fill` therefore makes
+            /// everything behind the region read brighter without reading a single pixel of
+            /// it: no grab, no readback, no extra pass. That is the whole of "raise the
+            /// background's exposure through the field"; sampling the scene instead would
+            /// only have been needed to warp its content, which the baking design cannot pay
+            /// for anyway.
+            /// </summary>
+            public float Exposure;
+
+            /// <summary>Frames per second the flipbook is played at. Set by the renderer.</summary>
+            public float EvolveSpeed = 12f;
+
+            /// <summary>
+            /// How long one flipbook cycle lasts, in shader seconds.
+            ///
+            /// The reference advances its displacement field continuously, so it never loops.
+            /// A flipbook must, and a linear drift cannot return to its start without a jump —
+            /// the displacement only repeats every ~21.8 shader-seconds, which would need a
+            /// quarter-thousand frames. So the drift is driven around a circle instead (see
+            /// NoiseComposer): any loop length closes exactly, and the motion still reads as a
+            /// continuous stream. This is the one place the port is not a literal copy, and it
+            /// exists only because a baked cycle cannot chase an unbounded offset.
+            /// </summary>
+            public float LoopPeriod = 2f;
 
             /// <summary>
             /// How much of the spark-processed fill survives, the reference's `fillStrength`.
@@ -182,6 +232,19 @@ namespace PEV.Scripting
             public float TargetPixelWidth;
 
             /// <summary>
+            /// On-screen pixel width of the quad, before the budget shrinks the texture.
+            ///
+            /// The reference sizes its compose and effects targets from the SCREEN —
+            /// `maskPixelScale = 8` means one mask texel is eight screen pixels — while the
+            /// texture here is usually a fraction of that width. Sizing the grids from the
+            /// texture instead made every stair step 4–5x too big: the same displacement then
+            /// throws the coast by whole blocks, which reads as rectangular bites appearing
+            /// at random rather than a fine edge flowing. Kept out of the fingerprint because
+            /// it only decides grid density and is already bucketed by the caller.
+            /// </summary>
+            public int ScreenPixelWidth;
+
+            /// <summary>
             /// Horizontal slice displacement, 0..1. Rows are shifted sideways by a
             /// per-frame amount, which is the reference's GlitchMap: whole scanlines of the
             /// field tear sideways for a frame and snap back.
@@ -217,7 +280,74 @@ namespace PEV.Scripting
         /// </summary>
         public static int Generations;
 
+        /// <summary>
+        /// Worst and most recent bake wall time, in milliseconds.
+        ///
+        /// "It must not stutter" needs a number, not an impression. A bake is the only moment
+        /// this effect touches the main thread, so this is the quantity that decides whether
+        /// the budget holds; the harness asserts a ceiling against it.
+        /// </summary>
+        public static float LastBakeMs;
+
+        /// <summary>
+        /// Wall time of the last bake's texture upload, in milliseconds.
+        ///
+        /// The pixel work is fanned out over workers, but Texture2D.SetPixels32/Apply must
+        /// run on the main thread — so if a bake is slow, this is where to look first, and
+        /// the number says whether the remaining cost is upload or compute.
+        /// </summary>
+        public static float LastUploadMs;
+        public static float WorstBakeMs;
+        public static int Bakes;
+
+        /// <summary>
+        /// What the last bake actually cost, per stage, plus the size it settled on.
+        ///
+        /// The cumulative stage counters are useless for tuning: thirteen bakes summed together
+        /// cannot say whether one budget-driven resolution is too big or the upload is the tail.
+        /// This is one bake's own numbers, taken as deltas around Generate, and it includes the
+        /// resolution the budget policy actually chose — the figure the whole question turns on.
+        /// </summary>
+        public static string LastBakeDetail = "";
+
+        /// <summary>
+        /// How many worker threads a bake may use.
+        ///
+        /// A bake used to take the whole machine. Measured on a 16-core box it ran 466 ms of
+        /// wall time while the game thread still had to render, and saturating every core is
+        /// how a background job becomes a visible stutter without ever touching the main
+        /// thread. Half the cores, at least one, leaves the game its share; the set is bigger
+        /// in wall time and completely invisible, which is the right trade for a texture that
+        /// is only ever seen after it finishes.
+        /// </summary>
+        private static readonly int BakeThreads =
+            Mathf.Max(1, Environment.ProcessorCount / 2);
+
         public static Frames Get(Request req, out string error)
+        {
+            var frames = Begin(req, out error);
+            if (frames == null) return null;
+            // Blocking convenience for callers with no frame loop of their own (diagnostics,
+            // tests). The render path uses Begin + Pump instead, so no frame ever waits.
+            while (!frames.Ready && string.IsNullOrEmpty(frames.Error))
+                Pump(1000f);
+            return frames;
+        }
+
+        /// <summary>
+        /// Places a bake and returns immediately.
+        ///
+        /// Measuring settled the design question: one set is 3 MB of pixels, and doing it
+        /// inline cost 92 ms (later ~300 ms with the screen-density grids) of a single frame —
+        /// 63 ms of render plus 30 ms of texture upload, all on the main thread. That is a
+        /// visible hitch, and it is not avoidable by shaving instructions. So the pixel work
+        /// moves to a worker thread and the upload is spread over consecutive frames by
+        /// <see cref="Pump"/>, with the previous set staying on screen meanwhile.
+        ///
+        /// The returned object is cached by key immediately, so a second request for the same
+        /// structure joins the bake in flight rather than starting another.
+        /// </summary>
+        public static Frames Begin(Request req, out string error)
         {
             error = null;
             string key = Fingerprint(req);
@@ -227,20 +357,105 @@ namespace PEV.Scripting
                 return hit;
             }
 
+            var frames = new Frames { Key = key, Refs = 1 };
             try
             {
-                Generations++;
-                var frames = Generate(req);
-                frames.Key = key;
-                frames.Refs = 1;
-                Cache[key] = frames;
-                return frames;
+                Prepare(req, frames);
             }
             catch (Exception e)
             {
                 error = "noise texture generation failed: " + e.Message;
                 return null;
             }
+
+            Generations++;
+            Bakes++;
+            Cache[key] = frames;
+
+            // WarmTextures must run here, on the main thread: the noise maps decode lazily
+            // through a Unity texture read, and letting two workers race that decode would
+            // allocate twice and leak one copy.
+            NoiseComposer.WarmTextures();
+
+            var worker = new System.Threading.Thread(() => RunWorker(req, frames))
+            {
+                IsBackground = true,
+                Name = "PEV.NoiseBake"
+            };
+            frames.Worker = worker;
+            worker.Start();
+            return frames;
+        }
+
+        /// <summary>
+        /// Uploads as much of any finished bake as fits in <paramref name="budgetMs"/>.
+        ///
+        /// Textures can only be created on the main thread, so this is the half of the bake
+        /// that cannot be moved off it. It is bounded per call, and one call per rendered
+        /// frame is enough: 96 frames at 242x132 leave the queue in about a quarter second,
+        /// with the effect showing the set it already had.
+        ///
+        /// A set with nothing uploaded yet always gets its first two frames regardless of the
+        /// budget, so a field appears on the frame it is placed instead of a beat later.
+        /// </summary>
+        public static void Pump(float budgetMs)
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            foreach (var kv in Cache)
+            {
+                var f = kv.Value;
+                if (f == null || !f.PixelsReady || f.Ready) continue;
+
+                bool first = f.Uploaded == 0;
+                while (f.Uploaded < f.Textures.Length)
+                {
+                    UploadOne(f, f.Uploaded);
+                    f.Uploaded++;
+                    if (first && f.Uploaded >= 2) break;
+                    if (watch.Elapsed.TotalMilliseconds >= budgetMs) break;
+                }
+
+                float slice = (float)watch.Elapsed.TotalMilliseconds;
+                if (slice > f.WorstUploadSliceMs) f.WorstUploadSliceMs = slice;
+
+                if (f.Uploaded >= f.Textures.Length)
+                {
+                    f.Ready = true;
+                    LastUploadMs = slice;
+                    LastBakeDetail = $"{f.TexW}x{f.TexH}x{f.Textures.Length} " +
+                                     $"payload={(long)f.TexW * f.TexH * f.Textures.Length / 1024}KB " +
+                                     $"worker={f.WorkerMs:F1}ms uploadTotal={f.UploadTotalMs:F1}ms " +
+                                     $"worstSlice={f.WorstUploadSliceMs:F1}ms";
+                    // What the frame actually paid. The worker's duration is reported above so
+                    // the two cannot be confused: only this number can drop a frame.
+                    LastBakeMs = f.WorstUploadSliceMs;
+                    if (LastBakeMs > WorstBakeMs) WorstBakeMs = LastBakeMs;
+                }
+                if (watch.Elapsed.TotalMilliseconds >= budgetMs) return;
+            }
+        }
+
+        private static void UploadOne(Frames f, int k)
+        {
+            var pixels = f.Pixels[k];
+            if (pixels == null) return;
+
+            var tex = new Texture2D(f.TexW, f.TexH, TextureFormat.RGBA32, false)
+            {
+                wrapMode = TextureWrapMode.Repeat,
+                filterMode = FilterMode.Bilinear,
+                name = "PEV.Noise." + k
+            };
+            tex.SetPixels32(pixels);
+            tex.Apply(false);
+
+            float started = Time.realtimeSinceStartup;
+            f.Textures[k] = tex;
+            f.Sprites[k] = Sprite.Create(
+                tex, new Rect(0f, 0f, f.TexW, f.TexH), new Vector2(0.5f, 0.5f), PixelsPerUnit);
+            f.Sprites[k].name = "PEV.NoiseSprite." + k;
+            f.UploadTotalMs += (Time.realtimeSinceStartup - started) * 1000f;
+            f.Pixels[k] = null;
         }
 
         public static void Release(Frames frames)
@@ -276,6 +491,11 @@ namespace PEV.Scripting
 
         private static bool HitIsAlive(Frames f)
         {
+            // A set that is still being built or uploaded is alive even though most of its
+            // slots are null: it has been placed in the cache on purpose so a second request
+            // for the same structure joins it instead of starting a competitor. Only a set
+            // that claims to be finished is checked slot by slot.
+            if (!f.Ready) return string.IsNullOrEmpty(f.Error);
             if (f.Textures == null || f.Sprites == null) return false;
             foreach (var t in f.Textures) if (t == null) return false;
             foreach (var s in f.Sprites) if (s == null) return false;
@@ -302,7 +522,8 @@ namespace PEV.Scripting
             sb.Append(F(r.WidthWorld)).Append('|').Append(F(r.HeightWorld)).Append('|')
               .Append(C(r.FillColor)).Append('|').Append(C(r.EdgeColor)).Append('|')
               .Append(C(r.SparkColor)).Append('|')
-              .Append(F(r.FillOpacity)).Append('|').Append(F(r.EdgeOpacity)).Append('|')
+              .Append(F(r.FillOpacity)).Append('|').Append(F(r.Exposure)).Append('|')
+              .Append(F(r.EdgeOpacity)).Append('|')
               .Append(F(r.SparkOpacity)).Append('|')
               .Append(F(r.Brightness)).Append('|').Append(F(r.Saturation)).Append('|')
               .Append(F(r.SampleRate)).Append('|').Append(F(r.LineOpacity)).Append('|')
@@ -331,9 +552,17 @@ namespace PEV.Scripting
         private static string F(float v) => v.ToString("F3", CultureInfo.InvariantCulture);
         private static string C(Color c) => F(c.r) + "," + F(c.g) + "," + F(c.b);
 
-        private static Frames Generate(Request req)
+        /// <summary>
+        /// Main-thread half of a bake: sizes the set, allocates the pixel buffers, and parks
+        /// the results on <paramref name="outFrames"/> for the worker to fill.
+        ///
+        /// Sizing happens here rather than on the worker because it decides how much memory
+        /// the worker will touch, and a mis-sized set should fail on the frame that asked for
+        /// it rather than silently on a background thread.
+        /// </summary>
+        private static void Prepare(Request req, Frames outFrames)
         {
-            int frames = Mathf.Clamp(req.FrameCount, 2, 32);
+            int frames = Mathf.Clamp(req.FrameCount, 2, 128);
             float sampleRate = Mathf.Clamp(req.SampleRate, 0.1f, 8f);
             int block = Mathf.Clamp(Mathf.RoundToInt(GrainPixels / sampleRate), 1, 16);
 
@@ -354,118 +583,139 @@ namespace PEV.Scripting
             int cellsX = Mathf.Clamp(Mathf.RoundToInt(pxW / (float)block), MinCells, maxCells);
             int cellsY = Mathf.Clamp(Mathf.RoundToInt(pxH / (float)block), MinCells, maxCells);
 
-            // Over budget, cut the flipbook length first: shrinking the texture would force
-            // every grain to cover more screen pixels, which is the blockiness we avoid.
+            // Over budget, trade resolution before frame count.
+            //
+            // Temporal resolution is what the eye reads as flow: a short cycle played at the
+            // script's frame rate either strobes or loops visibly, and neither reads as the
+            // reference's continuous drift. A slightly coarser texture costs nothing visible —
+            // the reference's own mask is 1/8 of the screen — while dropping frames costs the
+            // motion. So the width shrinks first, and only a still-too-large set loses frames.
+            while (cellsX * block * cellsY * block * frames > MaxTexelsPerSet && pxW > MinPxWidth)
+            {
+                pxW = Mathf.Max(MinPxWidth, Mathf.RoundToInt(pxW * 0.8f));
+                pxH = Mathf.Max(16, Mathf.RoundToInt(pxW * aspect));
+                cellsX = Mathf.Clamp(Mathf.RoundToInt(pxW / (float)block), MinCells, maxCells);
+                cellsY = Mathf.Clamp(Mathf.RoundToInt(pxH / (float)block), MinCells, maxCells);
+            }
             while (cellsX * block * cellsY * block * frames > MaxTexelsPerSet && frames > 2)
                 frames--;
 
-            int texW = cellsX * block;
-            int texH = cellsY * block;
+            outFrames.TexW = cellsX * block;
+            outFrames.TexH = cellsY * block;
+            outFrames.Textures = new Texture2D[frames];
+            outFrames.Sprites = new Sprite[frames];
+            outFrames.Pixels = new Color32[frames][];
+            outFrames.NaturalSize = new Vector2(outFrames.TexW / PixelsPerUnit, outFrames.TexH / PixelsPerUnit);
+        }
 
-            float cellW = req.WidthWorld / cellsX;
-            float cellH = req.HeightWorld / cellsY;
+        /// <summary>
+        /// Worker half of a bake: renders every frame's pixels, then hands them back.
+        ///
+        /// Nothing here touches UnityEngine objects. Texture creation is the one thing that
+        /// cannot happen off the main thread, and it is left to Pump; everything else — the
+        /// compose, edge and glow passes, the spark composite — is pure arithmetic over
+        /// arrays, which is exactly what makes this split possible.
+        /// </summary>
+        private static void RunWorker(Request req, Frames f)
+        {
+            try
+            {
+                float started = Time.realtimeSinceStartup;
+                int frames = f.Textures.Length;
+                RenderPixels(req, f.Pixels, f.TexW, f.TexH);
+                f.WorkerMs = (Time.realtimeSinceStartup - started) * 1000f;
+                f.PixelsReady = true;
+            }
+            catch (Exception e)
+            {
+                f.Error = "noise bake failed: " + e.Message;
+            }
+        }
 
+        /// <summary>
+        /// Renders every frame of a prepared set into <paramref name="pixelSets"/>.
+        ///
+        /// Pure array work with no Unity calls, so it is safe on a worker thread. The fan-out
+        /// is twice over: across frames, and across row bands within a frame.
+        /// </summary>
+        private static void RenderPixels(Request req, Color32[][] pixelSets, int texW, int texH)
+        {
+            int frames = pixelSets.Length;
+            int block = Mathf.Clamp(Mathf.RoundToInt(GrainPixels / Mathf.Clamp(req.SampleRate, 0.1f, 8f)), 1, 16);
+            uint seed = (uint)req.Seed;
             var pieces = req.Pieces ?? Array.Empty<Piece>();
 
-            // --- coverage parameters --------------------------------------------------
-            // This mirrors the reference's compose pass, which is the correction that
-            // matters most: coverage is NOT a level set of a noise field. It is the plain
-            // union of the rectangles, rasterised on a coarse grid, with the noise only
-            // displacing WHERE each cell is sampled. That is why the reference's coast is a
-            // mostly-straight edge with small ragged bites and detached specks, rather than
-            // the deep bays and islands a thresholded field produces.
-            float displace = Mathf.Clamp01(req.Displace);
-            uint seed = (uint)req.Seed;
+            float margin = Mathf.Max(0f, req.Margin);
+            float totalW = Mathf.Max(1e-3f, req.WidthWorld + margin * 2f);
+            float totalH = Mathf.Max(1e-3f, req.HeightWorld + margin * 2f);
+            int cellsX = Mathf.Max(1, texW / block);
+            int cellsY = Mathf.Max(1, texH / block);
 
-            // Cells are the staircase unit. Fixed in screen pixels rather than in field
-            // units, because the reference's cell size is a screen-space constant: zooming
-            // in must not make the steps bigger.
-            int maskDiv = Mathf.Clamp(Mathf.RoundToInt(11f / Mathf.Max(1, block)), 1, 12);
-            int maskW = Mathf.Max(3, Mathf.CeilToInt(cellsX / (float)maskDiv));
-            int maskH = Mathf.Max(3, Mathf.CeilToInt(cellsY / (float)maskDiv));
+            // One flipbook cycle is exactly `frames / evolveSpeed` seconds of playback, and the
+            // drift must close over that span or the loop point jumps. The script walks
+            // frame = floor(t * evolveSpeed) % frames, so this is the only span where a step
+            // at the wrap is the same size as every other step.
+            req.LoopPeriod = frames / Mathf.Max(1f, req.EvolveSpeed);
 
-            // Displacement strength, in coarse cells. The reference uses ~1 cell of drift;
-            // EdgeDistance scales that so an author can go from "almost straight" to
-            // "badly torn" without changing anything else.
-            float edgeDistance = Mathf.Clamp(req.EdgeDistance <= 0f ? 0.5f : req.EdgeDistance, 0f, 2f);
-            float dispCells = edgeDistance * displace;
-
-            // Feature size: EdgeDetail noise cells across the shorter side of the *texture*,
-            // not the world, so the wobble keeps the same screen frequency at any field size.
-            float detail = Mathf.Clamp(req.EdgeDetail <= 0f ? 8f : req.EdgeDetail, 1f, 32f);
-            float noiseFreq = detail / Mathf.Max(8f, Mathf.Min(maskW, maskH) * 0.5f);
-
-            // How much of the exterior survives as detached specks. Expressed as a threshold
-            // on the noise level: higher fragment means peaks further from the region survive.
-            float fragment = Mathf.Clamp01(req.EdgeFragment <= 0f ? 0f : req.EdgeFragment);
-
-            // --- layers ---------------------------------------------------------------
-            // One mask per frame, so these live outside the per-frame loop and are reused.
-            var insideGrid = new bool[cellsX * cellsY];
-            var edgeGrid = new bool[cellsX * cellsY];
-            var glowGrid = new float[cellsX * cellsY];
-            var ownerGrid = new int[cellsX * cellsY];
-            var coarseIn = new bool[maskW * maskH];
-            var coarseOwner = new int[maskW * maskH];
-
-            // --- colours -------------------------------------------------------------
-            // The reference composites premultiplied: the fill contributes
-            // `fill * 0.7132 * 0.667` while the border contributes `edge * 0.8`, so the
-            // border ends up about 1.7x brighter than the fill. That ratio is the whole
-            // reason the region reads as a dark cut-out with a lit rim; drawing both at
-            // full saturation makes them blend into one bright wash.
-            //
-            // Measured from the reference video, the fill sits at ~0.36 of the outline's
-            // brightness. Everything stays derived from the one colour, so recolouring
-            // still gives a consistent set.
-            Color fillColor = HsvVariant(req.FillColor, 1.0f, FillValueScale);
-            Color glowColor = HsvVariant(req.GlowColor, 1.2f, 1.0f);
-            var sparkTint = HsvVariant(req.SparkColor, 1.07f, 1.0f);
-
-            float sparkDensity = Mathf.Clamp01(0.075f * Mathf.Clamp01(req.Brightness));
-            float lineProb = Mathf.Clamp01(req.LineOpacity);
-
-            var outFrames = new Frames
+            var framesBuilt = new NoiseComposer.Frame[frames];
+            var options = new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = BakeThreads };
+            System.Threading.Tasks.Parallel.For(0, frames, options, k =>
             {
-                Textures = new Texture2D[frames],
-                Sprites = new Sprite[frames]
-            };
-
-
-            for (int k = 0; k < frames; k++)
-            {
-                // Two clocks, on purpose. The grain re-rolls every frame, which is what makes
-                // the texture shimmer; the coverage keeps one seed and drifts, so the
-                // silhouette flows instead of jumping. Re-rolling both per frame is what made
-                // the whole field read as a strobe.
+                // The seed only reaches the glitch pass. The composer's grain comes from the
+                // noise maps, sampled at a drift driven by the frame's own shader time, so
+                // consecutive frames move the same grains rather than re-rolling them — which
+                // is what makes the field flow instead of shimmer. Keeping one seed here is
+                // what stops the coastline from being re-rolled per frame.
                 uint kseed = (uint)(k * 7919) + seed * 2654435761u;
-
-                // Per-row horizontal tear, the reference's GlitchMap. Rows are addressed in
-                // texture space so a shift wraps instead of smearing, and only a fraction of
-                // rows move — a full shift of every row reads as a scroll, not a glitch.
-                int[] rowShift = null;
-                float glitch = Mathf.Clamp01(req.Glitch);
-                if (glitch > 0f && texH > 0)
-                {
-                    rowShift = new int[texH];
-                    for (int y = 0; y < texH; y++)
-                    {
-                        uint gh = Hash(0x5BD1u, (uint)y, kseed);
-                        if ((gh & 0xFFFF) / 65535f >= glitch * 0.35f) continue;
-                        int span = Mathf.Max(1, Mathf.RoundToInt(glitch * texW * 0.18f));
-                        rowShift[y] = Mathf.RoundToInt(((gh >> 16) & 0xFFFF) / 65535f * 2f - 1f) * span;
-                    }
-                }
 
                 // The whole pipeline — coverage, edge, five glow passes, composite — comes from
                 // the ported reference passes. Animation is driven by the frame index rather
                 // than a wall clock so the flipbook loops exactly with the song.
-                float frameTime = k * (LoopPeriod / (float)frames);
-                var pixels = NoiseComposer.Compose(pieces, req, texW, texH, frameTime, kseed);
+                // One frame step of SHADER time. The playback advances the frame index at
+                // EvolveSpeed per second, so each frame must represent 1/EvolveSpeed seconds —
+                // not LoopPeriod/frames, which made the field run 90x fast and read as random
+                // regeneration rather than flow.
+                float frameTime = k / Mathf.Max(1f, req.EvolveSpeed);
+                framesBuilt[k] = NoiseComposer.Frame.Build(pieces, req, texW, texH, frameTime, kseed, frames);
+                pixelSets[k] = new Color32[texW * texH];
+            });
 
-                if (rowShift != null)
+            // Rows are chunked coarsely: each band costs a fresh pass over the 6-pixel cell
+            // column, and too many bands would spend more time on that than on the pixels.
+            //
+            // The band count is per frame. It used to be `frames * max(1, texH / 24)` and then
+            // multiplied by `frames` again at the loop bound, which dispatched 46,080 tasks for
+            // a 132-row texture — 475 of every 480 bands per frame were empty.
+            int bandsPerFrame = Mathf.Clamp(texH / 24, 1, 8);
+            System.Threading.Tasks.Parallel.For(0, frames * bandsPerFrame, options, task =>
+            {
+                int k = task / bandsPerFrame;
+                int band = task % bandsPerFrame;
+                int y0 = (int)((long)texH * band / bandsPerFrame);
+                int y1 = (int)((long)texH * (band + 1) / bandsPerFrame);
+                if (y1 > y0) framesBuilt[k].RenderRows(pixelSets[k], y0, y1);
+            });
+
+            // Per-row horizontal tear, the reference's GlitchMap. After the passes, because it
+            // moves finished rows rather than changing what is drawn, and off the render so the
+            // bands never write the same row twice.
+            float glitch = Mathf.Clamp01(req.Glitch);
+            if (glitch > 0f && texH > 0)
+            {
+                System.Threading.Tasks.Parallel.For(0, frames, options, k =>
                 {
-                    var shiftedPixels = new Color32[pixels.Length];
+                    var pixels = pixelSets[k];
+                    if (pixels == null) return;
+                    uint kseed = (uint)(k * 7919) + seed * 2654435761u;
+                    var rowShift = new int[texH];
+                    for (int y = 0; y < texH; y++)
+                    {
+                        uint gh = Hash(0x5BD1u, (uint)y, kseed);
+                        if ((gh & 0xFFFF) / 65535f >= glitch * 0.35f) continue;
+                        int rowSpan = Mathf.Max(1, Mathf.RoundToInt(glitch * texW * 0.18f));
+                        rowShift[y] = Mathf.RoundToInt(((gh >> 16) & 0xFFFF) / 65535f * 2f - 1f) * rowSpan;
+                    }
+                    var shifted = new Color32[pixels.Length];
                     for (int y = 0; y < texH; y++)
                     {
                         int row = y * texW;
@@ -478,416 +728,15 @@ namespace PEV.Scripting
                                 sx %= texW;
                                 if (sx < 0) sx += texW;
                             }
-                            shiftedPixels[row + x] = pixels[row + sx];
+                            shifted[row + x] = pixels[row + sx];
                         }
                     }
-                    pixels = shiftedPixels;
-                }
-
-                var tex = new Texture2D(texW, texH, TextureFormat.RGBA32, false)
-                {
-                    wrapMode = TextureWrapMode.Repeat,
-                    filterMode = FilterMode.Bilinear,
-                    name = "PEV.Noise." + k
-                };
-                tex.SetPixels32(pixels);
-                tex.Apply(false);
-
-                outFrames.Textures[k] = tex;
-                outFrames.Sprites[k] = Sprite.Create(
-                    tex, new Rect(0f, 0f, texW, texH), new Vector2(0.5f, 0.5f), PixelsPerUnit);
-                outFrames.Sprites[k].name = "PEV.NoiseSprite." + k;
-            }
-
-            outFrames.NaturalSize = new Vector2(texW / PixelsPerUnit, texH / PixelsPerUnit);
-            return outFrames;
-        }
-
-        /// <summary>
-        /// Rasterises one frame's coverage, border and glow.
-        ///
-        /// The important correction over the first implementation: coverage is the plain
-        /// union of the rectangles. The noise does not decide *whether* a point is inside —
-        /// it only shifts *which* point is sampled, by about one coarse cell. That is what
-        /// the reference compose pass does (`uv + disp * 0.1`, then a mask lookup), and it
-        /// is why its coast is a mostly-straight edge with small ragged bites and stray
-        /// specks, not the deep bays and islands a thresholded noise field produces.
-        ///
-        /// Stages, matching the reference:
-        ///   1. coarse coverage from the displaced sample, per piece, unioned;
-        ///   2. fine grid inherits it, so the silhouette steps at coarse resolution while
-        ///      the border is traced at fine resolution and stays one cell thick;
-        ///   3. border = covered cell with an uncovered neighbour (the reference dilates the
-        ///      mask and subtracts it, which is the same set);
-        ///   4. glow = successive dilations outside the border with decaying weight, which is
-        ///      the reference's 5-pass bloom without needing a render target.
-        /// </summary>
-        private static void BuildFrameMask(Piece[] pieces, Request req,
-            int cellsX, int cellsY, uint kseed, float drift, float noiseFreq,
-            float dispCells, float fragment,
-            int maskDiv, int maskW, int maskH, bool[] coarseIn, int[] coarseOwner,
-            bool[] inside, bool[] edge, float[] glow, int[] owner)
-        {
-            // Sampling covers the padded quad, not just the geometry: the margin is where
-            // detached flakes live.
-            float margin = Mathf.Max(0f, req.Margin);
-            float totalW = req.WidthWorld + margin * 2f;
-            float totalH = req.HeightWorld + margin * 2f;
-            float halfW = totalW * 0.5f;
-            float halfH = totalH * 0.5f;
-
-            for (int j = 0; j < maskH; j++)
-            {
-                for (int i = 0; i < maskW; i++)
-                {
-                    float u = (i + 0.5f) / maskW;
-                    float v = (j + 0.5f) / maskH;
-
-                    // Displace the *sample position*, not the coverage decision. This is the
-                    // whole trick: the region stays a rectangle, but the cell that gets read
-                    // for a given point can come from a neighbour, so the coast tears and
-                    // scatters instead of bending.
-                    float shiftU = 0f, shiftV = 0f;
-                    if (dispCells > 0f)
-                    {
-                        // Value noise in lattice space; drift scrolls it so the tearing
-                        // travels along the edge rather than flickering in place.
-                        float nx = Fbm(u * noiseFreq * maskW + drift, v * noiseFreq * maskH,
-                                       LoopPeriod, kseed);
-                        float ny = Fbm(u * noiseFreq * maskW + drift + 37.7f,
-                                       v * noiseFreq * maskH + 11.3f, LoopPeriod, kseed + 977u);
-                        shiftU = (nx * 2f - 1f) * dispCells / maskW;
-                        shiftV = (ny * 2f - 1f) * dispCells / maskH;
-                    }
-
-                    float wx = Mathf.Clamp(u + shiftU, 0f, 1f) * totalW - halfW;
-                    float wy = Mathf.Clamp(v + shiftV, 0f, 1f) * totalH - halfH;
-
-                    float d;
-                    int own = SignedDistance(pieces, wx, wy, out d, out _);
-
-                    bool cover = d <= 0f;
-                    int m = j * maskW + i;
-
-                    if (!cover && fragment > 0f)
-                    {
-                        // Stray specks just past the coast. The reference gets these from the
-                        // same displacement pulling a distant covered cell inward, which only
-                        // reaches about one cell; a slightly wider band here reproduces the
-                        // look without needing the displacement to be enormous.
-                        float n = Fbm(u * noiseFreq * maskW + drift, v * noiseFreq * maskH,
-                                      LoopPeriod, kseed + 4111u);
-                        float reach = Mathf.Max(0.001f, d) / Mathf.Max(1e-4f, Mathf.Min(totalW, totalH));
-                        cover = n > 0.62f && reach < fragment * 0.02f;
-                    }
-
-                    // Covered but outside every piece: a stray speck. Keeping the owner from
-                    // the nearest geometry would tint it with a neighbour's colour; -1 lets it
-                    // fall back to the cluster's own palette, which is correct.
-                    coarseOwner[m] = cover ? own : -1;
-                    coarseIn[m] = cover;
-                }
-            }
-
-            for (int cy = 0; cy < cellsY; cy++)
-            {
-                int mj = Mathf.Min(maskH - 1, cy / maskDiv);
-                for (int cx = 0; cx < cellsX; cx++)
-                {
-                    int mi = Mathf.Min(maskW - 1, cx / maskDiv);
-                    int m = mj * maskW + mi;
-                    int idx = cy * cellsX + cx;
-                    inside[idx] = coarseIn[m];
-                    owner[idx] = coarseOwner[m];
-                    glow[idx] = 0f;
-                }
-            }
-
-            int thickness = Mathf.Clamp(req.EdgeThickness <= 0 ? 1 : req.EdgeThickness, 1, 6);
-
-            for (int cy = 0; cy < cellsY; cy++)
-            {
-                for (int cx = 0; cx < cellsX; cx++)
-                {
-                    int i = cy * cellsX + cx;
-                    if (!inside[i]) { edge[i] = false; continue; }
-
-                    // Edge = covered cell within `thickness` cells of an uncovered one.
-                    // Thickness 1 is the reference's single-cell border; thicker borders
-                    // read as a drawn outline rather than a cut-out, which is sometimes
-                    // wanted on a small field.
-                    bool nearOutside = false;
-                    for (int oy = -thickness + 1; oy < thickness && !nearOutside; oy++)
-                    {
-                        int ny = cy + oy;
-                        if (ny < 0 || ny >= cellsY) { nearOutside = true; break; }
-                        for (int ox = -thickness + 1; ox < thickness; ox++)
-                        {
-                            int nx = cx + ox;
-                            if (nx < 0 || nx >= cellsX) { nearOutside = true; break; }
-                            if (!inside[ny * cellsX + nx]) { nearOutside = true; break; }
-                        }
-                    }
-                    edge[i] = nearOutside;
-                }
-            }
-
-            // Glow: successive dilations of the border, each ring dimmer. The reference runs
-            // this as five render passes; baking it here is cheaper and lands in the same
-            // place. The weights fall off much faster than a linear ramp, otherwise the
-            // halo reads as a soft gradient smear instead of a lit rim.
-            int passes = Mathf.Clamp(Mathf.RoundToInt(req.GlowPasses), 0, 6);
-            if (passes > 0)
-            {
-                float[] ring = new float[cellsX * cellsY];
-                float[] weight = { 0.45f, 0.22f, 0.10f, 0.045f, 0.018f };
-
-                // Snapshot per pass, never in place.
-                //
-                // The neighbour test reads which cells have already grown, and writing that
-                // during the same raster sweep lets cell (cx,cy) mark itself grown and then be
-                // seen by (cx+1,cy) a few instructions later — which marks that one too. One
-                // pass then floods the whole texture instead of growing a single ring, and the
-                // glow baked out as a flat wash covering 42% of the quad at full first-pass
-                // weight. Expanding from a frozen copy is what makes a pass one cell wide.
-                bool[] grown = (bool[])inside.Clone();
-                bool[] before = new bool[cellsX * cellsY];
-
-                for (int p = 0; p < passes; p++)
-                {
-                    float w = weight[Mathf.Min(p, weight.Length - 1)];
-                    Array.Copy(grown, before, grown.Length);
-
-                    for (int cy = 0; cy < cellsY; cy++)
-                    {
-                        for (int cx = 0; cx < cellsX; cx++)
-                        {
-                            int i = cy * cellsX + cx;
-                            if (before[i]) { ring[i] = 0f; continue; }
-
-                            // Adjacent to the region or to a ring from an EARLIER pass.
-                            bool touch = false;
-                            for (int oy = -1; oy <= 1 && !touch; oy++)
-                            {
-                                int ny = cy + oy;
-                                if (ny < 0 || ny >= cellsY) continue;
-                                for (int ox = -1; ox <= 1; ox++)
-                                {
-                                    int nx = cx + ox;
-                                    if (nx < 0 || nx >= cellsX) continue;
-                                    if (before[ny * cellsX + nx]) { touch = true; break; }
-                                }
-                            }
-                            ring[i] = touch ? w : 0f;
-                            if (touch) grown[i] = true;
-                        }
-                    }
-
-                    // Only the newest ring keeps its weight, so each successive pass is dimmer
-                    // than the one before it and the halo fades outward.
-                    for (int i = 0; i < glow.Length; i++)
-                        if (ring[i] > 0f) glow[i] = ring[i];
-                }
+                    pixelSets[k] = shifted;
+                });
             }
         }
 
-        /// <summary>
-        /// Hue-preserving variant of a colour: saturation and value are scaled, exactly as
-        /// the reference derives its fill/glow/spark colours from the one outline colour.
-        /// </summary>
-        private static Color HsvVariant(Color c, float satScale, float valScale)
-        {
-            Color.RGBToHSV(c, out float h, out float s, out float v);
-            return Color.HSVToRGB(h, Mathf.Clamp01(s * satScale), Mathf.Clamp01(v * valScale));
-        }
 
-        /// <summary>Lattice period of the shape noise; drift completes whole periods per loop.</summary>
-        private const int LoopPeriod = 8;
-
-        /// <summary>
-        /// Signed distance to the union of the pieces, negative inside, plus the index of
-        /// the piece that decides the colour at this point (-1 outside every piece) and the
-        /// coastline band of the nearest piece.
-        ///
-        /// The band travels with the distance rather than being a cluster-wide constant:
-        /// band width has to follow each region's own size, or a small rectangle sharing a
-        /// depth with a large one is eroded by the large one's band and renders as debris.
-        /// </summary>
-        /// <summary>
-        /// Signed distance to an ellipse with independent half-axes, negative inside.
-        ///
-        /// A circle was originally a single radius, but the effect is placed as a decoration,
-        /// and a decoration has a width and a height — the author resizes an axis and expects
-        /// the region to follow. Treating the two separately is what makes a circle respond to
-        /// the same scale handles a rectangle does.
-        ///
-        /// The exact ellipse distance is an elliptic integral; this is the standard
-        /// quasi-Euclidean approximation, which is within a percent for the aspect ratios a
-        /// author can reach with the scale handles and far cheaper per texel.
-        /// </summary>
-        private static float EllipseDistance(float lx, float ly, float halfX, float halfY, float feather)
-        {
-            float a = Mathf.Max(1e-4f, Mathf.Abs(halfX) - feather * 0.5f);
-            float b = Mathf.Max(1e-4f, Mathf.Abs(halfY) - feather * 0.5f);
-
-            // Scale to the unit circle, take the Euclidean distance there, then map back by
-            // the smaller axis. This is exact on the axes and slightly generous diagonally.
-            float nx = lx / a;
-            float ny = ly / b;
-            float k = Mathf.Min(a, b);
-            return (Mathf.Sqrt(nx * nx + ny * ny) - 1f) * k;
-        }
-
-        private static int SignedDistance(Piece[] pieces, float px, float py,
-            out float distance, out float band)
-        {
-            distance = float.MaxValue;
-            band = 0.05f;
-            int ownerIdx = -1;
-            bool any = false;
-
-            for (int i = 0; i < pieces.Length; i++)
-            {
-                var p = pieces[i];
-                float dx = px - p.Offset.x;
-                float dy = py - p.Offset.y;
-
-                float rad = p.Rotation * Mathf.Deg2Rad;
-                float cos = Mathf.Cos(rad), sin = Mathf.Sin(rad);
-                float lx = dx * cos + dy * sin;
-                float ly = -dx * sin + dy * cos;
-
-                float d;
-                if (p.Circle)
-                {
-                    d = EllipseDistance(lx, ly, p.Half.x, p.Half.y, p.Feather);
-                }
-                else
-                {
-                    // Box distance: negative inside, and its magnitude is the distance to
-                    // the nearest side, which is what the bias needs.
-                    float qx = Mathf.Abs(lx) - p.Half.x;
-                    float qy = Mathf.Abs(ly) - p.Half.y;
-                    d = qx > 0f && qy > 0f
-                        ? Mathf.Sqrt(qx * qx + qy * qy)
-                        : Mathf.Max(qx, qy);
-                }
-
-                if (d < distance)
-                {
-                    distance = d;
-                    band = Mathf.Max(0.05f, p.Band);
-                    // Colour comes from whichever region the point actually sits in.
-                    if (d <= 0f) { ownerIdx = i; any = true; }
-                }
-            }
-
-            if (!any) ownerIdx = -1;
-            return ownerIdx;
-        }
-
-        /// <summary>
-        /// Two-octave periodic value noise. One octave gives smooth bays but a coastline
-        /// that reads as a sine wave; the second octave roughens the border while keeping
-        /// the large structure, which is what the reference's coastlines look like.
-        /// </summary>
-        private static float Fbm(float x, float y, int period, uint seed)
-        {
-            float n = PeriodicNoise(x, y, period, seed);
-            n += 0.5f * PeriodicNoise(x * 2f, y * 2f, period * 2, seed + 977u);
-            return n / 1.5f;
-        }
-
-        /// <summary>
-        /// Smooth value noise on a lattice that wraps every <paramref name="period"/> cells.
-        /// Wrapping is what lets the flipbook loop: drifting by a whole number of periods
-        /// over the frame set returns exactly to the first frame, so the animation repeats
-        /// without a visible jump instead of snapping back.
-        /// </summary>
-        private static float PeriodicNoise(float x, float y, int period, uint seed)
-        {
-            int x0 = Mathf.FloorToInt(x), y0 = Mathf.FloorToInt(y);
-            float fx = x - x0, fy = y - y0;
-            fx = fx * fx * (3f - 2f * fx);
-            fy = fy * fy * (3f - 2f * fy);
-
-            uint v00 = Hash(Wrap(x0, period), Wrap(y0, period), seed);
-            uint v10 = Hash(Wrap(x0 + 1, period), Wrap(y0, period), seed);
-            uint v01 = Hash(Wrap(x0, period), Wrap(y0 + 1, period), seed);
-            uint v11 = Hash(Wrap(x0 + 1, period), Wrap(y0 + 1, period), seed);
-
-            float a = (v00 >> 8) / 16777215f;
-            float b = (v10 >> 8) / 16777215f;
-            float c = (v01 >> 8) / 16777215f;
-            float e = (v11 >> 8) / 16777215f;
-            float top = a + (b - a) * fx;
-            float bot = c + (e - c) * fx;
-            return top + (bot - top) * fy;
-        }
-
-        private static uint Wrap(int v, int period)
-        {
-            int m = v % period;
-            if (m < 0) m += period;
-            return (uint)m;
-        }
-
-        /// <summary>
-        /// Index of the piece containing this point, or -1. Pieces are independent shapes,
-        /// so the first match decides the colour; later pieces only extend the silhouette.
-        /// </summary>
-        private static int OwnerPiece(Piece[] pieces, float px, float py)
-        {
-            for (int i = 0; i < pieces.Length; i++)
-            {
-                var p = pieces[i];
-                float dx = px - p.Offset.x;
-                float dy = py - p.Offset.y;
-
-                float rad = p.Rotation * Mathf.Deg2Rad;
-                float cos = Mathf.Cos(rad), sin = Mathf.Sin(rad);
-                float lx = dx * cos + dy * sin;
-                float ly = -dx * sin + dy * cos;
-
-                if (p.Circle)
-                {
-                    if (EllipseDistance(lx, ly, p.Half.x, p.Half.y, 0f) <= 0f) return i;
-                }
-                else if (Mathf.Abs(lx) <= p.Half.x && Mathf.Abs(ly) <= p.Half.y)
-                {
-                    return i;
-                }
-            }
-            return -1;
-        }
-
-        /// <summary>Boolean union of every piece at this world position.</summary>
-        private static bool InUnion(Piece[] pieces, float px, float py)
-        {
-            if (pieces.Length == 0) return true;
-
-            for (int i = 0; i < pieces.Length; i++)
-            {
-                var p = pieces[i];
-                float dx = px - p.Offset.x;
-                float dy = py - p.Offset.y;
-
-                float rad = p.Rotation * Mathf.Deg2Rad;
-                float cos = Mathf.Cos(rad), sin = Mathf.Sin(rad);
-                float lx = dx * cos + dy * sin;
-                float ly = -dx * sin + dy * cos;
-
-                if (p.Circle)
-                {
-                    if (EllipseDistance(lx, ly, p.Half.x, p.Half.y, p.Feather) <= 0f) return true;
-                }
-                else
-                {
-                    if (Mathf.Abs(lx) <= p.Half.x && Mathf.Abs(ly) <= p.Half.y) return true;
-                }
-            }
-            return false;
-        }
 
         private static uint Hash(uint a, uint b, uint c)
         {

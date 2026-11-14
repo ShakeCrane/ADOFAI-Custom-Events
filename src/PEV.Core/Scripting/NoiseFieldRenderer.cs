@@ -51,6 +51,16 @@ namespace PEV.Scripting
             public Color GlowColor;
             public Color SparkColor;
             public float FillOpacity = 0.667f;
+            public float Exposure;
+
+            /// <summary>
+            /// Frames per second the flipbook is played at, matching what the script does with
+            /// its frame index. The baker needs it: each baked frame must represent 1/fps of
+            /// shader time, or playing the set at fps runs the field at fps times its true
+            /// speed. That mismatch was ~90x, which is exactly why the field read as random
+            /// regeneration instead of flow.
+            /// </summary>
+            public float EvolveSpeed = 12f;
             public float EdgeOpacity = 0.8f;
             public float GlowOpacity = 0.8f;
             public float SparkOpacity = 1f;
@@ -106,6 +116,16 @@ namespace PEV.Scripting
             public SpriteRenderer Renderer;
             public NoiseTextureFactory.Frames Frames;
             public string StructureKey;
+            /// <summary>
+            /// The pixel-width bucket this layer was baked at.
+            ///
+            /// Kept separately from the request so a new bucket can be refused unless it is
+            /// clearly different. The camera pulses on every hit, which moves the requested
+            /// width by a few percent — enough to cross a bucket boundary and rebake the whole
+            /// layer on the beat. Parking on the current bucket rather than chasing the
+            /// boundary is what stops that.
+            /// </summary>
+            public int PixelBucket;
             public int FrameCount = 2;
             public Vector2 Uv;
             public int FrameIndex;
@@ -187,23 +207,30 @@ namespace PEV.Scripting
                 var layer = kv.Value;
                 if (layer == null || layer.Frames == null || layer.Frames.Textures == null) continue;
 
-                int idx = Mathf.Clamp(layer.FrameIndex, 0, layer.Frames.Textures.Length - 1);
-                var tex = layer.Frames.Textures[idx];
-                if (tex == null) continue;
+                string safe = kv.Key.Replace('/', '_').Replace('#', '-');
 
-                try
+                // Every frame of the set, not just the one on screen. Whether the motion
+                // flows is a question about consecutive frames, and a single still cannot
+                // answer it — the answer is the difference between frame k and frame k+1.
+                var textures = layer.Frames.Textures;
+                for (int i = 0; i < textures.Length; i++)
                 {
-                    // Encode with the bundled writer: UnityEngine.ImageConversionModule is
-                    // built against netstandard 2.1 and this project targets 2.0, so
-                    // EncodeToPNG is not available to reference at all.
-                    byte[] png = NoiseTextures.EncodePng(tex.GetPixels32(), tex.width, tex.height);
-                    if (png == null) continue;
-                    string safe = kv.Key.Replace('/', '_').Replace('#', '-');
-                    System.IO.File.WriteAllBytes(
-                        System.IO.Path.Combine(directory, "layer-" + safe + ".png"), png);
-                    written++;
+                    var tex = textures[i];
+                    if (tex == null) continue;
+                    try
+                    {
+                        // Encode with the bundled writer: UnityEngine.ImageConversionModule is
+                        // built against netstandard 2.1 and this project targets 2.0, so
+                        // EncodeToPNG is not available to reference at all.
+                        byte[] png = NoiseTextures.EncodePng(tex.GetPixels32(), tex.width, tex.height);
+                        if (png == null) continue;
+                        System.IO.File.WriteAllBytes(
+                            System.IO.Path.Combine(directory,
+                                "layer-" + safe + "_f" + i.ToString("D2") + ".png"), png);
+                        written++;
+                    }
+                    catch { }
                 }
-                catch { }
             }
             return written;
         }
@@ -385,6 +412,8 @@ namespace PEV.Scripting
             // saturated than the earlier guess, and that guess is why the region read as a
             // pale orange wash instead of a dark red cut-out.
             entry.FillOpacity = Mathf.Clamp01(ParseFloat(args, "fillOpacity", 0.667f));
+            entry.Exposure = Mathf.Clamp(ParseFloat(args, "exposure", 0.15f), 0f, 2f);
+            entry.EvolveSpeed = Mathf.Clamp(ParseFloat(args, "evolveSpeed", 48f), 1f, 60f);
             entry.EdgeOpacity = Mathf.Clamp01(ParseFloat(args, "edgeOpacity", 0.8f));
             entry.GlowOpacity = Mathf.Clamp01(ParseFloat(args, "glowOpacity", 0.8f));
             entry.SparkOpacity = Mathf.Clamp01(ParseFloat(args, "sparkOpacity", 1f));
@@ -404,7 +433,7 @@ namespace PEV.Scripting
             entry.EdgeMargin = Mathf.Clamp(ParseFloat(args, "edgeMargin", DefaultEdgeMargin), 0f, 2f);
             entry.EdgeFragment = Mathf.Clamp01(ParseFloat(args, "edgeFragment", DefaultEdgeFragment));
 
-            entry.FrameCount = Mathf.Clamp(ParseInt(args, "frameCount", 8), 2, 32);
+            entry.FrameCount = Mathf.Clamp(ParseInt(args, "frameCount", 96), 2, 128);
 
             // When mirrored, visibility, opacity, tag and depth are the decoration's. That is
             // the whole point of the mapping: an author hides the decoration or retags it and
@@ -581,6 +610,17 @@ namespace PEV.Scripting
             // with no displacement there is no coast, so no need for the extra area.
             float margin = lead.Displace * lead.EdgeMargin * Mathf.Min(size.x, size.y);
 
+            // The layer object is needed before the request: its baked resolution is part of the
+            // hysteresis that keeps camera motion from triggering a rebake.
+            if (!Layers.TryGetValue(key, out var layer) || layer.GameObject == null)
+            {
+                var go = EffectCanvas.CreateObject("PEV.Field." + key);
+                var sr = go.AddComponent<SpriteRenderer>();
+                sr.sortingOrder = sortingOrder;
+                layer = new Layer { GameObject = go, Renderer = sr };
+                Layers[key] = layer;
+            }
+
             var request = new NoiseTextureFactory.Request
             {
                 WidthWorld = size.x,
@@ -592,6 +632,8 @@ namespace PEV.Scripting
                 GlowColor = lead.GlowColor,
                 SparkColor = lead.SparkColor,
                 FillOpacity = lead.FillOpacity,
+                Exposure = lead.Exposure,
+                EvolveSpeed = lead.EvolveSpeed,
                 FillStrength = lead.FillOpacity,
                 SceneColor = SceneBackground(),
                 EdgeOpacity = lead.EdgeOpacity,
@@ -614,25 +656,29 @@ namespace PEV.Scripting
                 Seed = StableSeed(lead.Scope),
                 // The cluster box is wider than the lead field, so scale the hint by area
                 // ratio to keep grains at a constant on-screen size.
-                TargetPixelWidth = lead.PxWidthHint * (size.x / Mathf.Max(1e-4f, lead.World.Size.x))
+                TargetPixelWidth = StickyBucket(layer, lead.PxWidthHint * (size.x / Mathf.Max(1e-4f, lead.World.Size.x))),
+                // How wide the quad actually is on screen. The composer sizes its grids from
+                // this, because the reference's mask and effects targets are fractions of the
+                // screen — not of the texture the effect happens to be baked into.
+                ScreenPixelWidth = Mathf.Max(1, Mathf.RoundToInt(
+                    lead.PxWidthHint * (size.x / Mathf.Max(1e-4f, lead.World.Size.x))))
             };
 
             // One key, owned by the factory: a second copy in the renderer is how a
             // structure that never changes still manages to regenerate every frame.
             string structureKey = NoiseTextureFactory.Key(request);
 
-            if (!Layers.TryGetValue(key, out var layer) || layer.GameObject == null)
-            {
-                var go = EffectCanvas.CreateObject("PEV.Field." + key);
-                var sr = go.AddComponent<SpriteRenderer>();
-                sr.sortingOrder = sortingOrder;
-                layer = new Layer { GameObject = go, Renderer = sr };
-                Layers[key] = layer;
-            }
-
             if (layer.Frames == null || layer.StructureKey != structureKey)
             {
-                var frames = NoiseTextureFactory.Get(request, out string genError);
+                if (layer.StructureKey != null)
+                    PEV.Core.Plugin.Log("noise rebake: " + Differ(layer.StructureKey, structureKey));
+
+                // Begin, not Get: the pixels are built on a worker and uploaded a few frames
+                // at a time by NoiseTextureFactory.Pump, so nothing here waits. The previous
+                // set stays on screen until the new one is complete — which is what makes a
+                // rebake (live parameter edits, a zoom crossing a bucket) invisible instead
+                // of a hitch.
+                var frames = NoiseTextureFactory.Begin(request, out string genError);
                 if (frames == null)
                 {
                     PEV.Core.Plugin.Log("noise layer: " + genError);
@@ -643,6 +689,15 @@ namespace PEV.Scripting
                 layer.StructureKey = structureKey;
                 layer.FrameCount = frames.Textures.Length;
             }
+
+            // A set that has not finished uploading has no sprite yet. Keep whatever the
+            // layer was already showing rather than blanking it.
+            if (!layer.Frames.Ready)
+            {
+                if (layer.Renderer.sprite == null) layer.GameObject.SetActive(false);
+                return false;
+            }
+            layer.GameObject.SetActive(true);
 
             int idx = lead.FrameIndex % layer.FrameCount;
             if (idx < 0) idx += layer.FrameCount;
@@ -667,7 +722,11 @@ namespace PEV.Scripting
             var mat = layer.Renderer.material;
             if (mat != null)
             {
-                mat.mainTextureOffset = lead.Uv;
+                // No offset. The baked set carries its own motion, and the border and coastline
+                // are part of the same texture — scrolling it slides the whole edge off the
+                // geometry, which is what made the field look like a drifting decal rather
+                // than a region of the scene.
+                mat.mainTextureOffset = Vector2.zero;
                 mat.mainTextureScale = lead.Tiling;
             }
 
@@ -686,6 +745,43 @@ namespace PEV.Scripting
 
             foreach (var m in members) m.GameObject = layer.GameObject;
             return true;
+        }
+
+        /// <summary>
+        /// Keeps the layer on its current pixel-width bucket unless the new request is clearly
+        /// outside it.
+        ///
+        /// The camera pulses on every hit and zooms during gameplay, which moves the requested
+        /// width by a few percent. Bucket boundaries are 96 pixels apart, so a few percent is
+        /// enough to cross one — and crossing one rebakes the whole layer, on the beat. The
+        /// hysteresis is one full bucket: the layer only moves once the request lands a bucket
+        /// away from where it was baked, which a pulse can never do.
+        /// </summary>
+        private static float StickyBucket(Layer layer, float px)
+        {
+            int wanted = NoiseTextureFactory.ResolutionBucket(px);
+            if (layer.PixelBucket <= 0) { layer.PixelBucket = wanted; return wanted; }
+            if (Mathf.Abs(wanted - layer.PixelBucket) >= NoiseTextureFactory.ResolutionStep)
+                layer.PixelBucket = wanted;
+            return layer.PixelBucket;
+        }
+
+        /// <summary>
+        /// Reports the first field of two structure keys that differs.
+        ///
+        /// A key that drifts every frame is the difference between a smooth scene and a
+        /// stutter, and the fingerprint has ~30 fields — guessing which one moved has cost
+        /// this project whole iterations. This names it from the two strings themselves.
+        /// </summary>
+        private static string Differ(string before, string after)
+        {
+            var a = before.Split('|');
+            var b = after.Split('|');
+            int n = Mathf.Min(a.Length, b.Length);
+            for (int i = 0; i < n; i++)
+                if (!string.Equals(a[i], b[i], StringComparison.Ordinal))
+                    return $"field #{i}: {a[i]} -> {b[i]}";
+            return a.Length == b.Length ? "identical" : $"length {a.Length} -> {b.Length}";
         }
 
         private static Rect Bounds(Entry m)
