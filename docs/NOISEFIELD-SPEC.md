@@ -1117,11 +1117,35 @@ function create(ctx, params) {
 
 **为什么排第一**：它决定 `NoiseTextureFactory` 的纹理宽度形态。先验证再写生成器，能省一轮返工。半天以内能验完。
 
-### Q2. `scrDecorationManager.CreateDecoration` 对未知类型的反应
+### Q2. `scrDecorationManager.CreateDecoration` 与装饰升级路径 —— **已实测：可行，且已采用**
 
-只有走「装饰升级路径」才需要。影响：决定 P5 能不能白送一套编辑器交互。
+`[反编译]` `Assembly-CSharp.dll`（r150，ILSpy 11.2）：
 
-方法：注册一个 `isDecoration=true` 的类型，调用 `CreateDecoration(type)`，看返回值和异常。
+- `CreateDecoration(LevelEvent, out bool, int)` 是真实签名（不是单参数版）。
+- `scrDecoration.Setup` 对 `AddDecoration` 无条件执行，不检查 `decorationImage` 是否真实存在；
+  图片缺失时 `GetOrAddSprite` 只是拿不到 sprite，`ResizeCollider` / `UpdateHitbox` 都 null 安全。
+- 因此**整条行都是真装饰**，不需要伪造事件类型，native 的 `MoveDecorations` / gizmo 直接可用。
+
+### Q2b. `PropertyInfo` 的 `showIf` 数据形状 —— **已实测：必须是 `List<object>`**
+
+`[反编译]` `PropertyInfo..ctor` → `RDEditorUtils.DecodeStringArray`：
+
+```csharp
+if (!(dictValue is List<object> list)) return null;   // 传 string[] 得到 null
+for (...) array[num] = item as string;                // 下一行 array3.Length 直接空引用
+```
+
+传 `string[]` 会让构造器抛 `NullReferenceException`，参数被丢弃。本项目此前所有带 `showIf`
+的参数**从未生效过**——不是显示条件判断错，而是控件根本没建出来。
+
+### Q2c. 空 tag 会让播放崩溃 —— **已实测**
+
+`[反编译]` `scrDecorationManager.ResetDecorations()` 先 `taggedDecorations.Clear()`，
+再对每个装饰重跑 `Setup`。`Setup` 末尾会用「重建前的旧 tag 集合」做
+`taggedDecorations[key].RemoveAll(...)`；未打 tag 的装饰旧集合是 `{"NO TAG"}`，
+而该键刚被清掉 → `KeyNotFoundException` → `scnGame.ReloadAssets` 抛出 → `editor.Play()` 中断。
+
+**所以噪域必须带非空 tag。** 这同时就是「按 tag 找到它并移动」所需的东西，不是额外妥协。
 
 ### Q3. 轨道与装饰的 `sortingOrder` 实际范围
 

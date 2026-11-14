@@ -42,12 +42,25 @@ namespace PEV.Scripting
         private const float GrainPixels = 1.5f;
 
         /// <summary>
-        /// Brightness of the fill relative to the outline colour. The reference composites
-        /// premultiplied, so its fill lands at roughly a third of the border's brightness;
-        /// once both per-piece and cluster colours go through this same scale, the region
-        /// reads as a dark red cut-out with a lit rim instead of one flat wash.
+        /// Colour variants, copied from the reference's main.glsl.
+        ///
+        /// Every layer is the SAME outline colour run through one HSV variant, which is why
+        /// recolouring a field keeps the layers consistent. These saturation and value scales
+        /// are the reference's own numbers (1.0/0.7132074 for the fill, 1.2253521 for the
+        /// glow, 1.0676054 for sparks), not estimates — an earlier version used a made-up
+        /// 0.24 brightness factor and the fill came out nowhere near the reference.
         /// </summary>
-        private const float FillValueScale = 0.24f;
+        private const float FillValueScale = 0.713207483291626f;
+        private const float GlowSaturationScale = 1.2253520800891937f;
+        private const float SparkSaturationScale = 1.0676054460523543f;
+
+        /// <summary>The reference's five glow passes, verbatim from config.json.</summary>
+        private static readonly float[] GlowWeights =
+        {
+            0.458567970132f, 0.282861223139f, 0.156589227109f,
+            0.07305908496f, 0.024947807942f
+        };
+
         public const float PixelsPerUnit = 100f;
 
         public sealed class Frames
@@ -100,6 +113,25 @@ namespace PEV.Scripting
             public Color GlowColor;
             public Color SparkColor;
             public float FillOpacity;
+
+            /// <summary>
+            /// How much of the spark-processed fill survives, the reference's `fillStrength`.
+            /// Separate from FillOpacity: one is the alpha the region occupies, the other how
+            /// strongly the grain tints the fill before alpha is applied.
+            /// </summary>
+            public float FillStrength;
+
+            /// <summary>
+            /// What the region is drawn over, standing in for the reference's scene grab.
+            ///
+            /// main.glsl builds the fill as `fillBase + fillStrength * (processed - fillBase)`
+            /// where `processed` is the captured scene. Without a scene the fill is just
+            /// fillBase, which is far too bright — that is what made the field read as a pale
+            /// pink wash. The level's own background colour is the honest substitute: it is
+            /// exactly what the grab would have returned wherever no track covers the region.
+            /// </summary>
+            public Color SceneColor;
+
             public float EdgeOpacity;
             public float GlowOpacity;
             public float SparkOpacity;
@@ -402,13 +434,11 @@ namespace PEV.Scripting
 
             for (int k = 0; k < frames; k++)
             {
-                var pixels = new Color32[texW * texH];
-                // Two clocks, on purpose. The grain is micro: it re-rolls every frame, which
-                // is what makes the texture shimmer. The coverage is macro: it keeps one seed
-                // and drifts slowly, so the silhouette flows instead of jumping. Re-rolling
-                // both per frame is what made the whole field read as a strobe.
+                // Two clocks, on purpose. The grain re-rolls every frame, which is what makes
+                // the texture shimmer; the coverage keeps one seed and drifts, so the
+                // silhouette flows instead of jumping. Re-rolling both per frame is what made
+                // the whole field read as a strobe.
                 uint kseed = (uint)(k * 7919) + seed * 2654435761u;
-                uint macroSeed = seed * 2246822519u;
 
                 // Per-row horizontal tear, the reference's GlitchMap. Rows are addressed in
                 // texture space so a shift wraps instead of smearing, and only a fraction of
@@ -427,132 +457,31 @@ namespace PEV.Scripting
                     }
                 }
 
-                // Slow drift: whole lattice periods across the frame set, so the flipbook
-                // loops seamlessly while the coast keeps travelling.
-                float drift = k * (LoopPeriod / (float)frames);
+                // The whole pipeline — coverage, edge, five glow passes, composite — comes from
+                // the ported reference passes. Animation is driven by the frame index rather
+                // than a wall clock so the flipbook loops exactly with the song.
+                float frameTime = k * (LoopPeriod / (float)frames);
+                var pixels = NoiseComposer.Compose(pieces, req, texW, texH, frameTime, kseed);
 
-                BuildFrameMask(pieces, req, cellsX, cellsY, macroSeed, drift, noiseFreq,
-                    dispCells, fragment, maskDiv, maskW, maskH, coarseIn, coarseOwner,
-                    insideGrid, edgeGrid, glowGrid, ownerGrid);
-
-                var rowLine = new float[cellsY];
-                for (int cy = 0; cy < cellsY; cy++)
+                if (rowShift != null)
                 {
-                    uint h = Hash(0x9E37u, (uint)cy, kseed);
-                    rowLine[cy] = (h & 0xFFFF) / 65535f < lineProb
-                        ? lineProb * (0.25f + 0.75f * ((h >> 16) & 0xFFFF) / 65535f)
-                        : 0f;
-                }
-
-                for (int cy = 0; cy < cellsY; cy++)
-                {
-                    for (int cx = 0; cx < cellsX; cx++)
+                    var shiftedPixels = new Color32[pixels.Length];
+                    for (int y = 0; y < texH; y++)
                     {
-                        int idx = cy * cellsX + cx;
-                        bool covered = insideGrid[idx];
-                        float glowAmount = glowGrid[idx];
-                        if (!covered && glowAmount <= 0f) continue;
-
-                        // Appearance comes from the piece that owns this cell, so a union
-                        // keeps every region's own colour instead of tinting the cluster.
-                        // The value scale has to be applied here too: a per-piece colour is
-                        // still a base colour, and using it raw would make a merged field's
-                        // fill as bright as its border.
-                        int own = ownerGrid[idx];
-                        var fillC = own >= 0 ? HsvVariant(pieces[own].FillColor, 1f, FillValueScale) : fillColor;
-                        var edgeC = own >= 0 ? pieces[own].EdgeColor : req.EdgeColor;
-                        float edgeOpacity = own >= 0 ? pieces[own].EdgeOpacity : req.EdgeOpacity;
-                        float fillOpacity = own >= 0 ? pieces[own].FillOpacity : req.FillOpacity;
-
-                        // The pre-state has fill only: no border, no glow. That absence is
-                        // exactly what makes it read as a warning rather than as the field
-                        // arriving early.
-                        bool isEdge = covered && !req.Ready && edgeGrid[idx];
-
-                        Color32 c;
-                        if (isEdge)
+                        int row = y * texW;
+                        int shift = rowShift[y];
+                        for (int x = 0; x < texW; x++)
                         {
-                            // Opaque and saturated: the boundary is a cut-out, not a soft
-                            // glow. A little cell-level wobble keeps it from looking drawn
-                            // with a ruler.
-                            float wobble = 0.88f + 0.12f * ((Hash((uint)cx, (uint)cy, kseed + 31u) & 0xFFFF) / 65535f);
-                            c = new Color32(
-                                (byte)Mathf.RoundToInt(edgeC.r * 255f * wobble),
-                                (byte)Mathf.RoundToInt(edgeC.g * 255f * wobble),
-                                (byte)Mathf.RoundToInt(edgeC.b * 255f * wobble),
-                                (byte)Mathf.RoundToInt(Mathf.Clamp01(edgeOpacity) * 255f));
-                        }
-                        else if (!covered)
-                        {
-                            // Outer glow ridges. They sit outside the fill, so their alpha
-                            // has to fade with distance or they read as a second border.
-                            float a = Mathf.Clamp01(glowAmount * req.GlowOpacity);
-                            if (a <= 0.002f) continue;
-                            c = new Color32(
-                                (byte)Mathf.RoundToInt(glowColor.r * 255f),
-                                (byte)Mathf.RoundToInt(glowColor.g * 255f),
-                                (byte)Mathf.RoundToInt(glowColor.b * 255f),
-                                (byte)Mathf.RoundToInt(a * 255f));
-                        }
-                        else
-                        {
-                            // Fill is translucent and carries most of the region's colour.
-                            float a = Mathf.Clamp01(fillOpacity);
-
-                            // Sparse bright grains, sampled through a per-frame jitter. The
-                            // jitter is what makes the texture look alive rather than tiled;
-                            // it is also why the grain must re-roll every frame while the
-                            // silhouette does not.
-                            float du = 0f, dv = 0f;
-                            if (displace > 0f)
+                            int sx = x + shift;
+                            if (shift != 0)
                             {
-                                uint dh = Hash((uint)cx, (uint)cy, kseed ^ 0x51EDu);
-                                du = (((dh & 0xFF) / 255f) - 0.5f) * displace;
-                                dv = ((((dh >> 8) & 0xFF) / 255f) - 0.5f) * displace;
+                                sx %= texW;
+                                if (sx < 0) sx += texW;
                             }
-                            int sx = Mathf.Clamp(cx + Mathf.RoundToInt(du * 2f), 0, cellsX - 1);
-                            int sy = Mathf.Clamp(cy + Mathf.RoundToInt(dv * 2f), 0, cellsY - 1);
-
-                            uint gh = Hash((uint)sx, (uint)sy, kseed);
-                            float gr = (gh & 0xFFFF) / 65535f;
-                            float lit = 0f;
-                            if (gr < sparkDensity)
-                                lit = req.SparkOpacity * (0.30f + 0.70f * Mathf.Pow(((gh >> 16) & 0xFFFF) / 65535f, 2f));
-
-                            float lineA = rowLine[cy];
-                            if (lineA > 0f) lit = Mathf.Clamp01(lit + lineA * 0.5f);
-
-                            float r = fillC.r + (sparkTint.r - fillC.r) * lit;
-                            float g = fillC.g + (sparkTint.g - fillC.g) * lit;
-                            float b = fillC.b + (sparkTint.b - fillC.b) * lit;
-                            a = Mathf.Clamp01(a + lit * (1f - a));
-
-                            c = new Color32(
-                                (byte)Mathf.RoundToInt(Mathf.Clamp01(r) * 255f),
-                                (byte)Mathf.RoundToInt(Mathf.Clamp01(g) * 255f),
-                                (byte)Mathf.RoundToInt(Mathf.Clamp01(b) * 255f),
-                                (byte)Mathf.RoundToInt(a * 255f));
-                        }
-
-                        // One texel block is one cell: quantisation is the look, not an
-                        // artefact. Bilinear upscaling keeps it soft like the original.
-                        int x0 = cx * block, y0 = cy * block;
-                        for (int y = y0; y < y0 + block; y++)
-                        {
-                            int row = y * texW;
-                            int shift = rowShift != null ? rowShift[y] : 0;
-                            for (int x = x0; x < x0 + block; x++)
-                            {
-                                int sx = x + shift;
-                                if (shift != 0)
-                                {
-                                    sx %= texW;
-                                    if (sx < 0) sx += texW;
-                                }
-                                pixels[row + sx] = c;
-                            }
+                            shiftedPixels[row + x] = pixels[row + sx];
                         }
                     }
+                    pixels = shiftedPixels;
                 }
 
                 var tex = new Texture2D(texW, texH, TextureFormat.RGBA32, false)
@@ -712,19 +641,31 @@ namespace PEV.Scripting
             {
                 float[] ring = new float[cellsX * cellsY];
                 float[] weight = { 0.45f, 0.22f, 0.10f, 0.045f, 0.018f };
+
+                // Snapshot per pass, never in place.
+                //
+                // The neighbour test reads which cells have already grown, and writing that
+                // during the same raster sweep lets cell (cx,cy) mark itself grown and then be
+                // seen by (cx+1,cy) a few instructions later — which marks that one too. One
+                // pass then floods the whole texture instead of growing a single ring, and the
+                // glow baked out as a flat wash covering 42% of the quad at full first-pass
+                // weight. Expanding from a frozen copy is what makes a pass one cell wide.
                 bool[] grown = (bool[])inside.Clone();
+                bool[] before = new bool[cellsX * cellsY];
 
                 for (int p = 0; p < passes; p++)
                 {
                     float w = weight[Mathf.Min(p, weight.Length - 1)];
+                    Array.Copy(grown, before, grown.Length);
+
                     for (int cy = 0; cy < cellsY; cy++)
                     {
                         for (int cx = 0; cx < cellsX; cx++)
                         {
                             int i = cy * cellsX + cx;
-                            if (grown[i]) { ring[i] = 0f; continue; }
+                            if (before[i]) { ring[i] = 0f; continue; }
 
-                            // Covered by THIS dilation but not before: the new ring.
+                            // Adjacent to the region or to a ring from an EARLIER pass.
                             bool touch = false;
                             for (int oy = -1; oy <= 1 && !touch; oy++)
                             {
@@ -734,8 +675,7 @@ namespace PEV.Scripting
                                 {
                                     int nx = cx + ox;
                                     if (nx < 0 || nx >= cellsX) continue;
-                                    if (inside[ny * cellsX + nx] || grown[ny * cellsX + nx])
-                                    { touch = true; break; }
+                                    if (before[ny * cellsX + nx]) { touch = true; break; }
                                 }
                             }
                             ring[i] = touch ? w : 0f;
@@ -743,8 +683,8 @@ namespace PEV.Scripting
                         }
                     }
 
-                    // Only the outermost ring keeps the accumulated value, so the glow fades
-                    // outward instead of double-counting.
+                    // Only the newest ring keeps its weight, so each successive pass is dimmer
+                    // than the one before it and the halo fades outward.
                     for (int i = 0; i < glow.Length; i++)
                         if (ring[i] > 0f) glow[i] = ring[i];
                 }

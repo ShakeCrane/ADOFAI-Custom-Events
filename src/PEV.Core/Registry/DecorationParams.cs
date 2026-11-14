@@ -50,6 +50,36 @@ namespace PEV.Registry
         public static bool IsConditional(string name) => name != null && Conditional.Contains(name);
 
         /// <summary>
+        /// The native AddDecoration metadata, or null if the table is not up yet.
+        ///
+        /// The lookup cannot assume a key format. GCS.levelEventsInfo is keyed by whatever
+        /// GCS.levelEventTypeString holds for that type: a name for the game's own events, and
+        /// a numeric string for the ones we publish (which is why LevelEvent's constructor
+        /// indirection exists at all). Asking for the numeric form directly missed every
+        /// native entry and silently published nothing.
+        /// </summary>
+        public static bool TryGetNativeInfo(out LevelEventInfo info)
+        {
+            info = null;
+            if (GCS.levelEventsInfo == null) return false;
+
+            try
+            {
+                if (GCS.levelEventTypeString != null
+                    && GCS.levelEventTypeString.TryGetValue(NativeType, out var key)
+                    && !string.IsNullOrEmpty(key)
+                    && GCS.levelEventsInfo.TryGetValue(key, out info)
+                    && info != null)
+                    return true;
+            }
+            catch { }
+
+            // Fall back to the literal name, which is what the game uses for native events and
+            // what survives if levelEventTypeString is not populated yet.
+            return GCS.levelEventsInfo.TryGetValue(NativeType.ToString(), out info) && info != null;
+        }
+
+        /// <summary>
         /// Adds every decoration-backed manifest's parameters to the native metadata.
         ///
         /// Must run before the editor builds its panels — PropertiesPanel.Init walks
@@ -58,10 +88,7 @@ namespace PEV.Registry
         /// </summary>
         public static void Publish(Action<string> log = null)
         {
-            if (GCS.levelEventsInfo == null) return;
-
-            string key = ((int)NativeType).ToString();
-            if (!GCS.levelEventsInfo.TryGetValue(key, out var info) || info == null)
+            if (!TryGetNativeInfo(out var info))
             {
                 log?.Invoke("AddDecoration metadata missing; decoration params not published");
                 return;
@@ -111,7 +138,12 @@ namespace PEV.Registry
                             conditions.AddRange(spec.ShowIf);
                             Conditional.Add(spec.Name);
                         }
-                        dict["showIf"] = conditions.ToArray();
+                        // List<object>, because RDEditorUtils.DecodeStringArray is an
+                        // `is List<object>` cast: a string[] comes back as null and the
+                        // PropertyInfo constructor dereferences it immediately.
+                        var conditionList = new List<object>(conditions.Count);
+                        foreach (var c in conditions) conditionList.Add(c);
+                        dict["showIf"] = conditionList;
                         // The payload on maskingTarget is the only persisted copy. Writing
                         // these as their own keys would add keys to every chart that vanilla
                         // drops on its next save — a diff with no benefit — so they stay out of
@@ -129,7 +161,9 @@ namespace PEV.Registry
                     }
                     catch (Exception e)
                     {
-                        log?.Invoke($"decoration param '{spec.Name}' rejected: {e.Message}");
+                        // The message alone was not enough to diagnose this: every parameter
+                        // failed with a bare NullReferenceException and the stack was lost.
+                        log?.Invoke($"decoration param '{spec.Name}' rejected: {e}");
                     }
                 }
             }

@@ -362,17 +362,31 @@ namespace PEV.Diagnostics
 
                 foreach (var kv in configs[idx])
                 {
-                    ev[kv.Key] = kv.Value is object[] arr
-                        ? new List<object>(arr)
-                        : kv.Value;
+                    // Coerce through the declared PropertyType. scale/position are Vector2 and
+                    // LevelEvent.Encode casts to that type directly, so writing a List makes
+                    // every later save throw InvalidCastException — and scrDecoration.Setup
+                    // throws the same way when the level plays.
+                    object value = kv.Value;
+                    if (value is object[] arr) value = new List<object>(arr);
+
+                    ADOFAI.PropertyInfo pi = null;
+                    try { ev.info?.propertiesInfo.TryGetValue(kv.Key, out pi); } catch { }
+                    try { ev[kv.Key] = ParamCoercion.Coerce(pi, value); } catch { }
                 }
                 applied++;
             }
-            // Tag the first field so the mover/state paths have a target, exactly as an
-            // author would: place the field, then point a MoveDecorations at its tag.
+            // Tag the first field so a mover can target it, exactly as an author would. The
+            // refresh matters: scrDecoration caches its tag set, and ResetDecorations (which
+            // Play runs) clears the tag table before asking each decoration to remove itself
+            // from its OLD tags. Mutating the event without telling the component leaves it
+            // removing a key nobody re-registered, and the lookup throws mid-play.
             var tagged = ours.FirstOrDefault(e =>
                 e.floor == floors[0] && LevelStorage.TryGetData(e, out var d) && d.Id == "pev.noise-field");
-            if (tagged != null) tagged["tag"] = "wave";
+            if (tagged != null)
+            {
+                tagged["tag"] = "wave";
+                try { editor.UpdateDecorationObject(tagged); } catch { }
+            }
 
             Row("PLACED", applied.ToString(), "floors " + string.Join(", ", floors));
             Row("PLACED-AS-DECORATION", ours.Count.ToString(),
@@ -504,6 +518,17 @@ namespace PEV.Diagnostics
             yield return new WaitForSeconds(0.6f);
             yield return CaptureFrame("fields");
 
+            // The screenshot cannot separate our texture from the track and camera over it.
+            // This is the generator's own output, so a colour or shape complaint can be
+            // attributed to the texture instead of to the compositing.
+            try
+            {
+                string dumpDir = Path.Combine(Path.GetDirectoryName(_resultPath) ?? ".", "pn1-textures");
+                int dumped = NoiseFieldRenderer.DumpTextures(dumpDir);
+                Row("TEX-DUMP", dumped.ToString(), dumpDir);
+            }
+            catch (Exception e) { Row("TEX-DUMP", "FAIL", e.Message); }
+
             // Animation evidence: frame index and UV must change as t advances. If the UV
             // offset does not take effect on Sprites/Default, the visual still steps between
             // frames, so this log distinguishes "not animating" from "not scrolling".
@@ -630,8 +655,7 @@ namespace PEV.Diagnostics
                 return !string.IsNullOrEmpty(img);
             });
 
-            string key = ((int)DecorationParams.NativeType).ToString();
-            if (GCS.levelEventsInfo == null || !GCS.levelEventsInfo.TryGetValue(key, out var info) || info == null)
+            if (!DecorationParams.TryGetNativeInfo(out var info))
             {
                 Row("PANEL", "FAIL", "AddDecoration metadata missing");
                 return;

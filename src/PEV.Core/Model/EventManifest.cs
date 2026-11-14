@@ -17,6 +17,17 @@ namespace PEV.Model
         public List<string> Options; // advisory; only used when we downgrade to String
         public string NoteKey;       // for type "Note": localization key holding the text
         public string CustomLabel;   // overrides the field's display name
+        /// <summary>
+        /// Per-locale labels, keyed by SystemLanguage name. CustomLabel is the English/plain
+        /// fallback; this carries the rest.
+        ///
+        /// Without this the Chinese labels in every shipped manifest were parsed and then
+        /// dropped: LocalizedValue returns the "en" entry by design, so a Chinese client showed
+        /// English rows. The panel reads customLabel at build time, so the value has to be
+        /// chosen before the PropertyInfo is constructed — see ResolveLabel.
+        /// </summary>
+        public Dictionary<string, string> Labels =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public string Group;         // properties-panel tab; native events group into pages
         public int? Order;           // explicit sort position within the event's list
         /// <summary>Flat key/value pairs: show this row only when another property matches.</summary>
@@ -44,9 +55,22 @@ namespace PEV.Model
             // one flat scroll list, while every native event organizes its panel into tabs.
             if (!string.IsNullOrEmpty(Group)) d["group"] = Group;
             if (Order.HasValue) d["order"] = Order.Value;
-            if (ShowIf != null && ShowIf.Count > 0) d["showIf"] = ShowIf.ToArray();
-            if (HideIf != null && HideIf.Count > 0) d["hideIf"] = HideIf.ToArray();
+            // Conditions must be a List<object>, not a string[].
+            //
+            // PropertyInfo's constructor hands these to RDEditorUtils.DecodeStringArray, which
+            // is an `is List<object>` cast returning null for anything else — and the caller
+            // dereferences the result immediately. A string[] therefore threw
+            // NullReferenceException inside the constructor, and the parameter was dropped.
+            if (ShowIf != null && ShowIf.Count > 0) d["showIf"] = ToObjectList(ShowIf);
+            if (HideIf != null && HideIf.Count > 0) d["hideIf"] = ToObjectList(HideIf);
             return d;
+        }
+
+        private static List<object> ToObjectList(List<string> values)
+        {
+            var list = new List<object>(values.Count);
+            foreach (var v in values) list.Add(v);
+            return list;
         }
     }
 
@@ -164,6 +188,7 @@ namespace PEV.Model
                         CustomLabel = LocalizedValue(p["label"]) ?? LocalizedValue(p["customLabel"]),
                         NoteKey = p.Value<string>("noteKey")
                     };
+                    ReadLocales(p["label"] ?? p["customLabel"], spec.Labels);
                     if (p["order"] != null) spec.Order = p.Value<int>("order");
                     spec.ShowIf = ReadPairs(p["showIf"]);
                     spec.HideIf = ReadPairs(p["hideIf"]);

@@ -179,6 +179,15 @@ var __pevReady = true;
             if (value is Vector3 v3) return new[] { v3.x, v3.y, v3.z };
             if (value is Color c) return new[] { c.r, c.g, c.b, c.a };
 
+            // Enums cross as their name, not their ordinal.
+            //
+            // JsonConvert serialises a boxed enum as its numeric value, so a script saw
+            // shape=0 and had to know the declaration order. That made reordering an enum a
+            // silent behaviour change for every chart, and it is why a string comparison like
+            // `params.shape === "Circle"` never matched. The file already stores names, so
+            // this is the same vocabulary everywhere.
+            if (value is Enum) return value.ToString();
+
             if (value is IDictionary<string, object> map)
             {
                 var copy = new Dictionary<string, object>(StringComparer.Ordinal);

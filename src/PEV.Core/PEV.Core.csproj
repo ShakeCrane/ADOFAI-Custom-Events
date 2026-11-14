@@ -19,6 +19,19 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!--
+      Reference noise textures, taken verbatim from Phira-Pro's noise-skins/NoiseField/tex
+      (GPL-3.0-or-later, compatible with this project's AGPL-3.0). The effect's whole
+      displacement and grain character comes from these specific images: their pixel
+      statistics are not reproducible by an analytic noise function, which is why every
+      attempt to synthesise a substitute looked wrong.
+    -->
+    <EmbeddedResource Include="Textures\BlockNoise1.png" />
+    <EmbeddedResource Include="Textures\PointNoise.png" />
+    <EmbeddedResource Include="Textures\FD_Noise.png" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Reference Include="Assembly-CSharp">
       <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
       <Private>false</Private>

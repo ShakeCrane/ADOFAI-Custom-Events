@@ -164,6 +164,50 @@ namespace PEV.Scripting
             return list;
         }
 
+        /// <summary>
+        /// Writes every composited layer's current frame to a PNG.
+        ///
+        /// Looking at a screenshot cannot separate our texture from the track drawn over it,
+        /// the camera's exposure, or the alpha the layer ends up with. This dumps the texture
+        /// that leaves the generator, so a shape or colour problem can be attributed rather
+        /// than guessed at. Diagnostics only: never called from the render path.
+        /// </summary>
+        public static int DumpTextures(string directory)
+        {
+            int written = 0;
+            try
+            {
+                if (!System.IO.Directory.Exists(directory))
+                    System.IO.Directory.CreateDirectory(directory);
+            }
+            catch { return 0; }
+
+            foreach (var kv in Layers)
+            {
+                var layer = kv.Value;
+                if (layer == null || layer.Frames == null || layer.Frames.Textures == null) continue;
+
+                int idx = Mathf.Clamp(layer.FrameIndex, 0, layer.Frames.Textures.Length - 1);
+                var tex = layer.Frames.Textures[idx];
+                if (tex == null) continue;
+
+                try
+                {
+                    // Encode with the bundled writer: UnityEngine.ImageConversionModule is
+                    // built against netstandard 2.1 and this project targets 2.0, so
+                    // EncodeToPNG is not available to reference at all.
+                    byte[] png = NoiseTextures.EncodePng(tex.GetPixels32(), tex.width, tex.height);
+                    if (png == null) continue;
+                    string safe = kv.Key.Replace('/', '_').Replace('#', '-');
+                    System.IO.File.WriteAllBytes(
+                        System.IO.Path.Combine(directory, "layer-" + safe + ".png"), png);
+                    written++;
+                }
+                catch { }
+            }
+            return written;
+        }
+
         private static string ScopeOf(Dictionary<string, object> args)
         {
             args.TryGetValue("__instance", out var inst);
@@ -548,6 +592,8 @@ namespace PEV.Scripting
                 GlowColor = lead.GlowColor,
                 SparkColor = lead.SparkColor,
                 FillOpacity = lead.FillOpacity,
+                FillStrength = lead.FillOpacity,
+                SceneColor = SceneBackground(),
                 EdgeOpacity = lead.EdgeOpacity,
                 GlowOpacity = lead.GlowOpacity,
                 SparkOpacity = lead.SparkOpacity,
@@ -789,6 +835,36 @@ namespace PEV.Scripting
             }
             catch { }
             return Placement.FallbackTileSize;
+        }
+
+        /// <summary>
+        /// The colour the region is drawn over, standing in for the reference's screen grab.
+        ///
+        /// scrCamera points a dedicated camera at the background colour (scnGame sets
+        /// Bgcamstatic.backgroundColor from the level), so this is the same value the game
+        /// clears to. Falls back to the level's own field if that camera is not up yet — both
+        /// exist for the same purpose, and one of them is always available once a level is
+        /// loaded.
+        /// </summary>
+        private static Color SceneBackground()
+        {
+            try
+            {
+                var cam = scrCamera.instance;
+                if (cam != null && cam.Bgcamstatic != null)
+                    return cam.Bgcamstatic.backgroundColor;
+            }
+            catch { }
+
+            try
+            {
+                var level = ADOBase.editor != null ? ADOBase.editor.levelData : null;
+                if (level != null) return level.backgroundColor;
+            }
+            catch { }
+
+            // Black is the game's own default and the common case for a level with no art.
+            return Color.black;
         }
 
         /// <summary>Stable per-instance seed so identical fields on two floors differ.</summary>

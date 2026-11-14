@@ -25,6 +25,17 @@ namespace PEV.Storage
         /// <summary>Marker image path. Not a real file, by design.</summary>
         public const string ImageMarker = "pev/field";
 
+        /// <summary>
+        /// Tag a newly placed field gets when the author has not set one.
+        ///
+        /// Not cosmetic. scrDecoration.Setup registers the decoration under its tags and, when
+        /// it runs again after ResetDecorations has cleared the tag table, removes it from the
+        /// ones it used to hold. For an untagged decoration that key is "NO TAG", which the
+        /// clear already removed, so the lookup throws and playback aborts before it starts.
+        /// Any non-empty tag avoids the branch.
+        /// </summary>
+        public const string DefaultTag = "noise";
+
         /// <summary>Prefix that tells our payload apart from a real masking target.</summary>
         public const string PayloadPrefix = "pev1:";
 
