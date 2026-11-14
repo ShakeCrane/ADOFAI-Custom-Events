@@ -44,6 +44,12 @@ var fx = {
   },
   fieldDestroy: function (key) {
     return JSON.parse(__hostFx('fielddestroy', JSON.stringify({ key: key })));
+  },
+  fieldMove: function (o) {
+    return JSON.parse(__hostFx('fieldmove', JSON.stringify(o || {})));
+  },
+  fieldState: function (o) {
+    return JSON.parse(__hostFx('fieldstate', JSON.stringify(o || {})));
   }
 };
 var __pevReady = true;

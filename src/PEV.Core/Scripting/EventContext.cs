@@ -80,10 +80,65 @@ namespace PEV.Scripting
                 // public contract is the .event package format, so this surface may change.
                 case "field": return NoiseFieldRenderer.Set(Str(args, "key"), args, out error);
                 case "fielddestroy": return NoiseFieldRenderer.Destroy(Str(args, "key"), args, out error);
+                case "fieldmove":
+                case "fieldstate": return FieldOverride(args, effectName, out error);
                 default:
                     error = $"unsupported effect '{effectName}'";
                     return false;
             }
+        }
+
+        /// <summary>
+        /// Tag-scoped override of live fields. Only the event that owns the tag writes it,
+        /// and it writes absolute values derived from the song clock, so pause and seeks
+        /// cannot drift.
+        /// </summary>
+        private static bool FieldOverride(Dictionary<string, object> args, string name, out string error)
+        {
+            error = null;
+            string tag = Str(args, "tag");
+            if (string.IsNullOrEmpty(tag)) { error = name + " needs a tag"; return false; }
+
+            bool clear = Bool(args, "clear", false);
+            var offset = Vec2(args, "offset", Vector2.zero);
+            float rotation = Flt(args, "rotation", 0f);
+            float scale = Flt(args, "scale", 1f);
+            float alpha = Flt(args, "alpha", 1f);
+            int visibility = (int)Flt(args, "visibility", 0f);
+
+            int hit = NoiseFieldRenderer.ApplyOverrides(tag, offset, rotation, scale, alpha, visibility, clear);
+            if (hit == 0 && !clear)
+            {
+                // Not an error: a field with that tag may simply not have started yet.
+                return true;
+            }
+            return true;
+        }
+
+        private static bool Bool(Dictionary<string, object> args, string key, bool fallback)
+        {
+            if (args == null || !args.TryGetValue(key, out var v) || v == null) return fallback;
+            if (v is bool b) return b;
+            try { return Convert.ToBoolean(v); } catch { return fallback; }
+        }
+
+        private static float Flt(Dictionary<string, object> args, string key, float fallback)
+        {
+            if (args == null || !args.TryGetValue(key, out var v) || v == null) return fallback;
+            try { return Convert.ToSingle(v); } catch { return fallback; }
+        }
+
+        private static Vector2 Vec2(Dictionary<string, object> args, string key, Vector2 fallback)
+        {
+            if (args == null || !args.TryGetValue(key, out var v) || v == null) return fallback;
+            try
+            {
+                if (v is System.Collections.IList list && list.Count >= 2)
+                    return new Vector2(Convert.ToSingle(list[0]), Convert.ToSingle(list[1]));
+                if (v is Vector2 vec) return vec;
+            }
+            catch { }
+            return fallback;
         }
 
         private static string Str(Dictionary<string, object> args, string key)

@@ -272,6 +272,30 @@ function create(ctx, params) {
 
 ---
 
+### 按 tag 控制别的实例
+
+`fx.field` 创建的对象可以带 `tag`，另一个事件用 `fx.fieldMove` / `fx.fieldState` 按 tag 改它。
+这在「先摆好区域，再按节奏改它」的分层编排里是必需的——移动事件不该知道区域是怎么创建的。
+
+```js
+// 在创建方：
+fx.field("key", { tag: "wave", /* ... */ });
+
+// 在控制方：写的是绝对值，脚本每帧按 t 重新算，暂停和跳转自动正确
+fx.fieldMove({ tag: "wave", offset: [2 * k, 0], rotation: 15 * k, scale: 1 + 0.5 * k, alpha: 1 });
+fx.fieldState({ tag: "wave", alpha: 0.5, visibility: 1 });
+
+// 事件结束时还原，否则区域会停在最后一个位置
+fx.fieldMove({ tag: "wave", clear: true });
+```
+
+`visibility`：`0` 不改、`1` 强制可见、`2` 强制隐藏。tag 可以是空格分隔的多个，命中任意一个即可。
+
+> 这些是宿主原语，与 `fx.create/set/destroy` 一样**不在对外 SDK 的兼容承诺内**；
+> 对外承诺的是 `.event` 包格式（zip + metadata + 脚本约定）。
+
+---
+
 ## 6. 沙箱边界
 
 脚本运行在隔离引擎里，以下都不可用：

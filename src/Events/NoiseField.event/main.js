@@ -72,6 +72,9 @@ function create(ctx, params) {
       visible: p.visible,
       opacity: p.opacity,
       feather: p.feather,
+      // Without this the field never registers under a tag, and a mover aimed at that
+      // tag silently finds nothing.
+      tag: p.tag,
 
       frame: frame,
       frameCount: p.frameCount,

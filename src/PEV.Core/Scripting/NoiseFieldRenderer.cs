@@ -51,6 +51,15 @@ namespace PEV.Scripting
             public float PxWidthHint;
             public Vector2 Tiling = Vector2.one;
 
+            // Tag-driven overrides, written by Move/State events and applied at composite
+            // time. Kept separate from the base values so the owning field's own update()
+            // and a mover can both write without one clobbering the other.
+            public Vector2 OverrideOffset;
+            public float OverrideRotation;
+            public float OverrideScale = 1f;
+            public float OverrideAlpha = 1f;
+            public int OverrideVisibility; // 0 = leave, 1 = force visible, 2 = force hidden
+
             /// <summary>Set by the layer when it composites; diagnostics point at the quad.</summary>
             public GameObject GameObject;
         }
@@ -188,6 +197,45 @@ namespace PEV.Scripting
             return result;
         }
 
+        /// <summary>
+        /// Writes tag-driven overrides and recomposites the affected depths. Values are
+        /// absolute, not incremental: a mover recomputes them from the song clock every
+        /// frame, which is what keeps pause and checkpoint jumps correct.
+        ///
+        /// visibility: 0 leaves the field's own value, 1 forces visible, 2 forces hidden.
+        /// </summary>
+        public static int ApplyOverrides(string tag, Vector2 offset, float rotation,
+            float scale, float alpha, int visibility, bool clear)
+        {
+            var targets = ByTag(tag);
+            if (targets.Count == 0) return 0;
+
+            var depths = new HashSet<int>();
+            foreach (var e in targets)
+            {
+                if (clear)
+                {
+                    e.OverrideOffset = Vector2.zero;
+                    e.OverrideRotation = 0f;
+                    e.OverrideScale = 1f;
+                    e.OverrideAlpha = 1f;
+                    e.OverrideVisibility = 0;
+                }
+                else
+                {
+                    e.OverrideOffset = offset;
+                    e.OverrideRotation = rotation;
+                    e.OverrideScale = scale > 0f ? scale : 1f;
+                    e.OverrideAlpha = Mathf.Clamp01(alpha);
+                    e.OverrideVisibility = visibility;
+                }
+                depths.Add(e.Depth);
+            }
+
+            foreach (var d in depths) RebuildDepth(d);
+            return targets.Count;
+        }
+
         private static void Apply(Entry entry, Dictionary<string, object> args)
         {
             var cam = GameCamera.Current;
@@ -300,11 +348,18 @@ namespace PEV.Scripting
             for (int i = 0; i < members.Count; i++)
             {
                 var m = members[i];
+                // Overrides are applied here, not in Apply(): a mover writes Entry state
+                // without knowing geometry, and the composite is the single place where
+                // base parameters and overridden ones meet.
+                Vector2 centreWorld = new Vector2(m.World.Center.x, m.World.Center.y)
+                                      + m.OverrideOffset;
+                float sizeFactor = m.OverrideScale > 0f ? m.OverrideScale : 1f;
+
                 pieces[i] = new NoiseTextureFactory.Piece
                 {
-                    Offset = new Vector2(m.World.Center.x - centre.x, m.World.Center.y - centre.y),
-                    Half = new Vector2(m.World.Size.x * 0.5f, m.World.Size.y * 0.5f),
-                    Rotation = m.World.Rotation,
+                    Offset = new Vector2(centreWorld.x - centre.x, centreWorld.y - centre.y),
+                    Half = new Vector2(m.World.Size.x * 0.5f * sizeFactor, m.World.Size.y * 0.5f * sizeFactor),
+                    Rotation = m.World.Rotation + m.OverrideRotation,
                     Feather = m.Feather,
                     Circle = m.Shape == NoiseFieldShape.Circle
                 };
@@ -372,7 +427,12 @@ namespace PEV.Scripting
             // opacity collapse to the strongest member of the cluster.
             float alpha = 0f;
             foreach (var m in members)
-                if (m.Visible && m.Opacity > alpha) alpha = m.Opacity;
+            {
+                bool visible = m.OverrideVisibility == 0 ? m.Visible : m.OverrideVisibility == 1;
+                if (!visible) continue;
+                float a = m.Opacity * Mathf.Clamp01(m.OverrideAlpha);
+                if (a > alpha) alpha = a;
+            }
             layer.Alpha = alpha;
             layer.Renderer.color = new Color(1f, 1f, 1f, alpha);
 

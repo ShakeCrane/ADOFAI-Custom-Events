@@ -232,6 +232,12 @@ namespace PEV.Diagnostics
                 }
                 applied++;
             }
+            // Tag the first field so the mover/state events have a target, exactly as an
+            // author would: place the field, then point a mover at its tag.
+            var tagged = editor.events.FirstOrDefault(e =>
+                e.floor == floors[0] && LevelStorage.TryGetData(e, out var d) && d.Id == "pev.noise-field");
+            if (tagged != null) tagged["tag"] = "wave";
+
             Row("PLACED", applied.ToString(), "floors " + string.Join(", ", floors));
 
             // The editor experience is part of the acceptance criteria, so it is asserted,
@@ -302,6 +308,30 @@ namespace PEV.Diagnostics
             foreach (var e in NoiseFieldRenderer.AllEntries())
                 Row("FIELD", $"{e.Key} depth={e.Depth}",
                     $"centre=({e.World.Center.x:F2},{e.World.Center.y:F2}) size=({e.World.Size.x:F2},{e.World.Size.y:F2}) shape={e.Shape}");
+
+            // Tag-driven control: an independent event must be able to move and hide fields
+            // it did not create. Asserted against the renderer's own records.
+            var before = NoiseFieldRenderer.AllEntries().FirstOrDefault(e => e.Tag == "wave");
+            int moved = NoiseFieldRenderer.ApplyOverrides("wave",
+                new Vector2(2f, 1f), 15f, 1.5f, 0.5f, 0, false);
+            var after = NoiseFieldRenderer.AllEntries().FirstOrDefault(e => e.Tag == "wave");
+            Row("TAG-move", moved > 0 && after != null && after.OverrideOffset.x > 1.9f ? "PASS" : "FAIL",
+                $"targets={moved} offset=({after?.OverrideOffset.x:F2},{after?.OverrideOffset.y:F2}) " +
+                $"rotation={after?.OverrideRotation:F1} scale={after?.OverrideScale:F2}");
+
+            int hidden = NoiseFieldRenderer.ApplyOverrides("wave",
+                Vector2.zero, 0f, 1f, 1f, 2, false);
+            Row("TAG-state", hidden > 0 ? "PASS" : "FAIL", $"targets={hidden} visibility=forced-hidden");
+
+            // Clearing must restore the untouched appearance, or a finished mover would
+            // leave the field permanently displaced.
+            NoiseFieldRenderer.ApplyOverrides("wave", Vector2.zero, 0f, 1f, 1f, 0, true);
+            var cleared = NoiseFieldRenderer.AllEntries().FirstOrDefault(e => e.Tag == "wave");
+            Row("TAG-clear", cleared != null && cleared.OverrideOffset == Vector2.zero
+                && cleared.OverrideScale == 1f && cleared.OverrideVisibility == 0 ? "PASS" : "FAIL",
+                $"offset={cleared?.OverrideOffset} scale={cleared?.OverrideScale:F2} vis={cleared?.OverrideVisibility}");
+            Row("TAG-untagged", NoiseFieldRenderer.ByTag("nothing-has-this").Count == 0 ? "PASS" : "FAIL",
+                "an unknown tag must match nothing rather than everything");
 
             yield return new WaitForSeconds(0.6f);
             yield return CaptureFrame("fields");

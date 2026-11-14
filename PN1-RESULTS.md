@@ -23,6 +23,10 @@
 | 退出清理 | **PASS**：两轮 `live=0, texSets=0` |
 | 视觉可见 | **PASS**：截图见 `docs/images/pn1-play.png`、`pn1-editor.png` |
 | 几何换算（纯函数断言） | **PASS**：9/9，见下表 |
+| tag 驱动移动 | **PASS**：`targets=1`，偏移 (2.00,1.00)、旋转 15°、缩放 1.5 |
+| tag 驱动状态 | **PASS**：`visibility=forced-hidden` 命中目标 |
+| tag 清除还原 | **PASS**：偏移归零、缩放 1.0、可见性回到默认 |
+| 未知 tag | **PASS**：匹配 0 个，不会误伤全场 |
 
 ### 几何断言明细
 
@@ -115,6 +119,19 @@ JsonSerializationException: Self referencing loop detected for property 'normali
 | Q6 层与相机 cullingMask | 不再需要单独验证：layer 0 + 高 sortingOrder 已实测可见 |
 
 ---
+
+## 参考实现调研（这条路能抄什么、不能抄什么）
+
+用户要求「先看现有开源实现再动手」，实际查下来结论必须先说清楚：
+
+| 来源 | 结论 |
+|---|---|
+| ADOFAI 社区（`_research/` 下的 Iridium、CustomEvents、Litematica、Petal 等 20 余个仓库） | **不存在噪域/噪声区域类效果**。最接近的是它们自定义事件的元数据构造（`CustomEvents` 的 `groups`/`useGroups` 写法）与装饰贴图加载 |
+| Phira（`extra.json` 的 `effects` + 自定义 shader） | 效果模型是「按时间段给整屏挂 shader」。ADOFAI 打包会剥离未被场景资产引用的 shader，**这条路在本项目不可用**，只能走 `SpriteRenderer` + 程序化纹理 |
+| Phigros 客户端资源拆解（第三方整理，非官方） | 确认了纹理分工：`FD_Noise_*` 红色颗粒、`NoiseBgLines` 横向线噪（alpha 叠加）、`GlitchMap` 水平切片位移；强度由时间轴逐层启用。**本实现的纹理结构按这个分工对齐** |
+
+所以纹理生成算法（颗粒 cell 哈希、行噪线、低分辨率放大）是从 Phigros 的资源分工推出的，
+`CustomEvents` 只提供了编辑器元数据（分组/顺序/条件显示）的参考写法。没有直接可复制的代码。
 
 ## 仍未覆盖
 

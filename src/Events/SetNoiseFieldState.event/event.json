@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "pev.set-noise-field-state",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "main.js",
+  "icon": "icon.png",
+  "category": "DecorationFx",
+  "name": {
+    "en": "Set Noise Field State",
+    "zh-CN": "设置噪声域状态"
+  },
+  "description": {
+    "en": "Changes visibility or intensity of every Noise Field carrying the given tag, with easing. Press play to preview.",
+    "zh-CN": "按 tag 改变噪声域的可见性与强度，带缓动。按播放预览。"
+  },
+  "params": [
+    { "name": "tag", "type": "String", "default": "", "group": "Target" },
+    { "name": "visible", "type": "Bool", "default": true, "group": "State" },
+    { "name": "intensity", "type": "Float", "default": 1, "min": 0, "max": 1, "group": "State" },
+    { "name": "duration", "type": "Float", "default": 0.5, "min": 0, "max": 32, "unit": "s", "group": "State" },
+    { "name": "ease", "type": "Enum:Ease", "default": "OutQuad", "group": "State" }
+  ]
+}

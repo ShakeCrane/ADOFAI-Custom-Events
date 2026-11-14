@@ -101,6 +101,9 @@ Shipped in `Mods/PEV.Core/Events/`:
 | `CameraWarp` | One-shot effect driven by parameters |
 | `ScreenShake` | Two instances of one event keeping separate state |
 | `Pulse` | Continuous per-frame animation via `update(t)` |
+| `NoiseField` | Procedural texture region, grouped parameters, live editor preview |
+| `MoveNoiseField` | Tag-driven control of a field placed by another event |
+| `SetNoiseFieldState` | Eased visibility/intensity of tagged fields |
 
 ---
 
