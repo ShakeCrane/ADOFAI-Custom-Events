@@ -172,11 +172,24 @@ DisabledBlock（Additive 混合）  /  ActiveBlock（Premultiplied Alpha）
 
 **不要**在验证通过前把这条路径写进正式代码。
 
-### 4.2 存储：注释载体不变
+### 4.2 存储：装饰行载体
 
-沿用 `@PEV1` 注释。`LevelStorage.Restore()` 扫描 `level.levelEvents` 里的 `EditorComment`，`Bake()` 写回。零改动。
+噪域现在存成一条**真的 `AddDecoration` 行**，不再是 `@PEV1` 注释。
 
-唯一要注意：`Bake()` 把 payload 写进 `actions` 列表，`floor` 用 `ev.floor`。噪声域是一个 floor 事件，语义自洽。
+| 字段 | 作用 |
+|---|---|
+| `eventType` | `AddDecoration`。不能换成自定义类型——`LevelEvent.Decode` 查不到 `info` 会立刻抛异常 |
+| `decorationImage` | `pev/field`，标记。指向一个**故意不存在**的文件，原版加载到 null，不画、不报错 |
+| `maskingTarget` | 载荷。`pev1:{json}`，装整个 `EventInstanceData` |
+| `scale` / `position` / `rotation` / `color` / `opacity` / `tag` / `depth` / `parallax` | 原生字段，直接就是几何与外观 |
+
+这样做的收益是**引擎自己的代码在替我们工作**：`scrDecorationManager` 建出真的 `scrDecoration`，编辑器 gizmo 能拖，`MoveDecorations` 按 tag 能找到它。
+
+**为什么参数不单独成键**：`LevelEvent.Decode` 只遍历 `info.propertiesInfo` 里声明的键，未知键会被静默丢弃。参数若作为独立键写进装饰行，原版玩家打开再保存一次就没了。`maskingTarget` 是 `AddDecoration` 里唯一一个 `control: Hidden` 且 `encode: true` 的 String，所以它是唯一安全的容器。
+
+**为什么参数还是在面板里**：`DecorationParams` 把清单参数注入 `AddDecoration.propertiesInfo`，带 `showIf: ["decorationImage", "pev/field"]`。`PropertyInfo.CheckIfShown` 每次选中都重新求值（`InspectorPanel.ShowPanel` → `PropertiesPanel.SetProperties`），所以这些行只出现在我们的装饰上，原生装饰一行都不多。注入项设 `encode: false`：它们的值只在载荷里，写进文件只会给原版留一堆它不认识的键。
+
+**读取顺序**：`Restore()` 先扫 `level.decorations`（`RestoreDecorations` + `Adopt`），再扫 `levelEvents` 里的旧注释并把装饰型清单迁移成装饰行（`MigrateToDecoration`）。旧谱面因此不会丢事件。`Bake()` 不再处理它们；写回由 `EncodeToDictionary` 的前缀 `SyncDecorations()` 完成——必须在前缀，因为装饰数组是在 `EncodeToDictionary` 内部被序列化的。
 
 ### 4.3 渲染：不用 shader
 
@@ -244,15 +257,21 @@ UV 滚动用 `sr.material.mainTextureOffset`。**这一条是 `[未知]`，不�
 
 Phigros 的噪域有时间维度：出现、激活、消失、多段激活、激活前白闪 `[源码文档]` RPE-Next 数据模型。ADOFAI 的装饰模型是"存在，然后被移动事件改"。
 
-诚实映射成**三个事件**：
+诚实映射成**一个事件**：
 
 | 事件 | 职责 | 必要性 |
 |---|---|---|
-| `AddNoiseField` | 创建实例，声明几何与全部渲染参数 | 必须 |
-| `MoveNoiseField` | 按 tag 找到实例，改 transform（位置/尺寸/旋转/不透明度），带缓动 | v1 可有可无（几何参数已能表达静态位置）；做动画时需要 |
-| `SetNoiseFieldState` | 按 tag 改 `visible` / `active`（激活态决定视觉强度），带缓动 | 需要「区域内判定失败」的视觉语义时必须有 |
+| `AddNoiseField`（即 `pev.noise-field`） | 创建实例，声明全部渲染参数 | 必须 |
 
-v1 只做 `AddNoiseField`。另外两个在 P2 阶段做。
+早期设计拆成三个事件（Add / Move / SetState）。**这个拆分已经取消**，因为它与"像装饰一样"这个要求冲突：
+
+噪域现在本身就是一条原生 `AddDecoration` 行。位置、大小、旋转、颜色、透明度、tag、depth 全部是装饰自身的属性，因此
+
+- 拖动、缩放、旋转由编辑器的 gizmo 直接完成；
+- `MoveDecorations` 按 tag 就能移动、改色、淡入淡出，**它就是那个"移动噪域"事件**；
+- 可见性用原生 `visible`，无需另设状态事件。
+
+用户的原话是"现在好像有好几种有关噪域的事件，合成一个『添加噪域』"——合成的方式不是把两个自定义事件合并，而是让噪域退回装饰本体，原生事件天然就是它的控制器。
 
 **tag 索引**：`AddNoiseField` 的 `tag` 参数注册到 Core 内的 `Dictionary<string, List<NoiseFieldInstance>>`；Move/State 事件按空格拆 tag 查找（与原生 `MoveDecorations` 一致，空 tag 用 `NO TAG`）。
 
@@ -266,24 +285,26 @@ v1 只做 `AddNoiseField`。另外两个在 P2 阶段做。
 
 **所以 V-N1 不是走过场**：它是这四个类型在本项目里的第一次验证。如果 `Vector2` 的控件没出来，或者 `Bool` 存成了 `"True"` 字符串，问题就在这里，不在别处。
 
-### 5.1 几何（沿用 ADOFAI 装饰词汇）
+### 5.1 几何（全部由装饰本体承担）
 
-| 参数名 | 类型 | 默认 | 说明 |
-|---|---|---|---|
-| `relativeTo` | `Enum:PEV.Scripting.NoiseFieldRelativeTo, PEV.Core` | `Tile` | 坐标参照 |
-| `anchor` | `Enum:PEV.Scripting.NoiseFieldAnchor, PEV.Core` | `Center` | 九宫格锚点 |
-| `shape` | `Enum:PEV.Scripting.NoiseFieldShape, PEV.Core` | `Rect` | 形状 |
-| `size` | `Vector2` | `[4,3]` | 长宽，单位：方块。`shape=Rect` 时生效 |
-| `radius` | `Float` | `2` | 半径，单位：方块。`shape=Circle` 时生效 |
-| `positionOffset` | `Vector2` | `[0,0]` | 相对锚点的偏移，单位：方块 |
-| `rotation` | `Float` | `0` | 度 |
-| `lockRotation` | `Bool` | `false` | 随参照对象旋转时是否锁定 |
-| `lockSize` | `Bool` | `false` | 镜头缩放时是否锁定屏幕尺寸 |
-| `depth` | `Int` | `0` | 层级，映射到 `sortingOrder` |
-| `parallax` | `Vector2` | `[1,1]` | 视差系数 |
-| `tag` | `String` | `""` | 供 Move/State 事件引用 |
-| `visible` | `Bool` | `true` | 初始可见 |
-| `opacity` | `Float` | `100` | 0–100，与原生装饰一致（内部 /100） |
+几何**不再是清单参数**。噪域就是一条 `AddDecoration` 行，所以下面这些全部是游戏的属性，面板里就是装饰原本的那几行：
+
+| 装饰属性 | 作用 | 备注 |
+|---|---|---|
+| `position` | 位置，单位：方块 | 相对 `floor` 所在的方块 |
+| `scale` | 长宽，**百分比**（100 = 基础尺寸） | 圆形也走长宽——用户明确要求「圆形噪域也改成长宽控制」，实现为椭圆 |
+| `rotation` | 度 | 与装饰一致 |
+| `color` | 颜色 | 渲染器的基色直接取它，`MoveDecorations` 改色会立刻生效 |
+| `opacity` | 0–100 | 与装饰一致 |
+| `depth` / `parallax` | 层级与视差 | 与装饰一致 |
+| `tag` | 供 `MoveDecorations` / `SetText` 等原生事件引用 | 由 `scrDecorationManager.taggedDecorations` 提供索引 |
+| `visible` | 可见性 | 原生 |
+| `decorationImage` | **固定 `pev/field`**，是标记 | 不要改，改了这条行就不再是噪域 |
+| `maskingTarget` | 载荷 | 不要改，改了参数全部丢失 |
+
+场景里唯一属于清单的几何项只剩 `shape` 与 `feather`（圆形羽化）。
+
+**为什么这样更好**：位置、缩放、旋转、颜色、透明度、tag 都由编辑器 gizmo 与引擎自己的 tween 直接写入 `scrDecoration`，渲染器每帧从组件读取，所以「像装饰一样」不是模仿出来的，而是真的共用同一条代码路径。
 
 ### 5.2 噪声（沿用 Phigros 渲染变量）
 
@@ -365,10 +386,27 @@ namespace PEV.Scripting
 注释里的内容：一行紧凑 JSON。
 
 ```
-floor=12  @PEV1 {"id":"pev.noise-field","v":"1.0.0","uid":"3f8a91c2","p":{"relativeTo":"Tile","anchor":"Center","shape":"Rect","size":[4,3],"radius":2,"positionOffset":[0,0],"rotation":0,"lockRotation":false,"lockSize":false,"depth":0,"parallax":[1,1],"tag":"","visible":true,"opacity":100,"noiseBrightness":1,"noiseSaturation":1,"noiseSampleRate":1,"lineOpacity":0.35,"noiseFrameCount":8,"noiseEvolveSpeed":12,"noiseMoveSpeed":[0.15,0],"noiseScale":[1,1],"glitchRange":0,"color":"ff2020","feather":0}}
+decorations[] {
+  "eventType": "AddDecoration",
+  "floor": 12,
+  "decorationImage": "pev/field",
+  "scale": [100, 75],
+  "position": [0, 0],
+  "rotation": 0,
+  "color": "ffffff",
+  "opacity": 100,
+  "depth": 0,
+  "parallax": [100, 100],
+  "tag": "wave",
+  "maskingTarget": "pev1:{\"id\":\"pev.noise-field\",\"v\":\"1.0.0\",\"uid\":\"3f8a91c2\",\"p\":{\"shape\":\"Rect\",\"noiseBrightness\":1,\"noiseSaturation\":1,\"noiseSampleRate\":1,\"lineOpacity\":0.35,\"noiseFrameCount\":8,\"noiseEvolveSpeed\":12,\"noiseMoveSpeed\":[0.15,0],\"noiseScale\":[1,1],\"glitchRange\":0,\"fillOpacity\":0.667,\"edgeOpacity\":0.8,\"glowPasses\":5,\"displace\":0.35,\"edgeDistance\":0.7,\"edgeDetail\":8,\"edgeThickness\":1,\"edgeMargin\":0.6,\"edgeFragment\":1,\"preDuration\":0}}"
+}
 ```
 
+外层全部是原生字段——原版客户端打开这条谱面，看到的就是一个"图片缺失"的普通装饰，不崩、不显示。参数只在 `maskingTarget` 里，原版不认识但会原样保留，因为它在 `AddDecoration` 的属性表里是 `encode: true`。
+
 枚举写名字、`Vector2` 写数组 `[x,y]`，由 `StorageValue.Canonical` 保证 `[实测]` P0。
+
+**`scale` 的单位**：装饰的 `scale` 是百分比（100 = 原尺寸），而 `scrDecoration.scaleVec` 是倍数（1.0 = 原尺寸）。`MoveDecorations` 里能看到这个换算：事件值 `/100` 后写进 `targetScaleV2`，再原样传给 `SetScale`。读取时用哪一侧，单位必须对应——这里除错一次会让区域小 100 倍。
 
 ---
 
@@ -541,45 +579,32 @@ fx.field(key, { frame: frame, uv: [uvx, uvy], ... });
 
 ### 7.5 几何计算
 
-```
-[推断] 1 方块 = ADOBase.controller.tileSize 世界单位（≈1.0）
-```
-
-`[源码文档]` 依据：原生事件里 `positionOffset * tileSize` 才是世界偏移，说明 tileSize 就是「一块方块的宽度」。`scrController.tileSize = baseFloorDimensions.x * 2f`。
-
-`tileSize` 不要硬编码，每次取。
-
-**半屏尺寸**（正交相机）：
+**这一节描述的是装饰自身的几何，不是我们要算的东西。** 噪域作为 `AddDecoration` 行存在时，位置、长宽、旋转由引擎写进 `scrDecoration`，我们只读：
 
 ```csharp
-halfH = cam.orthographicSize;          // 世界单位
-halfW = halfH * cam.aspect;
+var dec = scrDecorationManager.GetDecoration(ev);
+Vector2 pivot = dec.pivotPosVec;     // 世界坐标的轴心
+Vector2 scale = dec.scaleVec;        // 倍数，1.0 = 100%
+float   rot   = dec.rotAngle;
+Color   col   = dec.color;
+float   opacity = dec.opacity;
 ```
 
-**九宫格锚点**：锚点的语义是「基准点贴住矩形的哪个角/边」。给定矩形 `w × h`（世界单位，已乘 `tileSize`），矩形**中心**相对基准点的偏移：
+`scaleVec` 是**倍数**，不是百分比。事件里的 `scale` 是百分比，`MoveDecorations` 会先 `/100` 再写进 `targetScaleV2` 交给 `SetScale`——所以在组件这一侧再除一次 100 会让区域小两个数量级。
+
+**长宽到世界的换算**：
 
 ```
-xSign = (anchor 在左列) ? +1 : (anchor 在右列) ? -1 : 0
-ySign = (anchor 在下行) ? +1 : (anchor 在上行) ? -1 : 0
-
-center = basePos
-       + right * (xSign * w/2)
-       + up    * (ySign * h/2)
-       + (positionOffset * tileSize)
+worldSize = (scaleVec.x * BaseSizeTiles.x * tileSize,
+             scaleVec.y * BaseSizeTiles.y * tileSize)
+BaseSizeTiles = (4, 3)
 ```
 
-符号容易写反，记一句话：**锚点在左上角时，矩形中心在基准点的右下方**，所以 x 为正、y 为负（Unity 世界 y 向上）。
+`BaseSizeTiles` 是装饰在 100% 时覆盖的方块数。装饰的尺寸本来来自它自己的 sprite，而噪域的标记图片**故意不存在**，引擎因此拿不到天然尺寸，这个常量就是那份「缺省的 sprite 尺寸」，也就是 scale 百分比与世界尺寸之间唯一的映射点。
 
-`Center` 时两项都是 0，矩形以基准点为中心。
+**兜底路径**：`scrDecorationManager` 在解码之后才建对象，撤销、播放、重载时会重建。这些间隙里组件不存在，`DecorationBridge.TryReadEvent` 用同样一组字段直接从事件数据算——两条路径的公式一致，切换不可见，所以撤销一帧不会让区域闪掉。
 
-**`size` / `radius` 的单位**：
-
-| `relativeTo` | `size` 的含义 |
-|---|---|
-| `Tile` / `Camera` / `Planet*` | 方块数（× `tileSize` 得世界单位） |
-| `CameraRatio` | 视口比例，`1.0` = 占满整个视口对应方向；`w_world = size.x * (2 * halfW)` |
-
-`Circle` 时 quad 的边长是 `2 * radius * tileSize`。
+**圆形**：不是半径，是**椭圆的半轴**。用户明确要求「圆形噪域也改成长宽控制」，于是圆形与矩形共用同一对 `scale` 手柄；`EllipseDistance` 用准欧氏近似（缩放成单位圆求距离再按短轴换回），对装饰能拉出的长宽比误差在 1% 以内，而精确椭圆距离是椭圆积分，逐像素算不起。
 
 **基准点 `basePos`**：
 
@@ -591,13 +616,9 @@ center = basePos
 | `PlanetRed` / `Blue` / `Green` | `ADOBase.controller.planetRed/Blue/Green.transform.position` `[源码文档]` `scrController.planetRed/planetBlue/planetGreen` |
 | 行星不存在时 | 退回 `Tile` 基准，写一次日志 |
 
-**`lockSize`**：`true` 时区域在屏幕上保持固定像素尺寸。实现：`worldScale = cam.orthographicSize / 5f`（5 是 `scrCamera.DefaultCameraOrthoSize` `[源码文档]`），把 `w`、`h` 都乘上它，抵消镜头缩放。默认 `false`（随镜头缩放，与装饰一致）。
+**本节其余部分（基准点、锚点、视差、`lockSize`）描述的是 `Placement.Compute`——纯函数路径，现在只用于测试与无装饰绑定的场合。** 噪域本体走装饰行，几何由引擎算出后从 `scrDecoration` 读取（见上一段）。保留这段是因为 `Placement` 仍被 harness 用来断言锚点符号，而且反射式摆放将来可能复用。
 
-**`rotation`**：`lockRotation=true` 时不叠加基准对象的旋转；`false` 时叠加。
-
-**深度**：`sortingOrder = 900 + depth * 10`。900 让它在轨道之上、闪屏（`short.MaxValue`）之下。`[未知]` 需要测一下轨道与装饰的 sortingOrder 实际范围，确保 900 不遮住 UI。
-
-**视差**：`parallax` 是相对相机的位移乘数。`1,1` = 完全随相机（贴在屏幕上不动）。实现上在基准点计算时乘 `parallax`，或者在 `LateUpdate` 里补偿相机位移。v1 可以让 `Tile` 基准不等视差，只对 `Camera` 基准生效——**先把参数留着，行为后做**。
+**深度**：装饰的 `depth` 直接走引擎自己的排序规则（`depth >= 0` → `Bg` 层、order `-depth`；`depth < 0` → `Default` 层）。我们的 quad 用 `sortingOrder = 900 + depth * 10` 覆盖在上面，因为噪域不是被轨道遮挡的对象，而是要盖住轨道的效果层。
 
 ---
 
@@ -857,20 +878,11 @@ function create(ctx, params) {
     var frame = Math.floor(t * params.noiseEvolveSpeed) % frames;
     if (frame < 0) frame += frames;
 
+    // 只发观感参数。位置、长宽、旋转、颜色、透明度、tag、depth 全部是装饰
+    // 自己的属性，宿主每帧从 scrDecoration 读——脚本再发一遍会与引擎打架：
+    // 作者拖出来的值会在下一帧被读到的旧值覆盖。
     fx.field(key, {
       shape: params.shape,
-      size: params.size,                 // [w,h] 方块
-      radius: params.radius,
-      relativeTo: params.relativeTo,
-      anchor: params.anchor,
-      position: params.positionOffset,
-      rotation: params.rotation,
-      lockRotation: params.lockRotation,
-      lockSize: params.lockSize,
-      depth: params.depth,
-      parallax: params.parallax,
-      visible: params.visible,
-      opacity: params.opacity / 100,
       feather: params.feather,
 
       frame: frame,
@@ -880,7 +892,6 @@ function create(ctx, params) {
       sampleRate: params.noiseSampleRate,
       lineOpacity: params.lineOpacity,
       tiling: params.noiseScale,
-      color: params.color,
 
       // 层与海岸线参数。宿主只读调用参数，不读 manifest：漏传一项就静默换成
       // 宿主默认值，最典型的表现是 displace 丢失后整个场变成一块平直矩形。
@@ -889,7 +900,12 @@ function create(ctx, params) {
       edgeOpacity: params.edgeOpacity,
       sparkColor: params.sparkColor,
       sparkOpacity: params.sparkOpacity,
+      glowColor: params.glowColor,
+      glowOpacity: params.glowOpacity,
+      glowPasses: params.glowPasses,
       displace: params.displace,
+      pre: t < params.preDuration,
+
       edgeDistance: params.edgeDistance,
       edgeDetail: params.edgeDetail,
       edgeThickness: params.edgeThickness,
@@ -922,6 +938,7 @@ function create(ctx, params) {
    历史上 `fx.create` 的这类撞 key 问题（P4 已证）是让作者自己负责的；新 API 不要重蹈覆辙。
 2. **时间全部来自 `t`**，不用累加。
 3. **`dispose` 里也要销毁**。宿主会兜底，但显式更干净。
+4. **不要发几何参数**。发了也会被忽略，但更糟的是它会让人以为几何归脚本管，改装饰反而看不到效果。
 
 ### 10.2 `event.json`
 
@@ -934,66 +951,57 @@ function create(ctx, params) {
   "entry": "main.js",
   "icon": "icon.png",
   "category": "DecorationFx",
+  "decoration": true,
   "name": { "en": "Noise Field", "zh-CN": "噪声域" },
   "description": {
-    "en": "A rectangular or circular noise region. Visual re-implementation of the Phigros chapter 9 effect.",
-    "zh-CN": "矩形或圆形的噪声区域。Phigros 第九章噪域效果的视觉重实现。"
+    "en": "A rectangular or circular region of scrolling red noise, placed as a decoration.",
+    "zh-CN": "矩形或圆形的滚动红色噪声区，作为装饰放置。"
   },
   "params": [
-    { "name": "relativeTo",       "type": "Enum:PEV.Scripting.NoiseFieldRelativeTo, PEV.Core", "default": "Tile" },
-    { "name": "anchor",           "type": "Enum:PEV.Scripting.NoiseFieldAnchor, PEV.Core",     "default": "Center" },
-    { "name": "shape",            "type": "Enum:PEV.Scripting.NoiseFieldShape, PEV.Core",      "default": "Rect" },
+    { "name": "shape",            "type": "Enum:PEV.Scripting.NoiseFieldShape, PEV.Core", "default": "Rect", "group": "Geometry" },
+    { "name": "feather",          "type": "Float", "default": 0, "min": 0, "max": 8, "group": "Geometry", "showIf": ["shape", "Circle"] },
 
-    { "name": "size",             "type": "Vector2", "default": [4, 3] },
-    { "name": "radius",           "type": "Float",   "default": 2,   "min": 0,  "max": 64 },
-    { "name": "positionOffset",   "type": "Vector2", "default": [0, 0] },
-    { "name": "rotation",         "type": "Float",   "default": 0,   "min": -180, "max": 180 },
-    { "name": "lockRotation",     "type": "Bool",    "default": false },
-    { "name": "lockSize",         "type": "Bool",    "default": false },
-    { "name": "depth",            "type": "Int",     "default": 0,   "min": -20, "max": 20 },
-    { "name": "parallax",         "type": "Vector2", "default": [1, 1] },
-    { "name": "tag",              "type": "String",  "default": "" },
-    { "name": "visible",          "type": "Bool",    "default": true },
-    { "name": "opacity",          "type": "Float",   "default": 100, "min": 0, "max": 100, "unit": "%" },
+    { "name": "fillOpacity",      "type": "Float", "default": 0.667, "min": 0, "max": 1, "group": "Layers" },
+    { "name": "edgeColor",        "type": "Color", "default": "ff5454", "group": "Layers" },
+    { "name": "edgeOpacity",      "type": "Float", "default": 0.8,  "min": 0, "max": 1, "group": "Layers" },
+    { "name": "glowColor",        "type": "Color", "default": "ff5454", "group": "Layers" },
+    { "name": "glowOpacity",      "type": "Float", "default": 0.8,  "min": 0, "max": 1, "group": "Layers" },
+    { "name": "glowPasses",       "type": "Float", "default": 5,    "min": 0, "max": 6, "group": "Layers" },
+    { "name": "sparkColor",       "type": "Color", "default": "ff5a5a", "group": "Layers" },
+    { "name": "sparkOpacity",     "type": "Float", "default": 1,    "min": 0, "max": 3, "group": "Layers" },
+    { "name": "displace",         "type": "Float", "default": 0.35, "min": 0, "max": 1, "group": "Layers" },
 
-    { "name": "noiseBrightness",  "type": "Float",   "default": 1.0,  "min": 0, "max": 3 },
-    { "name": "noiseSaturation",  "type": "Float",   "default": 1.0,  "min": 0, "max": 3 },
-    { "name": "noiseSampleRate",  "type": "Float",   "default": 1.0,  "min": 0.25, "max": 4 },
-    { "name": "lineOpacity",      "type": "Float",   "default": 0.35, "min": 0, "max": 1 },
-    { "name": "noiseFrameCount",  "type": "Int",     "default": 8,    "min": 2, "max": 32 },
-    { "name": "noiseEvolveSpeed", "type": "Float",   "default": 12,   "min": 0, "max": 60, "unit": "fps" },
-    { "name": "noiseMoveSpeed",   "type": "Vector2", "default": [0.15, 0] },
-    { "name": "noiseScale",       "type": "Vector2", "default": [1, 1] },
-    { "name": "glitchRange",      "type": "Float",   "default": 0,    "min": 0, "max": 1 },
-    { "name": "color",            "type": "Color",   "default": "ff2020" },
-    { "name": "feather",          "type": "Float",   "default": 0,    "min": 0, "max": 8 },
+    { "name": "noiseBrightness",  "type": "Float", "default": 1.0,  "min": 0, "max": 3, "group": "Noise" },
+    { "name": "noiseSaturation",  "type": "Float", "default": 1.0,  "min": 0, "max": 3, "group": "Noise" },
+    { "name": "noiseSampleRate",  "type": "Float", "default": 1.0,  "min": 0.25, "max": 4, "group": "Noise" },
+    { "name": "lineOpacity",      "type": "Float", "default": 0.35, "min": 0, "max": 1, "group": "Noise" },
+    { "name": "noiseFrameCount",  "type": "Int",   "default": 8,    "min": 2, "max": 32, "group": "Noise" },
+    { "name": "noiseEvolveSpeed", "type": "Float", "default": 12,   "min": 0, "max": 60, "unit": "fps", "group": "Noise" },
+    { "name": "noiseMoveSpeed",   "type": "Vector2", "default": [0.15, 0], "group": "Noise" },
+    { "name": "noiseScale",       "type": "Vector2", "default": [1, 1],    "group": "Noise" },
+    { "name": "glitchRange",      "type": "Float", "default": 0,    "min": 0, "max": 1, "group": "Noise" },
 
-    { "name": "fillOpacity",      "type": "Float",   "default": 0.35, "min": 0, "max": 1, "group": "Layers" },
-    { "name": "edgeColor",        "type": "Color",   "default": "ff2a2a", "group": "Layers" },
-    { "name": "edgeOpacity",      "type": "Float",   "default": 1,    "min": 0, "max": 1, "group": "Layers" },
-    { "name": "sparkColor",       "type": "Color",   "default": "ff5040", "group": "Layers" },
-    { "name": "sparkOpacity",     "type": "Float",   "default": 1,    "min": 0, "max": 3, "group": "Layers" },
-    { "name": "displace",         "type": "Float",   "default": 0.35, "min": 0, "max": 1, "group": "Layers" },
-
-    { "name": "edgeDistance",     "type": "Float",   "default": 0.7,  "min": 0, "max": 2,   "group": "Edge" },
-    { "name": "edgeDetail",       "type": "Float",   "default": 8,    "min": 1, "max": 32,  "group": "Edge" },
-    { "name": "edgeThickness",    "type": "Int",     "default": 1,    "min": 1, "max": 6,   "group": "Edge" },
-    { "name": "edgeMargin",       "type": "Float",   "default": 0.6,  "min": 0, "max": 2,   "group": "Edge" },
-    { "name": "edgeFragment",     "type": "Float",   "default": 1,    "min": 0, "max": 1,   "group": "Edge" }
+    { "name": "edgeDistance",     "type": "Float", "default": 0.7,  "min": 0, "max": 2,  "group": "Edge" },
+    { "name": "edgeDetail",       "type": "Float", "default": 8,    "min": 1, "max": 32, "group": "Edge" },
+    { "name": "edgeThickness",    "type": "Int",   "default": 1,    "min": 1, "max": 6,  "group": "Edge" },
+    { "name": "edgeMargin",       "type": "Float", "default": 0.6,  "min": 0, "max": 2,  "group": "Edge" },
+    { "name": "edgeFragment",     "type": "Float", "default": 1,    "min": 0, "max": 1,  "group": "Edge" },
+    { "name": "preDuration",      "type": "Float", "default": 0,    "min": 0, "max": 5,  "group": "Edge" }
   ]
 }
 ```
 
-实际包里的 `event.json` 每项还带 `group`、`order`、`label`（中英）。这里省略以保持可读。
+实际包里的 `event.json` 每项还带 `order` 与 `label`（中英）。这里省略以保持可读。
+
+**`decoration: true` 是要害。** 它让这个包走装饰行载体（§4.2）而不是注释载体。少写这一行，事件会回到"看不见、点不到"的注释形态。
+
+**`group` 在这里几乎不起作用**，因为这些参数是注入到 `AddDecoration` 面板里的，会被并入原生面板已有的分组。写 `group` 的意义在于将来若原生面板开启分组，新页签能按这里的名字创建。
 
 **`displace` 是总开关。** 它为 0 时海岸带宽度为 0，整个场退化成一块边缘平直的纯几何——这不是 bug，
 是「关掉噪域形态」的语义。但它必须**每次调用都传下去**：宿主读的是调用参数而不是 manifest，
 少传一个就静默换成宿主默认值。
 
-**注意两处**：
-
-1. `"default": [4, 3]` 是 `Vector2`。manifest 解析成 `JArray` 后，必须经 `ParamCoercion.ToVector2` 才能进编辑器——`Storage/ParamCoercion.cs` 已处理，但**放置路径**（`EditorIntegration.AddEventPatch`）也走同一个 `Coerce`，别漏。
-2. 枚举 `default` 必须是成员名。写 `"center"`（小写）或 `"0"` 都不可靠：`ParamCoercion.ToEnum` 会 `Enum.Parse(..., true)` 忽略大小写，但 `PropertyInfo` 构造期就要校验默认值，报错后控件直接不出现。**一律用精确成员名**。
+**枚举 `default` 必须是成员名。** 写 `"center"`（小写）或 `"0"` 都不可靠：`ParamCoercion.ToEnum` 会 `Enum.Parse(..., true)` 忽略大小写，但 `PropertyInfo` 构造期就要校验默认值，报错后控件直接不出现。**一律用精确成员名**。
 
 `category` 必须取 `LevelEventCategory` 的 8 个成员之一 `[源码文档]`：`Gameplay` `TrackFx` `DecorationFx` `VisualFx` `FxModifiers` `Conveniences` `Jank` `Favorites`。噪声域用 `DecorationFx` 最贴切。
 
@@ -1019,23 +1027,24 @@ function create(ctx, params) {
 
 ### P-N2：几何与遮罩（约 1–2 天）
 
-- 三个枚举 + 九宫格锚点 + 六种 `relativeTo`。
-- 矩形/圆形遮罩与羽化。
-- `lockSize` / `lockRotation` / `opacity` / `visible` / `depth`。
-- 完整参数表。
+- 几何全部交由装饰本体：位置、长宽、旋转、颜色、透明度、tag、depth、visible。
+- 形状只剩矩形与椭圆（圆形走同一对长宽手柄）。
+- `lockSize` / `lockRotation` / `relativeTo` / `anchor` 作为**前置概念**退役——它们原本要解决的问题（区域怎么跟随镜头与轨道）在原版装饰里已由 `parallax` 与 `depth` 承担。
 
 **验收**：
-- 同一参数下，切换六种 `relativeTo` 区域位置符合预期。
-- 九个锚点分别贴住参照物的对应角。
-- 镜头缩放到 2× 和 0.5× 时，`lockSize=false` 的区域等比缩放，`lockSize=true` 的屏幕尺寸不变。
-- 圆形的边缘没有锯齿或方形残留。
+- 放置后立刻出现一条可选中的装饰，`scrDecorationManager.GetDecoration(row)` 非空。
+- 拖动 gizmo 改位置、拉伸手柄改长宽、旋转，区域每帧跟随。
+- 改装饰颜色后填充与边框同色变化；`MoveDecorations` 按 tag 改色同样生效。
+- 圆形在拉成长宽不等时呈椭圆，边缘无方形残留。
+- 保存后重开，几何与参数都不变（`ENCODE` 断言）。
+- 原版客户端打开这条谱面不崩、不显示、不丢行。
 
-**退掉的风险**：`tileSize` 语义、坐标换算、锚点方向。
+**退掉的风险**：装饰组件生命周期（撤销/播放时重建）、`scaleVec` 单位、`maskingTarget` 是否真的落盘。
 
 ### P-N3：生命周期与多实例（约 1 天）
 
-- `SetNoiseFieldState`（`visible` / `active` 缓动），`MoveNoiseField`（tag 驱动）。
-- tag 索引。
+- 移动与显隐由**原生** `MoveDecorations` 完成（按 tag），不再单独提供事件。
+- tag 索引由 `scrDecorationManager` 提供：装饰行天然进入 `taggedDecorations`。
 - 同包多实例互不干扰。
 
 **验收**：同一谱面放 3 个噪声域，参数不同，同时存在且互不覆盖；暂停时画面静止；重开后与原时间点一致。
@@ -1053,9 +1062,12 @@ function create(ctx, params) {
 
 | 风险 | 概率 | 影响 | 应对 |
 |---|---|---|---|
+| 装饰标记图片不存在导致引擎不建对象 | 中 | 无法拖动、tag 找不到 | `TextureManager.LoadTexture` 对缺失文件返回 null，且 `ResizeCollider` / `UpdateHitbox` / `GetDecorationWorldSize` 全部 null 安全 `[源码文档]`；harness 的 `OBJECT-floor{n}` 断言实测 |
+| 自定义参数被原版保存时丢弃 | 高 | 换客户端打开即丢参数 | 参数只进 `maskingTarget`（`AddDecoration` 里唯一隐藏且 `encode: true` 的 String），不单独成键 |
+| `maskingTarget` 因 disabled 被 `Encode` 跳过 | 中 | 载荷静默不落盘 | `SyncDecorations` 每次写入后同时 `disabled["maskingTarget"] = false` |
+| `scaleVec` 单位搞错 | 中 | 尺寸差 100 倍 | 组件侧是倍数（1.0 = 100%），事件侧是百分比；两处读取都已按各自单位处理并写在注释里 |
 | `SpriteRenderer` 被轨道遮住 | 中 | 效果不可见 | 用 `sortingOrder ≥ 900` 并截图验证；P4 已证明 32000 可见 |
 | 找不到加色 shader | 高 | 观感偏灰 | fallback 到 `Sprites/Default`；用高亮度弥补 |
-| `tileSize` 语义理解错 | 中 | 尺寸整体差一个倍数 | 先写一个「1 方块 = ? 世界单位」的探针，实测一次 |
 | `Texture2D` 泄漏 | 高 | 反复进出关卡内存增长 | `Destroy`/`DestroyAll` 里显式 `Object.Destroy(tex)`，并加一个 live 计数供测试断言 |
 | 参数滑块拖动导致卡顿 | 中 | 编辑器体验差 | 参数指纹 + 150ms 防抖 |
 | 多实例共享纹理时释放过早 | 中 | 后创建的黑块 | 引用计数 |

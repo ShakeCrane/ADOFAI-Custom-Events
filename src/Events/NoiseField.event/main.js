@@ -14,30 +14,16 @@ function num(v, fallback) {
   return isFinite(n) ? n : fallback;
 }
 
-function bool(v, fallback) {
-  if (v === true || v === "true" || v === 1) return true;
-  if (v === false || v === "false" || v === 0) return false;
-  return fallback;
-}
-
 function create(ctx, params) {
   var key = "noisefield";
 
+  // Geometry is the decoration's. Where it sits, how big it is, how it is rotated, what
+  // colour and opacity it has, and which tag a mover looks for all live on the decoration
+  // object, which the editor and the engine's own tweens write. Sending them from here
+  // would make the script fight the engine: the value the author dragged would be
+  // overwritten every frame by the value read at load.
   var p = {
     shape: params.shape || "Rect",
-    size: vec(params.size, 4, 3),
-    radius: num(params.radius, 2),
-    relativeTo: params.relativeTo || "Tile",
-    anchor: params.anchor || "Center",
-    position: vec(params.positionOffset, 0, 0),
-    rotation: num(params.rotation, 0),
-    lockRotation: bool(params.lockRotation, false),
-    lockSize: bool(params.lockSize, false),
-    depth: num(params.depth, 0),
-    parallax: vec(params.parallax, 1, 1),
-    tag: params.tag || "",
-    visible: bool(params.visible, true),
-    opacity: num(params.opacity, 100) / 100,
     feather: num(params.feather, 0),
 
     brightness: num(params.noiseBrightness, 1),
@@ -82,22 +68,7 @@ function create(ctx, params) {
 
     fx.field(key, {
       shape: p.shape,
-      size: p.size,
-      radius: p.radius,
-      relativeTo: p.relativeTo,
-      anchor: p.anchor,
-      position: p.position,
-      rotation: p.rotation,
-      lockRotation: p.lockRotation,
-      lockSize: p.lockSize,
-      depth: p.depth,
-      parallax: p.parallax,
-      visible: p.visible,
-      opacity: p.opacity,
       feather: p.feather,
-      // Without this the field never registers under a tag, and a mover aimed at that
-      // tag silently finds nothing.
-      tag: p.tag,
 
       frame: frame,
       frameCount: p.frameCount,

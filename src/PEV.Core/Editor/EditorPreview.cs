@@ -65,6 +65,27 @@ namespace PEV.Editor
             _clock += Time.unscaledDeltaTime;
 
             var live = new HashSet<string>(StringComparer.Ordinal);
+
+            // Decorations first: a decoration-backed event is a row in level.decorations, and
+            // the editor's `events` list does not contain it at all. Iterating only that list
+            // is why a placed field stayed invisible until the author hit play.
+            var level = editor.levelData;
+            var rows = level != null ? level.decorations : null;
+            if (rows != null)
+            {
+                foreach (var ev in rows)
+                {
+                    if (ev == null) continue;
+                    if (!LevelStorage.TryGetData(ev, out var data)) continue;
+                    if (!EventRegistry.TryGetById(data.Id, out var manifest)) continue;
+                    if (!DeclaresField(manifest)) continue;
+
+                    string key = data.Uid;
+                    live.Add(key);
+                    ApplyInstance(ev, manifest, data, key);
+                }
+            }
+
             var events = editor.events;
             if (events != null)
             {
@@ -102,6 +123,10 @@ namespace PEV.Editor
                 {
                     { "__instance", PreviewScopePrefix + uid },
                     { "__floor", ev.floor },
+                    // The row itself: the renderer reads geometry, colour, opacity and tag off
+                    // the live scrDecoration. In the editor there is no EventInstance, so the
+                    // event object is what carries the binding.
+                    { "__event", ev },
                     { "key", "noisefield" }
                 };
 
@@ -120,8 +145,9 @@ namespace PEV.Editor
                 }
 
                 args["shape"] = EnumName(ArgString(args, "shape", "Rect"), "Rect");
-                args["relativeTo"] = EnumName(ArgString(args, "relativeTo", "Tile"), "Tile");
-                args["anchor"] = EnumName(ArgString(args, "anchor", "Center"), "Center");
+
+                // relativeTo and anchor are gone on purpose: they are decoration properties
+                // now, and the renderer reads them off the row rather than from this call.
 
                 int frameCount = Mathf.Clamp(Convert.ToInt32(args["noiseFrameCount"] ?? 8), 2, 32);
                 float evolve = Convert.ToSingle(args["noiseEvolveSpeed"] ?? 12f);
@@ -134,7 +160,8 @@ namespace PEV.Editor
                 if (move == null || move.Length < 2) move = new[] { 0.15f, 0f };
                 args["uv"] = new[] { (float)_clock * move[0], (float)_clock * move[1] };
 
-                args["opacity"] = Convert.ToSingle(args["opacity"] ?? 100f) / 100f;
+                // Opacity is the decoration's, not a parameter: the panel row the author drags
+                // is the native one, and its value lives on the component the renderer reads.
 
                 NoiseFieldRenderer.Set("noisefield", args, out string error);
                 if (!string.IsNullOrEmpty(error)) PEV.Core.Plugin.Log("preview: " + error);

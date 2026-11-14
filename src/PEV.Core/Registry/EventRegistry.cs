@@ -110,7 +110,10 @@ namespace PEV.Registry
             // renders one tab per groupName, exactly as native events do. Only switch it on
             // when the manifest actually declares groups, since the flag also changes the
             // panel layout.
-            bool grouped = m.Params.Any(p => !string.IsNullOrEmpty(p.Group));
+            // Panel grouping is only relevant for events that declare their own properties.
+            // A decoration-backed type has none here — they live on AddDecoration's panel — so
+            // switching grouping on would create an empty tab set behind a palette button.
+            bool grouped = !m.DecorationBacked && m.Params.Any(p => !string.IsNullOrEmpty(p.Group));
 
             var info = new LevelEventInfo
             {
@@ -132,6 +135,12 @@ namespace PEV.Registry
             {
                 try
                 {
+                    // A decoration-backed manifest keeps its palette entry but does not declare
+                    // its own properties: they were injected into AddDecoration instead, and a
+                    // second copy here would build a parallel panel nobody can open. Leaving
+                    // them out is also what keeps the type from looking like a normal event.
+                    if (m.DecorationBacked) continue;
+
                     info.propertiesInfo[spec.Name] = new PropertyInfo(spec.ToPropertyDict(), info);
                 }
                 catch (Exception)

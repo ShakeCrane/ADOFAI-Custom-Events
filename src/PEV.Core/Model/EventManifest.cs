@@ -72,6 +72,18 @@ namespace PEV.Model
         public Dictionary<string, string> Descriptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
+        /// True when an instance of this event is stored as a real native AddDecoration row
+        /// rather than as an EditorComment.
+        ///
+        /// The difference is not cosmetic. A comment is invisible to the game, so the effect
+        /// can never be selected, dragged, or swept up by MoveDecorations' tag lookup. A
+        /// decoration row is exactly what scrDecorationManager indexes, so the same code
+        /// that moves native decorations moves ours — which is the whole point of the
+        /// event being "like a decoration".
+        /// </summary>
+        public bool DecorationBacked;
+
+        /// <summary>
         /// The name to show for <paramref name="locale"/>, which is a SystemLanguage name
         /// ("ChineseSimplified", "Korean", …). Falls back to English, then to the id, so a
         /// package that ships only one translation still renders.
@@ -115,6 +127,7 @@ namespace PEV.Model
             m.Entry = root.Value<string>("entry") ?? "main.js";
             m.IconPath = root.Value<string>("icon");
             m.Category = root.Value<string>("category") ?? "VisualFx";
+            m.DecorationBacked = root.Value<bool?>("decoration") ?? false;
             m.Description = LocalizedValue(root["description"]) ?? "";
             m.DisplayName = LocalizedValue(root["name"]) ?? m.Id;
 

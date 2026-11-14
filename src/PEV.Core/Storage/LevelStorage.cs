@@ -4,15 +4,27 @@ using System.Linq;
 using ADOFAI;
 using PEV.Model;
 using PEV.Registry;
+using PEV.Scripting;
 using PEV.Util;
+using UnityEngine;
+using PropertyInfo = ADOFAI.PropertyInfo;
 
 namespace PEV.Storage
 {
     /// <summary>
-    /// Bridges between EditorComment rows on disk and virtual LevelEvents in memory.
+    /// Bridges between the on-disk representation and virtual events in memory.
+    ///
+    /// Two carriers exist:
+    ///
+    ///   EditorComment with an @PEV1 body  — the original form. Invisible to the game, so
+    ///                                       the event can never be selected or moved.
+    ///   AddDecoration row with our marker  — what a decoration-backed manifest uses. The
+    ///                                       row is a real decoration: scrDecorationManager
+    ///                                       indexes it, so dragging, tags and
+    ///                                       MoveDecorations all work with no code of ours.
     ///
     /// Invariants enforced here (see ARCHITECTURE-v1 §6.3):
-    ///   1. only @PEV1 comments are touched
+    ///   1. only ours are touched
     ///   2. unparseable payloads are left byte-for-byte intact
     ///   3. nothing is deleted silently
     ///   4. a failed encode leaves the originals in place
@@ -110,6 +122,12 @@ namespace PEV.Storage
         {
             var summary = new DecodeSummary();
 
+            // Decorations first. A decoration-backed event IS the decoration row, so it is
+            // adopted in place rather than replaced by a new virtual event: replacing it
+            // would leave the row in level.decorations with nothing attached to it, and the
+            // engine would keep rendering a decoration that our bake would then duplicate.
+            RestoreDecorations(level, summary);
+
             // Snapshot: adding to levelEvents while enumerating it throws.
             var snapshot = level.levelEvents.ToList();
             var consumed = new List<LevelEvent>();
@@ -167,6 +185,24 @@ namespace PEV.Storage
 
                 data.Materialize(manifest.Params);
 
+                // A decoration-backed package moved from comments to decoration rows. Charts
+                // written before that change still hold comments, and leaving them alone would
+                // keep those events unselectable — the exact problem the move was made to fix.
+                if (manifest.DecorationBacked)
+                {
+                    consumed.Add(ev);
+                    if (MigrateToDecoration(level, ev, data, manifest, summary))
+                    {
+                        summary.Restored++;
+                        summary.Migrated++;
+                    }
+                    else
+                    {
+                        summary.Problems.Add($"floor {ev.floor}: '{data.Id}' could not be migrated to a decoration");
+                    }
+                    continue;
+                }
+
                 var instance = new LevelEvent(ev.floor, type, info)
                 {
                     active = ev.active,
@@ -196,6 +232,124 @@ namespace PEV.Storage
 
             foreach (var ev in consumed) level.levelEvents.Remove(ev);
             return summary;
+        }
+
+        /// <summary>
+        /// Turns a legacy comment into a decoration row, keeping its parameters.
+        ///
+        /// The comment itself is dropped afterwards: its payload now lives on the row, and
+        /// keeping both would render the event twice — once as an invisible comment and once
+        /// as a real decoration.
+        ///
+        /// Geometry the old comment carried (size, position, rotation, tag, depth) is
+        /// transferred onto the row as decoration properties. A comment had none of these
+        /// natively, so this is where a chart authored before the move keeps its placement.
+        /// </summary>
+        private static bool MigrateToDecoration(LevelData level, LevelEvent source,
+            EventInstanceData data, EventManifest manifest, DecodeSummary summary)
+        {
+            try
+            {
+                var rows = level.decorations;
+                if (rows == null) return false;
+
+                LevelEventType nativeType = LevelEventType.AddDecoration;
+                string key = ((int)nativeType).ToString();
+                if (GCS.levelEventsInfo == null || !GCS.levelEventsInfo.TryGetValue(key, out var info))
+                    return false;
+
+                var row = new LevelEvent(source.floor, nativeType, info)
+                {
+                    active = source.active,
+                    visible = source.visible,
+                    locked = false
+                };
+
+                row["decorationImage"] = DecorationCarrier.ImageMarker;
+                row["relativeTo"] = source.floor >= 0 ? "Tile" : "Camera";
+                row["depth"] = 0;
+                row["tag"] = "";
+                row["visible"] = true;
+                row["opacity"] = 100f;
+                row["color"] = ColorFromHex("#FF5454");
+
+                // Old comment parameters map onto the decoration's own fields where a
+                // counterpart exists, so a chart that used the previous geometry keeps it.
+                //
+                // Units do not carry over directly: a comment measured size in tiles, while a
+                // decoration stores scale as a percentage of its own base. Converting through
+                // the documented base size is what keeps a migrated field the size it was —
+                // copying the number across would make every migrated field 100× too small.
+                Copy(data, row, "size", v =>
+                {
+                    Vector2 tiles = ToVector2(v);
+                    row["scale"] = new Vector2(
+                        tiles.x / DecorationBridge.BaseSizeTiles.x * 100f,
+                        tiles.y / DecorationBridge.BaseSizeTiles.y * 100f);
+                });
+                Copy(data, row, "positionOffset", v => row["position"] = ToVector2(v));
+                Copy(data, row, "rotation", v => row["rotation"] = Convert.ToSingle(v));
+                Copy(data, row, "tag", v => row["tag"] = v.ToString());
+                Copy(data, row, "depth", v => row["depth"] = Convert.ToInt32(v));
+                Copy(data, row, "opacity", v =>
+                {
+                    float pct = Convert.ToSingle(v);
+                    // A comment's opacity was 0..100 already, but a missing one would arrive
+                    // as 0, which would migrate a visible field to fully transparent.
+                    row["opacity"] = Mathf.Clamp(pct <= 0f ? 100f : pct, 0f, 100f);
+                });
+                Copy(data, row, "color", v => row["color"] = ColorFromHex(v.ToString()));
+
+                rows.Add(row);
+                Adopt(row, data, summary);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Applies one raw value through <paramref name="apply"/>, if the payload has it.
+        /// Separated out because every legacy key needs the same "present, usable, non-null"
+        /// dance and repeating it inline made the migration unreadable.
+        /// </summary>
+        private static void Copy(EventInstanceData data, LevelEvent row, string name,
+            Action<object> apply)
+        {
+            if (!data.Effective.TryGetValue(name, out var raw) || raw == null) return;
+            try { apply(raw); } catch { }
+        }
+
+        private static Color ColorFromHex(string hex)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(hex)) return Color.white;
+                string s = hex.StartsWith("#") ? hex : "#" + hex;
+                return ColorUtility.TryParseHtmlString(s, out var c) ? c : Color.white;
+            }
+            catch { return Color.white; }
+        }
+
+        /// <summary>Vector2 from any of the shapes our payloads can hold (list, JArray, Vector2).</summary>
+        private static Vector2 ToVector2(object value)
+        {
+            if (value is Vector2 v) return v;
+            try
+            {
+                if (value is Newtonsoft.Json.Linq.JArray arr && arr.Count >= 2)
+                    return new Vector2(arr[0].ToObject<float>(), arr[1].ToObject<float>());
+                if (value is System.Collections.IEnumerable seq && !(value is string))
+                {
+                    var parts = new List<float>();
+                    foreach (var item in seq) parts.Add(Convert.ToSingle(item));
+                    if (parts.Count >= 2) return new Vector2(parts[0], parts[1]);
+                }
+            }
+            catch { }
+            return Vector2.one;
         }
 
         /// <summary>
@@ -321,6 +475,178 @@ namespace PEV.Storage
             return summary;
         }
 
+        /// <summary>
+        /// Adopts decoration rows that carry our marker.
+        ///
+        /// The row is kept in place and attached, never rebuilt: it is a real decoration, and
+        /// replacing it with a virtual event would leave the engine owning an object that
+        /// nothing writes back to. Adoption is what makes the effect "just a decoration" —
+        /// the engine keeps moving it, and we only read its geometry.
+        ///
+        /// A row whose payload will not resolve is left completely alone. It is still a valid
+        /// decoration that vanilla opens without complaint; reinstalling the package brings
+        /// the effect back with its settings intact, which is a better outcome than deleting
+        /// the author's placement.
+        /// </summary>
+        private static void RestoreDecorations(LevelData level, DecodeSummary summary)
+        {
+            List<LevelEvent> rows;
+            try { rows = level.decorations; }
+            catch { return; }
+            if (rows == null) return;
+
+            foreach (var ev in rows)
+            {
+                if (ev == null) continue;
+
+                string image = null;
+                try { image = ev.GetString("decorationImage"); } catch { }
+                if (!DecorationCarrier.IsOurs(image)) continue;
+
+                summary.Found++;
+
+                string payload = null;
+                try { payload = ev.GetString("maskingTarget"); } catch { }
+
+                if (!DecorationCarrier.TryUnpack(payload, out var data))
+                {
+                    summary.Malformed++;
+                    summary.Problems.Add($"decoration {Describe(ev)}: payload unreadable");
+                    continue;
+                }
+
+                if (!EventRegistry.TryGetById(data.Id, out var manifest))
+                {
+                    summary.MissingDefinition++;
+                    summary.Problems.Add($"decoration {Describe(ev)}: package '{data.Id}' is not installed");
+                    continue;
+                }
+
+                int majorLocal = Major(manifest.Version);
+                int majorStored = Major(data.Version);
+                if (majorStored > majorLocal)
+                {
+                    summary.DefinitionMismatch++;
+                    summary.Problems.Add(
+                        $"decoration {Describe(ev)}: '{data.Id}' written by v{data.Version}, local is v{manifest.Version}");
+                    continue;
+                }
+
+                data.Materialize(manifest.Params);
+                Adopt(ev, data, summary);
+                summary.Restored++;
+            }
+        }
+
+        /// <summary>
+        /// Binds payload values onto the decoration row.
+        ///
+        /// The values must land in the event's data dictionary, because that is what the
+        /// panel reads and what the script sees. They also have to be re-enabled: Decode
+        /// marks every property absent from the file as disabled, and ours are absent by
+        /// design — they live in the payload. Without this every row would open greyed out
+        /// and read as if it were locked.
+        /// </summary>
+        private static void Adopt(LevelEvent ev, EventInstanceData data, DecodeSummary summary)
+        {
+            // Parameter injection normally runs before any level is decoded, but decode can
+            // beat the editor's first LoadEditorProperties on a cold start. Publishing here is
+            // idempotent and makes the coercion below independent of that ordering: without a
+            // PropertyInfo the values would land as raw strings and the panel would render
+            // them in whichever control the type guess produced.
+            try { Registry.DecorationParams.Publish(); } catch { }
+
+            foreach (var kv in data.Effective)
+            {
+                PropertyInfo pi = null;
+                try { ev.info?.propertiesInfo.TryGetValue(kv.Key, out pi); } catch { }
+
+                object coerced;
+                try { coerced = ParamCoercion.Coerce(pi, kv.Value); }
+                catch (Exception e)
+                {
+                    summary.Problems.Add($"decoration {Describe(ev)}: param '{kv.Key}' rejected ({e.Message})");
+                    continue;
+                }
+
+                try
+                {
+                    ev[kv.Key] = coerced;
+                    if (ev.disabled != null) ev.disabled[kv.Key] = false;
+                }
+                catch { /* a property the row cannot hold is not worth failing the load */ }
+            }
+
+            Attach(ev, data);
+        }
+
+        /// <summary>
+        /// Writes the payload back onto every decoration row we own, before the encoder runs.
+        ///
+        /// This has to happen in a Prefix: LevelData's own encoder serialises the decorations
+        /// list inside EncodeToDictionary, so a postfix would find the string already built.
+        /// */
+        public static void SyncDecorations(LevelData level)
+        {
+            if (level == null) return;
+
+            List<LevelEvent> rows;
+            try { rows = level.decorations; }
+            catch { return; }
+            if (rows == null) return;
+
+            foreach (var ev in rows)
+            {
+                if (ev == null) continue;
+                if (!TryGetData(ev, out var data)) continue;
+                if (data.IsPlaceholder) continue;
+
+                string image = null;
+                try { image = ev.GetString("decorationImage"); } catch { }
+                if (!DecorationCarrier.IsOurs(image)) continue;
+
+                // Pull live panel values into the payload, in the shape a human would write.
+                foreach (var prop in data.Effective.Keys.ToList())
+                {
+                    try
+                    {
+                        object live = ev.Get<object>(prop);
+                        if (live == null) continue;
+                        PropertyInfo pi = null;
+                        ev.info?.propertiesInfo.TryGetValue(prop, out pi);
+                        data.Raw[prop] = StorageValue.Canonical(pi, live);
+                        data.Effective[prop] = live;
+                    }
+                    catch { /* keep the previously stored value */ }
+                }
+
+                try
+                {
+                    ev["maskingTarget"] = DecorationCarrier.Pack(data);
+
+                    // LevelEvent.Encode skips a property marked disabled, and Decode marks
+                    // every property absent from the file as disabled. maskingTarget is hidden
+                    // from the panel and is usually absent at that point, so without this the
+                    // payload is written to the live object and then silently dropped by the
+                    // encoder — the chart would reopen with defaults and no error anywhere.
+                    if (ev.disabled != null) ev.disabled["maskingTarget"] = false;
+                }
+                catch (Exception e)
+                {
+                    PEV.Core.Plugin.Log($"decoration sync failed on floor {ev.floor}: {e.Message}");
+                }
+            }
+        }
+
+        private static string Describe(LevelEvent ev)
+        {
+            string tag = null;
+            try { tag = ev.GetString("tag"); } catch { }
+            return string.IsNullOrEmpty(tag)
+                ? $"on floor {ev.floor}"
+                : $"'{tag}' on floor {ev.floor}";
+        }
+
         private static int Major(string version)
         {
             if (string.IsNullOrEmpty(version)) return 0;
@@ -337,11 +663,16 @@ namespace PEV.Storage
         public int MissingDefinition;
         public int DefinitionMismatch;
         public int Placeholders;
+
+        /// <summary>Events that moved from an EditorComment to a decoration row.</summary>
+        public int Migrated;
+
         public readonly List<string> Problems = new List<string>();
 
         public override string ToString() =>
             $"found={Found}, restored={Restored}, malformed={Malformed}, " +
-            $"missing={MissingDefinition}, mismatch={DefinitionMismatch}, placeholders={Placeholders}";
+            $"missing={MissingDefinition}, mismatch={DefinitionMismatch}, " +
+            $"placeholders={Placeholders}, migrated={Migrated}";
     }
 
     public class EncodeSummary

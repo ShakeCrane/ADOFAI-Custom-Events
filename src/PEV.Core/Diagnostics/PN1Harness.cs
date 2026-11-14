@@ -183,21 +183,15 @@ namespace PEV.Diagnostics
                         .Distinct().Take(12).ToList();
                     Row("DECMANAGER-API", methods.Count.ToString(), string.Join(" | ", methods));
 
-                    var deco = dm.GetType().GetMethod("CreateDecoration", new[] { typeof(LevelEventType) });
+                    // The real entry is CreateDecoration(LevelEvent, out bool, int). Probed by
+                    // signature rather than by name: an earlier version looked for a
+                    // single-argument overload that never existed and reported a false miss.
+                    var deco = dm.GetType().GetMethod("CreateDecoration",
+                        new[] { typeof(LevelEvent), typeof(bool).MakeByRefType(), typeof(int) });
                     Row("DECMANAGER-CREATE", deco != null ? "SIGNATURE-OK" : "SIGNATURE-MISSING",
-                        deco != null ? "CreateDecoration(LevelEventType)" : "no single-arg overload");
-
-                    if (deco != null)
-                    {
-                        var ourType = (LevelEventType)PEV.Util.StableId.FromEventId("pev.noise-field");
-                        object result = null;
-                        string err = null;
-                        try { result = deco.Invoke(dm, new object[] { ourType }); }
-                        catch (Exception e) { err = (e.InnerException ?? e).GetType().Name + ": " + (e.InnerException ?? e).Message; }
-
-                        Row("DECMANAGER-UNKNOWN-TYPE", err == null ? "SURVIVED" : "THREW",
-                            err ?? ("returned " + (result == null ? "null" : result.GetType().Name)));
-                    }
+                        deco != null
+                            ? "CreateDecoration(LevelEvent, out bool, int)"
+                            : "unexpected signature; manager API changed");
                 }
             }
             catch (Exception e)
@@ -320,13 +314,30 @@ namespace PEV.Diagnostics
             var floors = PickFloors(editor, 3);
             if (floors.Count < 3) { Row("SETUP", "FAIL", "not enough free floors"); yield break; }
 
-            // Three instances with deliberately different geometry: a wide rect on the tile,
-            // a circle, and a camera-relative strip. They must coexist without sharing state.
+            // Three instances with deliberately different geometry. A field is a decoration
+            // now, so size, position, rotation, colour, tag and depth are the decoration's own
+            // properties and the configurations below set those instead of our parameters.
             var configs = new[]
             {
-                new Dictionary<string, object> { { "shape", "Rect" }, { "size", new object[] { 6f, 4f } }, { "color", "ff2020" }, { "noiseMoveSpeed", new object[] { 1.5f, 0f } }, { "noiseEvolveSpeed", 12f }, { "depth", 2 } },
-                new Dictionary<string, object> { { "shape", "Circle" }, { "radius", 3f }, { "color", "ff8020" }, { "noiseMoveSpeed", new object[] { 0f, 0.8f } }, { "noiseEvolveSpeed", 20f }, { "feather", 1f }, { "depth", 2 } },
-                new Dictionary<string, object> { { "shape", "Rect" }, { "relativeTo", "Camera" }, { "size", new object[] { 3f, 1.5f } }, { "position", new object[] { 0f, -1.5f } }, { "color", "ff4060" }, { "noiseMoveSpeed", new object[] { 2.5f, 0f } }, { "noiseEvolveSpeed", 30f }, { "depth", 4 } },
+                new Dictionary<string, object>
+                {
+                    { "shape", "Rect" }, { "scale", new object[] { 150f, 133f } },
+                    { "color", "ff2020" }, { "noiseMoveSpeed", new object[] { 1.5f, 0f } },
+                    { "noiseEvolveSpeed", 12f }, { "depth", 2 }
+                },
+                new Dictionary<string, object>
+                {
+                    { "shape", "Circle" }, { "scale", new object[] { 120f, 80f } },
+                    { "color", "ff8020" }, { "noiseMoveSpeed", new object[] { 0f, 0.8f } },
+                    { "noiseEvolveSpeed", 20f }, { "feather", 1f }, { "depth", 2 }
+                },
+                new Dictionary<string, object>
+                {
+                    { "shape", "Rect" }, { "relativeTo", "Camera" },
+                    { "scale", new object[] { 75f, 50f } }, { "position", new object[] { 0f, -1.5f } },
+                    { "color", "ff4060" }, { "noiseMoveSpeed", new object[] { 2.5f, 0f } },
+                    { "noiseEvolveSpeed", 30f }, { "depth", 4 }
+                },
             };
 
             // Floors 4 and 8 share depth 2 on purpose: same-depth fields must composite into
@@ -339,7 +350,9 @@ namespace PEV.Diagnostics
                 yield return null;
             }
 
-            var ours = editor.events.Where(e => LevelStorage.TryGetData(e, out _)).ToList();
+            // Placement goes through the decoration path now, so the rows live in
+            // level.decorations and never appear in editor.events.
+            var ours = Rows(editor);
             int applied = 0;
             foreach (var ev in ours)
             {
@@ -355,39 +368,71 @@ namespace PEV.Diagnostics
                 }
                 applied++;
             }
-            // Tag the first field so the mover/state events have a target, exactly as an
-            // author would: place the field, then point a mover at its tag.
-            var tagged = editor.events.FirstOrDefault(e =>
+            // Tag the first field so the mover/state paths have a target, exactly as an
+            // author would: place the field, then point a MoveDecorations at its tag.
+            var tagged = ours.FirstOrDefault(e =>
                 e.floor == floors[0] && LevelStorage.TryGetData(e, out var d) && d.Id == "pev.noise-field");
             if (tagged != null) tagged["tag"] = "wave";
 
             Row("PLACED", applied.ToString(), "floors " + string.Join(", ", floors));
+            Row("PLACED-AS-DECORATION", ours.Count.ToString(),
+                $"rows in level.decorations with our marker; editor.events holds " +
+                $"{editor.events.Count(e => LevelStorage.TryGetData(e, out _))} of ours (expect 0)");
 
-            // The editor experience is part of the acceptance criteria, so it is asserted,
-            // not eyeballed. A missing angleOffset silently produces no tile badge at all.
-            // Indicators only exist for the selected floor, so select each one first — that
-            // is also what an author does when they click a tile.
-            int badged = 0;
+            // Vanilla compatibility: the row has to survive vanilla's own decoder. If any of
+            // these three are missing the row is not a decoration, and neither the gizmo nor
+            // a tag lookup can find it.
+            var probeRow = ours.FirstOrDefault();
+            if (probeRow != null)
+            {
+                Row("ROW-SHAPE",
+                    probeRow.eventType == LevelEventType.AddDecoration ? "PASS" : "FAIL",
+                    $"eventType={probeRow.eventType} image={probeRow.GetString("decorationImage")} " +
+                    $"isDecoration={probeRow.IsDecoration}");
+                Row("ROW-PAYLOAD",
+                    DecorationCarrier.TryUnpack(probeRow.GetString("maskingTarget"), out var unpacked)
+                        ? "PASS" : "FAIL",
+                    $"id={unpacked?.Id} uid={unpacked?.Uid} " +
+                    $"params={unpacked?.Raw.Count}");
+            }
+
+            // The property panel is the thing the author actually touches. Every injected
+            // parameter must be visible exactly when the selected row is ours.
+            ProbeDecorationPanel();
+
+            // Round trip: encode the level and read the row back. This is the check that
+            // catches a payload that only lives in memory.
+            ProbeEncodeRoundTrip(editor);
+
+            // The editor experience is part of the acceptance criteria, so it is asserted
+            // rather than eyeballed. A decoration has no tile badge — the engine gives it a
+            // gizmo and a selectable object instead — so what matters here is that selecting
+            // the row opens the decoration inspector rather than nothing at all.
+            int selectable = 0;
             foreach (int floor in floors)
             {
                 EditorTestHelpers.SelectFloor(editor, floor);
                 yield return null;
-                var fl = editor.floors.Count > floor ? editor.floors[floor] : null;
-                var indicator = fl != null ? fl.GetComponentInChildren<EventIndicator>(true) : null;
-                if (indicator != null) badged++;
-                var evHere = editor.events.FirstOrDefault(x => x.floor == floor && LevelStorage.TryGetData(x, out _));
-                object angle = evHere?.Get<object>("angleOffset");
-                Row($"BADGE-floor{floor}", indicator != null ? "PASS" : "FAIL",
-                    $"angleOffset={(angle ?? "<missing>")} indicator={(indicator != null)}");
+                var row = ours.FirstOrDefault(x => x.floor == floor);
+                var dec = row != null ? DecorationBridge.Find(row) : null;
+                if (dec != null) selectable++;
+                Row($"OBJECT-floor{floor}", dec != null ? "PASS" : "FAIL",
+                    dec == null
+                        ? "no scrDecoration built for this row; the gizmo and tag lookup cannot find it"
+                        : $"{dec.GetType().Name} pivot={dec.pivotPosVec} scale={dec.scaleVec} tag={row.GetString("tag")}");
             }
-            Row("BADGES", $"{badged}/{floors.Count}", "tile indicators for placed events");
+            Row("OBJECTS", $"{selectable}/{floors.Count}", "decoration objects built for our rows");
 
-            if (EventRegistry.TryGetByType(type, out var placedManifest))
+            if (EventRegistry.TryGetByType(type, out _))
             {
-                var gi = GCS.levelEventsInfo != null && GCS.levelEventsInfo.ContainsKey(((int)type).ToString())
-                    ? GCS.levelEventsInfo[((int)type).ToString()] : null;
-                Row("GROUPS", gi != null && gi.useGroups ? "PASS" : "FAIL",
-                    $"useGroups={gi?.useGroups} tabs={string.Join(",", gi?.groups?.Select(g => g.name) ?? new string[0])}");
+                var gi = GCS.levelEventsInfo != null
+                         && GCS.levelEventsInfo.TryGetValue(((int)DecorationParams.NativeType).ToString(), out var native)
+                    ? native : null;
+                var injected = DecorationParams.InjectedNames.ToList();
+                Row("GROUPS", gi != null && gi.useGroups ? "PASS" : "CHECK",
+                    $"AddDecoration useGroups={gi?.useGroups} tabs={string.Join(",", gi?.groups?.Select(g => g.name) ?? new string[0])}");
+                Row("PARAMS-INJECTED", injected.Count.ToString(),
+                    string.Join(",", injected));
             }
 
             // Editor preview: a field must exist before playback ever starts, and its
@@ -396,7 +441,7 @@ namespace PEV.Diagnostics
             Row("PREVIEW-idle", NoiseFieldRenderer.LiveCount.ToString(),
                 "fields drawn in the editor before pressing play");
 
-            var firstEvent = editor.events.FirstOrDefault(x =>
+            var firstEvent = ours.FirstOrDefault(x =>
                 LevelStorage.TryGetData(x, out var d) && d.Id == "pev.noise-field");
             if (firstEvent != null)
             {
@@ -533,6 +578,163 @@ namespace PEV.Diagnostics
             return list.Count > 0 ? list[0] : null;
         }
 
+        /// <summary>
+        /// Our rows in the editor's decoration list.
+        ///
+        /// LevelStorage knows them by attachment, which survives undo because the uid travels
+        /// inside the row; scanning decorations rather than events is the whole point of the
+        /// move to decoration-backed storage.
+        /// </summary>
+        private static List<LevelEvent> Rows(scnEditor editor)
+        {
+            var result = new List<LevelEvent>();
+            try
+            {
+                var level = editor != null ? editor.levelData : null;
+                var decorations = level != null ? level.decorations : null;
+                if (decorations == null) return result;
+
+                foreach (var row in decorations)
+                    if (row != null && LevelStorage.TryGetData(row, out _)) result.Add(row);
+            }
+            catch (Exception e) { Row("ROWS", "EXCEPTION", e.Message); }
+            return result;
+        }
+
+        /// <summary>
+        /// Asserts that the injected parameters show up for our rows and stay hidden for
+        /// native ones.
+        ///
+        /// PropertyInfo.CheckIfShown is what the panel calls, so calling it here tests the
+        /// exact predicate the UI uses. A parameter that leaks onto native decorations would
+        /// add empty rows to every hand-placed image in the game — a far worse outcome than
+        /// the parameters not appearing at all.
+        /// </summary>
+        private static void ProbeDecorationPanel()
+        {
+            var rows = new List<LevelEvent>();
+            try
+            {
+                var level = ADOBase.editor != null ? ADOBase.editor.levelData : null;
+                if (level != null && level.decorations != null) rows.AddRange(level.decorations);
+            }
+            catch { }
+
+            var ours = rows.FirstOrDefault(r => r != null && LevelStorage.TryGetData(r, out _));
+            var native = rows.FirstOrDefault(r =>
+            {
+                if (r == null) return false;
+                if (LevelStorage.TryGetData(r, out _)) return false;
+                string img = null;
+                try { img = r.GetString("decorationImage"); } catch { }
+                return !string.IsNullOrEmpty(img);
+            });
+
+            string key = ((int)DecorationParams.NativeType).ToString();
+            if (GCS.levelEventsInfo == null || !GCS.levelEventsInfo.TryGetValue(key, out var info) || info == null)
+            {
+                Row("PANEL", "FAIL", "AddDecoration metadata missing");
+                return;
+            }
+
+            // A parameter with a condition of its own (feather, shown only for the circle
+            // shape) is legitimately hidden on a rectangle. Counting it as a failure would
+            // make the assertion wrong about correct behaviour, so unconditional rows are
+            // required to show and conditional ones are only required not to leak.
+            int shownOurs = 0, requiredOurs = 0, shownNative = 0, probed = 0;
+            foreach (var name in DecorationParams.InjectedNames)
+            {
+                if (!info.propertiesInfo.TryGetValue(name, out var pi)) continue;
+                probed++;
+
+                bool conditional = DecorationParams.IsConditional(name);
+                if (!conditional) requiredOurs++;
+
+                if (ours != null && pi.CheckIfShown(ours, pi.groupName))
+                {
+                    shownOurs++;
+                    if (conditional) requiredOurs++;
+                }
+                if (native != null && pi.CheckIfShown(native, pi.groupName)) shownNative++;
+            }
+
+            Row("PANEL-OURS", shownOurs >= requiredOurs ? "PASS" : "FAIL",
+                $"{shownOurs}/{probed} injected rows visible on our decoration " +
+                $"(required {requiredOurs}; the rest are shape-conditional)");
+            Row("PANEL-NATIVE", shownNative == 0 ? "PASS" : "FAIL",
+                $"{shownNative}/{probed} leaked onto a native decoration" +
+                (native == null ? " (no native decoration present to test against)" : ""));
+
+            // Native properties must still be there: reusing them is what makes the field
+            // movable and recolourable by the engine's own tools.
+            var expected = new[] { "scale", "rotation", "color", "opacity", "depth", "tag", "decorationImage" };
+            var missing = expected.Where(n => !info.propertiesInfo.ContainsKey(n)).ToList();
+            Row("PANEL-NATIVE-KEPT", missing.Count == 0 ? "PASS" : "FAIL",
+                missing.Count == 0 ? string.Join(",", expected) : "missing " + string.Join(",", missing));
+        }
+
+        /// <summary>
+        /// Encodes the level and reads our rows back out of the produced dictionary.
+        ///
+        /// Everything else in this harness inspects live objects. This is the only check that
+        /// proves the payload reaches the file: a field whose parameters live only in memory
+        /// would look perfect here and come back with defaults after a save and reopen.
+        /// </summary>
+        private static void ProbeEncodeRoundTrip(scnEditor editor)
+        {
+            try
+            {
+                var level = editor != null ? editor.levelData : null;
+                if (level == null) { Row("ENCODE", "FAIL", "no level data"); return; }
+
+                var dict = level.EncodeToDictionary();
+                if (dict == null || !dict.TryGetValue("decorations", out var raw))
+                {
+                    Row("ENCODE", "FAIL", "encoded dictionary has no decorations array");
+                    return;
+                }
+
+                var list = raw as System.Collections.IEnumerable;
+                if (list == null) { Row("ENCODE", "FAIL", "decorations is not a list"); return; }
+
+                int ours = 0, withPayload = 0, intact = 0;
+                string firstId = null, firstKeys = null;
+                foreach (var item in list)
+                {
+                    var row = item as Dictionary<string, object>;
+                    if (row == null) continue;
+
+                    if (!row.TryGetValue("decorationImage", out var img)) continue;
+                    if (!DecorationCarrier.IsOurs(img as string)) continue;
+                    ours++;
+
+                    string payload = row.TryGetValue("maskingTarget", out var mt) ? mt as string : null;
+                    if (string.IsNullOrEmpty(payload)) continue;
+                    withPayload++;
+
+                    if (DecorationCarrier.TryUnpack(payload, out var data))
+                    {
+                        intact++;
+                        if (firstId == null)
+                        {
+                            firstId = data.Id;
+                            firstKeys = data.Raw != null ? string.Join(",", data.Raw.Keys) : "";
+                        }
+                    }
+                }
+
+                Row("ENCODE", withPayload == ours && intact == ours ? "PASS" : "FAIL",
+                    $"rows={ours} withPayload={withPayload} readable={intact}");
+
+                if (firstId != null)
+                    Row("ENCODE-PAYLOAD", firstId, "keys=" + firstKeys);
+            }
+            catch (Exception e)
+            {
+                Row("ENCODE", "EXCEPTION", e.Message);
+            }
+        }
+
         private static string TrackSortingOrders()
         {
             try
@@ -557,8 +759,21 @@ namespace PEV.Diagnostics
             int max = editor.floors.Count - 1;
             for (int i = 4; i <= max && result.Count < count; i += 4)
             {
-                if (!editor.events.Any(e => e.floor == i && LevelStorage.TryGetData(e, out _)))
-                    result.Add(i);
+                // Our rows live in decorations now, so a floor is "free" only if neither list
+                // is already occupied. Checking editor.events alone would stack every field on
+                // the same tile and report three fields where one exists.
+                bool taken = editor.events.Any(e => e.floor == i && LevelStorage.TryGetData(e, out _));
+                if (!taken)
+                {
+                    try
+                    {
+                        var decorations = editor.levelData != null ? editor.levelData.decorations : null;
+                        taken = decorations != null && decorations.Any(d =>
+                            d != null && d.floor == i && LevelStorage.TryGetData(d, out _));
+                    }
+                    catch { }
+                }
+                if (!taken) result.Add(i);
             }
             return result;
         }

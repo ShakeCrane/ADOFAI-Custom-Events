@@ -6,138 +6,154 @@
   "entry": "main.js",
   "icon": "icon.png",
   "category": "DecorationFx",
+  "decoration": true,
   "name": {
     "en": "Noise Field",
     "zh-CN": "噪声域"
   },
   "description": {
-    "en": "A rectangular or circular region of scrolling red noise, a visual re-implementation of the Phigros chapter 9 effect. Press play to preview.",
-    "zh-CN": "矩形或圆形的滚动红色噪声区，复现 Phigros 第九章噪域观感。按播放预览。"
+    "en": "A rectangular or circular region of scrolling red noise, placed as a decoration. Size, position, rotation, colour and opacity are the decoration's own; the parameters below shape the effect inside it.",
+    "zh-CN": "矩形或圆形的滚动红色噪声区，作为装饰放置。位置、大小、旋转、颜色与透明度沿用装饰自身的属性；下列参数控制区域内部的观感。"
   },
   "params": [
-    {
-      "name": "relativeTo",
-      "type": "Enum:PEV.Scripting.NoiseFieldRelativeTo, PEV.Core",
-      "default": "Tile",
-      "group": "Geometry",
-      "order": 0
-    },
-    {
-      "name": "anchor",
-      "type": "Enum:PEV.Scripting.NoiseFieldAnchor, PEV.Core",
-      "default": "Center",
-      "group": "Geometry",
-      "order": 1
-    },
     {
       "name": "shape",
       "type": "Enum:PEV.Scripting.NoiseFieldShape, PEV.Core",
       "default": "Rect",
       "group": "Geometry",
-      "order": 2
+      "order": 0,
+      "label": {
+        "en": "Shape",
+        "zh-CN": "形状"
+      }
     },
     {
-      "name": "size",
-      "type": "Vector2",
-      "default": [
-        4,
-        3
-      ],
-      "group": "Geometry",
-      "order": 3,
-      "showIf": [
-        "shape",
-        "Rect"
-      ]
-    },
-    {
-      "name": "radius",
+      "name": "feather",
       "type": "Float",
-      "default": 2,
+      "default": 0,
       "min": 0,
-      "max": 64,
+      "max": 8,
       "group": "Geometry",
-      "order": 4,
+      "order": 1,
       "showIf": [
         "shape",
         "Circle"
-      ]
-    },
-    {
-      "name": "positionOffset",
-      "type": "Vector2",
-      "default": [
-        0,
-        0
       ],
-      "group": "Geometry",
-      "order": 5
+      "label": {
+        "en": "Circle Softness",
+        "zh-CN": "圆形羽化"
+      }
     },
     {
-      "name": "rotation",
+      "name": "fillOpacity",
       "type": "Float",
-      "default": 0,
-      "min": -180,
-      "max": 180,
-      "group": "Geometry",
-      "order": 6
-    },
-    {
-      "name": "lockRotation",
-      "type": "Bool",
-      "default": false,
-      "group": "Geometry",
-      "order": 7
-    },
-    {
-      "name": "lockSize",
-      "type": "Bool",
-      "default": false,
-      "group": "Geometry",
-      "order": 8
-    },
-    {
-      "name": "depth",
-      "type": "Int",
-      "default": 0,
-      "min": -20,
-      "max": 20,
-      "group": "Geometry",
-      "order": 9
-    },
-    {
-      "name": "parallax",
-      "type": "Vector2",
-      "default": [
-        1,
-        1
-      ],
-      "group": "Geometry",
-      "order": 10
-    },
-    {
-      "name": "tag",
-      "type": "String",
-      "default": "",
-      "group": "Appearance",
-      "order": 11
-    },
-    {
-      "name": "visible",
-      "type": "Bool",
-      "default": true,
-      "group": "Appearance",
-      "order": 12
-    },
-    {
-      "name": "opacity",
-      "type": "Float",
-      "default": 100,
+      "default": 0.667,
       "min": 0,
-      "max": 100,
-      "unit": "%",
-      "group": "Appearance",
-      "order": 13
+      "max": 1,
+      "group": "Layers",
+      "order": 10,
+      "label": {
+        "en": "Fill Opacity",
+        "zh-CN": "填充不透明度"
+      }
+    },
+    {
+      "name": "edgeColor",
+      "type": "Color",
+      "default": "ff5454",
+      "group": "Layers",
+      "order": 11,
+      "label": {
+        "en": "Edge Color",
+        "zh-CN": "边框颜色"
+      }
+    },
+    {
+      "name": "edgeOpacity",
+      "type": "Float",
+      "default": 0.8,
+      "min": 0,
+      "max": 1,
+      "group": "Layers",
+      "order": 12,
+      "label": {
+        "en": "Edge Opacity",
+        "zh-CN": "边框不透明度"
+      }
+    },
+    {
+      "name": "glowColor",
+      "type": "Color",
+      "default": "ff5454",
+      "group": "Layers",
+      "order": 13,
+      "label": {
+        "en": "Glow Color",
+        "zh-CN": "辉光颜色"
+      }
+    },
+    {
+      "name": "glowOpacity",
+      "type": "Float",
+      "default": 0.8,
+      "min": 0,
+      "max": 1,
+      "group": "Layers",
+      "order": 14,
+      "label": {
+        "en": "Glow Opacity",
+        "zh-CN": "辉光不透明度"
+      }
+    },
+    {
+      "name": "glowPasses",
+      "type": "Float",
+      "default": 5,
+      "min": 0,
+      "max": 6,
+      "group": "Layers",
+      "order": 15,
+      "label": {
+        "en": "Glow Passes",
+        "zh-CN": "辉光层数"
+      }
+    },
+    {
+      "name": "sparkColor",
+      "type": "Color",
+      "default": "ff5a5a",
+      "group": "Layers",
+      "order": 16,
+      "label": {
+        "en": "Spark Color",
+        "zh-CN": "颗粒颜色"
+      }
+    },
+    {
+      "name": "sparkOpacity",
+      "type": "Float",
+      "default": 1,
+      "min": 0,
+      "max": 3,
+      "group": "Layers",
+      "order": 17,
+      "label": {
+        "en": "Spark Amount",
+        "zh-CN": "颗粒数量"
+      }
+    },
+    {
+      "name": "displace",
+      "type": "Float",
+      "default": 0.35,
+      "min": 0,
+      "max": 1,
+      "group": "Layers",
+      "order": 18,
+      "label": {
+        "en": "Coast Displacement",
+        "zh-CN": "海岸偏移"
+      }
     },
     {
       "name": "noiseBrightness",
@@ -146,7 +162,11 @@
       "min": 0,
       "max": 3,
       "group": "Noise",
-      "order": 14
+      "order": 20,
+      "label": {
+        "en": "Brightness",
+        "zh-CN": "亮度"
+      }
     },
     {
       "name": "noiseSaturation",
@@ -155,7 +175,11 @@
       "min": 0,
       "max": 3,
       "group": "Noise",
-      "order": 15
+      "order": 21,
+      "label": {
+        "en": "Saturation",
+        "zh-CN": "饱和度"
+      }
     },
     {
       "name": "noiseSampleRate",
@@ -164,7 +188,11 @@
       "min": 0.25,
       "max": 4,
       "group": "Noise",
-      "order": 16
+      "order": 22,
+      "label": {
+        "en": "Sample Rate",
+        "zh-CN": "采样密度"
+      }
     },
     {
       "name": "lineOpacity",
@@ -173,7 +201,11 @@
       "min": 0,
       "max": 1,
       "group": "Noise",
-      "order": 17
+      "order": 23,
+      "label": {
+        "en": "Grain Lines",
+        "zh-CN": "颗粒线条"
+      }
     },
     {
       "name": "noiseFrameCount",
@@ -182,7 +214,11 @@
       "min": 2,
       "max": 32,
       "group": "Noise",
-      "order": 18
+      "order": 24,
+      "label": {
+        "en": "Frame Count",
+        "zh-CN": "帧数"
+      }
     },
     {
       "name": "noiseEvolveSpeed",
@@ -192,7 +228,11 @@
       "max": 60,
       "unit": "fps",
       "group": "Noise",
-      "order": 19
+      "order": 25,
+      "label": {
+        "en": "Evolve Speed",
+        "zh-CN": "演变速度"
+      }
     },
     {
       "name": "noiseMoveSpeed",
@@ -202,7 +242,11 @@
         0
       ],
       "group": "Noise",
-      "order": 20
+      "order": 26,
+      "label": {
+        "en": "Scroll Speed",
+        "zh-CN": "滚动速度"
+      }
     },
     {
       "name": "noiseScale",
@@ -212,7 +256,11 @@
         1
       ],
       "group": "Noise",
-      "order": 21
+      "order": 27,
+      "label": {
+        "en": "Grain Scale",
+        "zh-CN": "颗粒缩放"
+      }
     },
     {
       "name": "glitchRange",
@@ -221,77 +269,11 @@
       "min": 0,
       "max": 1,
       "group": "Noise",
-      "order": 22
-    },
-    {
-      "name": "color",
-      "type": "Color",
-      "default": "ff5454",
-      "group": "Appearance",
-      "order": 23
-    },
-    {
-      "name": "fillOpacity",
-      "type": "Float",
-      "default": 0.667,
-      "min": 0,
-      "max": 1,
-      "group": "Layers",
-      "order": 23
-    },
-    {
-      "name": "edgeColor",
-      "type": "Color",
-      "default": "ff5454",
-      "group": "Layers",
-      "order": 24
-    },
-    {
-      "name": "edgeOpacity",
-      "type": "Float",
-      "default": 0.8,
-      "min": 0,
-      "max": 1,
-      "group": "Layers",
-      "order": 25
-    },
-    {
-      "name": "sparkColor",
-      "type": "Color",
-      "default": "ff5a5a",
-      "group": "Layers",
-      "order": 26
-    },
-    {
-      "name": "sparkOpacity",
-      "type": "Float",
-      "default": 1,
-      "min": 0,
-      "max": 3,
-      "group": "Layers",
-      "order": 27
-    },
-    {
-      "name": "displace",
-      "type": "Float",
-      "default": 0.35,
-      "min": 0,
-      "max": 1,
-      "group": "Layers",
-      "order": 28
-    },
-    {
-      "name": "feather",
-      "type": "Float",
-      "default": 0,
-      "min": 0,
-      "max": 8,
-      "group": "Noise",
-      "order": 24,
-      "showIf": [
-        "shape",
-        "Circle"
-      ]
+      "order": 28,
+      "label": {
+        "en": "Glitch",
+        "zh-CN": "故障强度"
+      }
     },
     {
       "name": "edgeDistance",
@@ -356,43 +338,6 @@
       "label": {
         "en": "Fragment Amount",
         "zh-CN": "碎片数量"
-      }
-    },
-    {
-      "name": "glowColor",
-      "type": "Color",
-      "default": "ff5454",
-      "group": "Layers",
-      "order": 29,
-      "label": {
-        "en": "Glow Color",
-        "zh-CN": "辉光颜色"
-      }
-    },
-    {
-      "name": "glowOpacity",
-      "type": "Float",
-      "default": 0.8,
-      "min": 0,
-      "max": 1,
-      "group": "Layers",
-      "order": 30,
-      "label": {
-        "en": "Glow Opacity",
-        "zh-CN": "辉光不透明度"
-      }
-    },
-    {
-      "name": "glowPasses",
-      "type": "Float",
-      "default": 5,
-      "min": 0,
-      "max": 6,
-      "group": "Layers",
-      "order": 31,
-      "label": {
-        "en": "Glow Passes",
-        "zh-CN": "辉光层数"
       }
     },
     {

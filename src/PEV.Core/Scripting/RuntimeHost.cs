@@ -81,6 +81,30 @@ namespace PEV.Scripting
             var floors = ADOBase.lm != null ? ADOBase.lm.listFloors : null;
             int built = 0;
 
+            // Decorations first. A decoration-backed event lives in level.decorations, not in
+            // levelEvents, so iterating only the latter is why a placed field never ran.
+            try
+            {
+                var decorations = level.decorations;
+                if (decorations != null)
+                {
+                    foreach (var ev in decorations)
+                    {
+                        if (ev == null) continue;
+                        if (!LevelStorage.TryGetData(ev, out var data)) continue;
+                        if (data.IsPlaceholder) continue;
+                        if (!EventRegistry.TryGetById(data.Id, out var manifest)) continue;
+
+                        Arm(ev, data, manifest, floors);
+                        built++;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log("runtime: decoration arm failed: " + e.Message);
+            }
+
             foreach (var ev in level.levelEvents)
             {
                 if (!LevelStorage.TryGetData(ev, out var data)) continue;
@@ -91,30 +115,42 @@ namespace PEV.Scripting
 
                 if (!EventRegistry.TryGetById(data.Id, out var manifest)) continue;
 
-                // Floor times are not reliable at arm time (the path may not be rebuilt yet),
-                // so this is only a first guess. EventInstance re-resolves it on start and
-                // ignores a NaN here rather than propagating it into every frame.
-                double entry = 0;
-                if (floors != null && ev.floor >= 0 && ev.floor < floors.Count)
-                {
-                    double t = floors[ev.floor].entryTime;
-                    if (!double.IsNaN(t) && !double.IsInfinity(t)) entry = t;
-                }
-
-                _instances.Add(new EventInstance
-                {
-                    LevelEvent = ev,
-                    Data = data,
-                    Manifest = manifest,
-                    EntryTime = entry,
-                    EntryTimeResolved = false,
-                    BpmRatio = level.bpm / 60.0
-                });
+                Arm(ev, data, manifest, floors);
                 built++;
             }
 
             _live = built > 0;
             Plugin.Log($"runtime: {built} instance(s) armed");
+        }
+
+        private void Arm(LevelEvent ev, EventInstanceData data, PEV.Model.EventManifest manifest, List<scrFloor> floors)
+        {
+            // Floor times are not reliable at arm time (the path may not be rebuilt yet),
+            // so this is only a first guess. EventInstance re-resolves it on start and
+            // ignores a NaN here rather than propagating it into every frame.
+            double entry = 0;
+            if (floors != null && ev.floor >= 0 && ev.floor < floors.Count)
+            {
+                double t = floors[ev.floor].entryTime;
+                if (!double.IsNaN(t) && !double.IsInfinity(t)) entry = t;
+            }
+
+            var inst = new EventInstance
+            {
+                LevelEvent = ev,
+                Data = data,
+                Manifest = manifest,
+                EntryTime = entry,
+                EntryTimeResolved = false
+            };
+
+            // A decoration row is a decoration: bind the instance to it so every frame reads
+            // the live component instead of the values frozen at the last save. The scope has
+            // to be the same string the script host stamps into its calls, which is the
+            // instance's own key.
+            if (ev.IsDecoration) NoiseFieldRenderer.Bind(inst.Key, ev);
+
+            _instances.Add(inst);
         }
 
         private double _lastSongTime = double.NegativeInfinity;
@@ -186,6 +222,10 @@ namespace PEV.Scripting
             }
             _instances.Clear();
             _live = false;
+
+            // Bindings point at LevelEvent rows that the next decode replaces. Clearing them
+            // is what stops a stale reference from resurrecting a destroyed decoration.
+            try { NoiseFieldRenderer.UnbindAll(); } catch { }
 
             // Belt and braces: even a script that leaked objects or crashed leaves nothing.
             try { GameBridge.DestroyAll(); } catch { }

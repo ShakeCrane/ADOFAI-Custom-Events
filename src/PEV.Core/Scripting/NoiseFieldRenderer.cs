@@ -287,16 +287,52 @@ namespace PEV.Scripting
             return targets.Count;
         }
 
+        /// <summary>
+        /// Instance scope -> the decoration row that owns it.
+        ///
+        /// A decoration-backed event does not compute its own geometry: the engine does.
+        /// scrDecoration holds pivotPosVec, scaleVec, rotAngle, color and opacity, and every
+        /// tween the game runs — Transform gizmo drags, MoveDecorations, editor scrubs —
+        /// writes those same fields. Reading them here is what makes the effect follow a
+        /// decoration instead of merely imitating one.
+        /// </summary>
+        private static readonly Dictionary<string, ADOFAI.LevelEvent> Bound =
+            new Dictionary<string, ADOFAI.LevelEvent>(StringComparer.Ordinal);
+
+        /// <summary>Ties an instance scope to the decoration row it should mirror.</summary>
+        public static void Bind(string scope, ADOFAI.LevelEvent ev)
+        {
+            if (string.IsNullOrEmpty(scope)) return;
+            if (ev == null) Bound.Remove(scope);
+            else Bound[scope] = ev;
+        }
+
+        public static void Unbind(string scope)
+        {
+            if (!string.IsNullOrEmpty(scope)) Bound.Remove(scope);
+        }
+
+        /// <summary>
+        /// Drops every binding. Called from teardown, where the LevelEvent objects are about
+        /// to be replaced by the next decode — a stale reference here would keep a destroyed
+        /// row alive and, worse, render it.
+        /// </summary>
+        public static void UnbindAll() => Bound.Clear();
+
         private static void Apply(Entry entry, Dictionary<string, object> args)
         {
             var cam = GameCamera.Current;
-            var placement = BuildInput(args, entry, cam);
-            var frame = Placement.Compute(placement);
+            bool mirrored = TryReadDecoration(entry, args, out var live);
+            entry.World = mirrored ? live.Frame : Placement.Compute(BuildInput(args, entry, cam));
 
-            entry.World = frame;
             entry.Shape = ParseEnum(args, "shape", NoiseFieldShape.Rect);
             entry.Feather = Mathf.Max(0f, ParseFloat(args, "feather", 0f));
-            var baseColor = ParseColor(args, "color", new Color(1f, 0.330f, 0.330f));
+            // The decoration's own colour wins when there is one: an author who recolours the
+            // decoration expects the field to follow, and MoveDecorations tweens colour on the
+            // component rather than in the event data.
+            var baseColor = mirrored
+                ? live.Color
+                : ParseColor(args, "color", new Color(1f, 0.330f, 0.330f));
             entry.FillColor = baseColor;
             entry.EdgeColor = ParseColor(args, "edgeColor", baseColor);
             entry.GlowColor = ParseColor(args, "glowColor", baseColor);
@@ -325,11 +361,15 @@ namespace PEV.Scripting
             entry.EdgeFragment = Mathf.Clamp01(ParseFloat(args, "edgeFragment", DefaultEdgeFragment));
 
             entry.FrameCount = Mathf.Clamp(ParseInt(args, "frameCount", 8), 2, 32);
-            entry.Visible = ParseBool(args, "visible", true);
-            entry.Opacity = Mathf.Clamp01(ParseFloat(args, "opacity", 1f));
-            entry.Tag = ParseString(args, "tag", "");
+
+            // When mirrored, visibility, opacity, tag and depth are the decoration's. That is
+            // the whole point of the mapping: an author hides the decoration or retags it and
+            // the field follows, without an extra parameter to keep in sync.
+            entry.Visible = mirrored ? live.Visible : ParseBool(args, "visible", true);
+            entry.Opacity = mirrored ? live.Opacity : Mathf.Clamp01(ParseFloat(args, "opacity", 1f));
+            entry.Tag = mirrored ? live.Tag : ParseString(args, "tag", "");
             entry.FloorSeq = ParseInt(args, "__floor", entry.FloorSeq);
-            entry.Depth = ParseInt(args, "depth", 0);
+            entry.Depth = mirrored ? live.Depth : ParseInt(args, "depth", 0);
 
             entry.FrameIndex = ParseInt(args, "frame", 0);
             entry.Uv = ParseVector2(args, "uv", Vector2.zero);
@@ -338,7 +378,50 @@ namespace PEV.Scripting
             if (entry.Tiling.y <= 0f) entry.Tiling.y = 1f;
 
             float halfH = cam != null && cam.orthographic ? cam.orthographicSize : 5f;
-            entry.PxWidthHint = frame.Size.x / (2f * Mathf.Max(1e-4f, halfH)) * Screen.height;
+            entry.PxWidthHint = entry.World.Size.x / (2f * Mathf.Max(1e-4f, halfH)) * Screen.height;
+        }
+
+        /// <summary>
+        /// The decoration's current frame, if this instance is bound to one that still exists.
+        ///
+        /// ScrDecoration is recreated whenever the decoration list is rebuilt — undo, play,
+        /// level reload — so the component is looked up every frame instead of cached. The
+        /// lookup is a dictionary hit inside the game's own manager, which is cheaper than
+        /// the texture work it feeds.
+        /// </summary>
+        private static bool TryReadDecoration(Entry entry, Dictionary<string, object> args,
+            out DecorationBridge.Live live)
+        {
+            live = default(DecorationBridge.Live);
+            var ev = ResolveBinding(entry, args);
+
+            // With no row there is nothing to mirror, and the script's own geometry (if the
+            // manifest still declares any) is the only source. That is the harness path.
+            if (ev == null) return false;
+
+            // The component comes and goes: the manager builds it after decode and rebuilds
+            // it on undo, play and reload. Between those moments the row's own fields hold
+            // the same numbers, so the field keeps its place instead of blinking out.
+            if (!DecorationBridge.TryRead(ev, out live) &&
+                !DecorationBridge.TryReadEvent(ev, out live))
+                return false;
+
+            // A decoration outside the viewport is not drawn by the engine either; keeping
+            // the field alive there would only add to the layer's bounds.
+            if (live.Frame.Size.x <= 1e-4f || live.Frame.Size.y <= 1e-4f) return false;
+
+            return true;
+        }
+
+        private static ADOFAI.LevelEvent ResolveBinding(Entry entry, Dictionary<string, object> args)
+        {
+            if (Bound.TryGetValue(entry.Scope, out var ev) && ev != null) return ev;
+
+            // The script may pass the row's identity itself, which is what the preview path
+            // does: it has no EventInstance, only the event object.
+            if (args == null) return null;
+            if (!args.TryGetValue("__event", out var raw)) return null;
+            return raw as ADOFAI.LevelEvent;
         }
 
         /// <summary>

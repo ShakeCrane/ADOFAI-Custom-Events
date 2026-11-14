@@ -97,11 +97,23 @@ namespace PEV.Core
     [HarmonyPatch(typeof(scnEditor), "LoadEditorProperties")]
     public static class IconPatch
     {
-        // Sprites exist by now; the metadata pass ran before them, so icons land here.
+        /// <summary>
+        /// Runs before the editor builds its inspectors.
+        ///
+        /// Two things have to happen here rather than later:
+        ///   - icons, because the palette indexes GCS.levelEventIcons unconditionally and a
+        ///     missing key aborts the whole property load;
+        ///   - decoration parameters, because PropertiesPanel.Init walks propertiesInfo
+        ///     exactly once. A parameter added after that exists in the metadata but never
+        ///     gets a control, so the author would see the rows only after a level reload.
+        /// </summary>
         public static void Prefix()
         {
             try { EventRegistry.EnsureAllIcons(Plugin.Log); }
             catch (Exception e) { Plugin.Log("icon pass failed: " + e); }
+
+            try { Registry.DecorationParams.Publish(Plugin.Log); }
+            catch (Exception e) { Plugin.Log("decoration param publish failed: " + e); }
         }
     }
 
@@ -174,6 +186,19 @@ namespace PEV.Core
     [HarmonyPatch(typeof(LevelData), "EncodeToDictionary")]
     public static class EncodePatch
     {
+        /// <summary>
+        /// Writes every decoration payload back onto its row before the encoder serialises it.
+        ///
+        /// This has to be a prefix: LevelData builds the decorations array inside
+        /// EncodeToDictionary, so by the time the postfix runs the JSON has already been
+        /// assembled from whatever the rows held a moment earlier.
+        /// </summary>
+        public static void Prefix(LevelData __instance)
+        {
+            try { LevelStorage.SyncDecorations(__instance); }
+            catch (Exception e) { Plugin.Log("decoration sync before encode failed: " + e); }
+        }
+
         public static void Postfix(LevelData __instance, ref Dictionary<string, object> __result)
         {
             try
