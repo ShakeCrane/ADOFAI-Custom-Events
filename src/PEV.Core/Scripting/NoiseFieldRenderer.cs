@@ -114,7 +114,10 @@ namespace PEV.Scripting
         {
             public GameObject GameObject;
             public SpriteRenderer Renderer;
+            public Material Material;
             public NoiseTextureFactory.Frames Frames;
+            public NoiseTextureFactory.Frames PendingFrames;
+            public bool ErrorReported;
             public string StructureKey;
             /// <summary>
             /// The pixel-width bucket this layer was baked at.
@@ -267,7 +270,7 @@ namespace PEV.Scripting
             }
 
             // A depth change moves the field between layers; both sides need recompositing.
-            if (oldDepth != entry.Depth && Live.Count > 1)
+            if (oldDepth != entry.Depth)
                 RebuildDepth(oldDepth);
 
             return RebuildDepth(entry.Depth);
@@ -284,6 +287,20 @@ namespace PEV.Scripting
             return true;
         }
 
+        public static void DestroyScope(string scope)
+        {
+            var keys = new List<string>();
+            foreach (var kv in Live)
+                if (kv.Value.Scope == scope) keys.Add(kv.Key);
+            var depths = new HashSet<int>();
+            foreach (var key in keys)
+            {
+                depths.Add(Live[key].Depth);
+                Live.Remove(key);
+            }
+            foreach (var depth in depths) RebuildDepth(depth);
+        }
+
         public static void DestroyAll()
         {
             foreach (var kv in Layers)
@@ -291,7 +308,9 @@ namespace PEV.Scripting
                 try
                 {
                     if (kv.Value.GameObject != null) UnityEngine.Object.Destroy(kv.Value.GameObject);
+                    if (kv.Value.Material != null) UnityEngine.Object.Destroy(kv.Value.Material);
                     NoiseTextureFactory.Release(kv.Value.Frames);
+                    NoiseTextureFactory.Release(kv.Value.PendingFrames);
                 }
                 catch { }
             }
@@ -507,7 +526,13 @@ namespace PEV.Scripting
         {
             var members = new List<Entry>();
             foreach (var kv in Live)
-                if (kv.Value.Depth == depth) members.Add(kv.Value);
+            {
+                var entry = kv.Value;
+                if (entry.Depth != depth) continue;
+                bool visible = entry.OverrideVisibility == 0 ? entry.Visible : entry.OverrideVisibility == 1;
+                if (visible && entry.Opacity * entry.OverrideAlpha > 0f) members.Add(entry);
+                else entry.GameObject = null;
+            }
             members.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
 
             // Greedy clustering by bounding-box overlap. Fields that do not touch can never
@@ -534,6 +559,20 @@ namespace PEV.Scripting
                         Mathf.Min(boxes[target].xMin, box.xMin), Mathf.Min(boxes[target].yMin, box.yMin),
                         Mathf.Max(boxes[target].xMax, box.xMax), Mathf.Max(boxes[target].yMax, box.yMax));
                     boxes[target] = merged;
+                    // A bridging field may join several existing clusters. Merge until
+                    // the expanded box no longer touches another cluster.
+                    for (int i = 0; i < boxes.Count; i++)
+                    {
+                        if (i == target || !boxes[target].Overlaps(boxes[i])) continue;
+                        clusters[target].AddRange(clusters[i]);
+                        boxes[target] = Rect.MinMaxRect(
+                            Mathf.Min(boxes[target].xMin, boxes[i].xMin), Mathf.Min(boxes[target].yMin, boxes[i].yMin),
+                            Mathf.Max(boxes[target].xMax, boxes[i].xMax), Mathf.Max(boxes[target].yMax, boxes[i].yMax));
+                        clusters.RemoveAt(i);
+                        boxes.RemoveAt(i);
+                        if (i < target) target--;
+                        i = -1;
+                    }
                 }
             }
 
@@ -541,6 +580,7 @@ namespace PEV.Scripting
             bool ok = true;
             for (int i = 0; i < clusters.Count; i++)
             {
+                clusters[i].Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
                 string key = depth + "#" + clusters[i][0].Key;
                 wanted.Add(key);
                 if (!CompositeCluster(key, depth, clusters[i])) ok = false;
@@ -556,7 +596,9 @@ namespace PEV.Scripting
             {
                 var layer = Layers[key];
                 if (layer.GameObject != null) UnityEngine.Object.Destroy(layer.GameObject);
+                if (layer.Material != null) UnityEngine.Object.Destroy(layer.Material);
                 NoiseTextureFactory.Release(layer.Frames);
+                NoiseTextureFactory.Release(layer.PendingFrames);
                 Layers.Remove(key);
             }
             return ok;
@@ -660,15 +702,14 @@ namespace PEV.Scripting
                 // How wide the quad actually is on screen. The composer sizes its grids from
                 // this, because the reference's mask and effects targets are fractions of the
                 // screen — not of the texture the effect happens to be baked into.
-                ScreenPixelWidth = Mathf.Max(1, Mathf.RoundToInt(
-                    lead.PxWidthHint * (size.x / Mathf.Max(1e-4f, lead.World.Size.x))))
+                ScreenPixelWidth = layer.PixelBucket
             };
 
             // One key, owned by the factory: a second copy in the renderer is how a
             // structure that never changes still manages to regenerate every frame.
             string structureKey = NoiseTextureFactory.Key(request);
 
-            if (layer.Frames == null || layer.StructureKey != structureKey)
+            if ((layer.Frames == null && layer.PendingFrames == null) || layer.StructureKey != structureKey)
             {
                 if (layer.StructureKey != null)
                     PEV.Core.Plugin.Log("noise rebake: " + Differ(layer.StructureKey, structureKey));
@@ -684,15 +725,29 @@ namespace PEV.Scripting
                     PEV.Core.Plugin.Log("noise layer: " + genError);
                     return false;
                 }
-                NoiseTextureFactory.Release(layer.Frames);
-                layer.Frames = frames;
+                NoiseTextureFactory.Release(layer.PendingFrames);
+                layer.PendingFrames = frames;
+                layer.ErrorReported = false;
                 layer.StructureKey = structureKey;
-                layer.FrameCount = frames.Textures.Length;
+            }
+
+            if (layer.PendingFrames?.Error != null && !layer.ErrorReported)
+            {
+                PEV.Core.Plugin.Log("noise layer: " + layer.PendingFrames.Error);
+                layer.ErrorReported = true;
+            }
+
+            if (layer.PendingFrames != null && layer.PendingFrames.Ready)
+            {
+                NoiseTextureFactory.Release(layer.Frames);
+                layer.Frames = layer.PendingFrames;
+                layer.PendingFrames = null;
+                layer.FrameCount = layer.Frames.Textures.Length;
             }
 
             // A set that has not finished uploading has no sprite yet. Keep whatever the
             // layer was already showing rather than blanking it.
-            if (!layer.Frames.Ready)
+            if (layer.Frames == null || !layer.Frames.Ready)
             {
                 if (layer.Renderer.sprite == null) layer.GameObject.SetActive(false);
                 return false;
@@ -719,7 +774,8 @@ namespace PEV.Scripting
             layer.FrameIndex = idx;
             layer.Uv = lead.Uv;
 
-            var mat = layer.Renderer.material;
+            var mat = layer.Material;
+            if (mat == null) mat = layer.Material = layer.Renderer.material;
             if (mat != null)
             {
                 // No offset. The baked set carries its own motion, and the border and coastline
@@ -761,7 +817,7 @@ namespace PEV.Scripting
         {
             int wanted = NoiseTextureFactory.ResolutionBucket(px);
             if (layer.PixelBucket <= 0) { layer.PixelBucket = wanted; return wanted; }
-            if (Mathf.Abs(wanted - layer.PixelBucket) >= NoiseTextureFactory.ResolutionStep)
+            if (Mathf.Abs(px - layer.PixelBucket) >= NoiseTextureFactory.ResolutionStep)
                 layer.PixelBucket = wanted;
             return layer.PixelBucket;
         }
@@ -794,17 +850,18 @@ namespace PEV.Scripting
 
         private static void Accumulate(Entry m, ref Vector2 min, ref Vector2 max)
         {
-            float rad = m.World.Rotation * Mathf.Deg2Rad;
+            float rad = (m.World.Rotation + m.OverrideRotation) * Mathf.Deg2Rad;
             float cos = Mathf.Cos(rad), sin = Mathf.Sin(rad);
-            float hw = m.World.Size.x * 0.5f, hh = m.World.Size.y * 0.5f;
+            float factor = m.OverrideScale > 0f ? m.OverrideScale : 1f;
+            float hw = m.World.Size.x * 0.5f * factor, hh = m.World.Size.y * 0.5f * factor;
             for (int sx = -1; sx <= 1; sx += 2)
             {
                 for (int sy = -1; sy <= 1; sy += 2)
                 {
                     float x = sx * hw, y = sy * hh;
                     var p = new Vector2(
-                        m.World.Center.x + x * cos - y * sin,
-                        m.World.Center.y + x * sin + y * cos);
+                        m.World.Center.x + m.OverrideOffset.x + x * cos - y * sin,
+                        m.World.Center.y + m.OverrideOffset.y + x * sin + y * cos);
                     if (p.x < min.x) min.x = p.x;
                     if (p.y < min.y) min.y = p.y;
                     if (p.x > max.x) max.x = p.x;

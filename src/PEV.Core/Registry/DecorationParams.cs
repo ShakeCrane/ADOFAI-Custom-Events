@@ -125,7 +125,6 @@ namespace PEV.Registry
                     // Native wins. Our manifest still declares the parameter so scripts and
                     // Materialize see it, but the UI row is the game's own.
                     if (info.propertiesInfo.ContainsKey(spec.Name)) continue;
-                    if (Injected.Contains(spec.Name)) continue;
 
                     try
                     {

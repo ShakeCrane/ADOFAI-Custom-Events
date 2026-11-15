@@ -25,6 +25,7 @@ namespace PEV.Scripting
             public float LastScale = float.NaN;
             public float LastAlpha = float.NaN;
             public Vector3 LastPosition;
+            public Dictionary<string, object> State = new Dictionary<string, object>();
         }
 
         private static readonly Dictionary<string, Entry> Live =
@@ -133,9 +134,21 @@ namespace PEV.Scripting
             Live.Clear();
         }
 
+        public static void DestroyScope(string scope)
+        {
+            if (string.IsNullOrEmpty(scope)) return;
+            string prefix = GameBridge.ScopedKey(scope, "");
+            var keys = new List<string>();
+            foreach (var key in Live.Keys)
+                if (key.StartsWith(prefix, StringComparison.Ordinal)) keys.Add(key);
+            foreach (var key in keys) Destroy(key, out _);
+        }
+
         private static void Apply(Entry entry, Dictionary<string, object> args)
         {
             if (args == null) return;
+            foreach (var kv in args) entry.State[kv.Key] = kv.Value;
+            args = entry.State;
 
             // Values are normalized screen-ish coordinates around the camera centre:
             // x/y in [-1,1] spans half the viewport, which is easier for authors to reason
@@ -182,7 +195,7 @@ namespace PEV.Scripting
                     $"enabled={rend.enabled} sprite={(rend.sprite != null)} " +
                     $"visible={(c != null && rend.isVisible)} " +
                     $"layer={entry.GameObject.layer} sortingLayer={rend.sortingLayerName}/{rend.sortingOrder} " +
-                    $"shader={rend.material?.shader?.name ?? "none"} " +
+                    $"shader={rend.sharedMaterial?.shader?.name ?? "none"} " +
                     $"color={rend.color} bounds={rend.bounds}";
 
                 PEV.Core.Plugin.Log($"fx apply: cam=[{camInfo}]");

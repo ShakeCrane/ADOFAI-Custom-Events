@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import zipfile
+from pathlib import PurePosixPath
 
 REQUIRED_FIELDS = ("schemaVersion", "id", "version", "entry")
 VALID_TYPES = {
@@ -34,7 +35,7 @@ def load_manifest(root):
     try:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh), None
-    except json.JSONDecodeError as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         return None, f"event.json is not valid JSON: {exc}"
 
 
@@ -42,40 +43,67 @@ def validate(root, manifest):
     """Returns a list of problems. Empty means the package will load."""
     problems = []
 
+    if not isinstance(manifest, dict):
+        return ["manifest must be an object"]
+
     for field in REQUIRED_FIELDS:
         if field not in manifest:
             problems.append(f"missing required field '{field}'")
 
-    if manifest.get("schemaVersion", 1) > 1:
-        problems.append(
-            f"schemaVersion {manifest['schemaVersion']} is newer than supported (1)")
+    for field in ("schemaVersion", "apiVersion"):
+        value = manifest.get(field, 1)
+        if type(value) is not int or value != 1:
+            problems.append(f"unsupported {field}: {value!r} (supported: 1)")
 
-    entry = manifest.get("entry")
-    if entry and not os.path.isfile(os.path.join(root, entry)):
-        problems.append(f"entry script '{entry}' not found")
+    for field in ("id", "version", "entry"):
+        value = manifest.get(field)
+        if not isinstance(value, str) or not value.strip():
+            problems.append(f"'{field}' must be a non-empty string")
 
-    icon = manifest.get("icon")
-    if icon and not os.path.isfile(os.path.join(root, icon)):
-        problems.append(f"icon '{icon}' not found (the event will use a placeholder)")
+    def check_resource(field):
+        value = manifest.get(field)
+        if value is None and field == "icon":
+            return
+        if not isinstance(value, str) or not value.strip():
+            return
+        normalized = value.replace("\\", "/")
+        if normalized.startswith("/") or ":" in normalized or ".." in PurePosixPath(normalized).parts:
+            problems.append(f"{field} must be a package-relative path")
+        elif not os.path.isfile(os.path.join(root, normalized)):
+            problems.append(f"{field} '{value}' not found")
+
+    check_resource("entry")
+    check_resource("icon")
 
     category = manifest.get("category", "VisualFx")
-    if category not in VALID_CATEGORIES:
+    if not isinstance(category, str) or category not in VALID_CATEGORIES:
         problems.append(
             f"unknown category '{category}', will fall back to VisualFx. "
             f"Valid: {', '.join(sorted(VALID_CATEGORIES))}")
 
-    for i, param in enumerate(manifest.get("params", [])):
+    params = manifest.get("params", [])
+    if not isinstance(params, list):
+        problems.append("params must be an array")
+        return problems
+    seen = set()
+    for i, param in enumerate(params):
+        if not isinstance(param, dict):
+            problems.append(f"params[{i}] must be an object")
+            continue
         name = param.get("name")
-        if not name:
+        if not isinstance(name, str) or not name.strip():
             problems.append(f"params[{i}] has no name")
             continue
+        if name in seen or name == "__pevUid":
+            problems.append(f"duplicate or reserved parameter name '{name}'")
+        seen.add(name)
         ptype = param.get("type", "")
-        if not ptype:
+        if not isinstance(ptype, str) or not ptype:
             problems.append(f"param '{name}' has no type")
             continue
         # Enum types are written as "Enum:TypeName" or "Enum:TypeName, Assembly".
-        base = ptype.split(":", 1)[0]
-        if base != "Enum" and base not in VALID_TYPES:
+        valid_enum = ptype.startswith("Enum:") and bool(ptype[5:].strip())
+        if not valid_enum and ptype not in VALID_TYPES:
             problems.append(
                 f"param '{name}' has type '{ptype}', which the editor does not "
                 f"recognise; the control will not appear. "
@@ -97,6 +125,8 @@ def collect_files(root):
 def pack(root, output):
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
         for full, rel in collect_files(root):
+            if os.path.abspath(full) == os.path.abspath(output):
+                continue
             zf.write(full, rel)
 
 
@@ -115,7 +145,7 @@ def main():
         return 1
 
     problems = validate(root, manifest)
-    event_id = manifest.get("id", "<no id>")
+    event_id = manifest.get("id", "<no id>") if isinstance(manifest, dict) else "<invalid>"
 
     if problems:
         print(f"{event_id}: {len(problems)} problem(s)")
@@ -133,6 +163,9 @@ def main():
               "Use --check to inspect without packing.", file=sys.stderr)
         return 1
 
+    if not args.output and any(c in event_id for c in '/\\:'):
+        print("error: id cannot be used as an output filename; specify --output", file=sys.stderr)
+        return 1
     output = args.output or f"{event_id}.event"
     pack(root, output)
     size = os.path.getsize(output)

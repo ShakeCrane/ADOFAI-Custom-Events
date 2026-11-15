@@ -258,9 +258,9 @@ namespace PEV.Editor
 
                 if (string.IsNullOrEmpty(data.Uid) || !seen.Add(data.Uid))
                 {
-                    data.Uid = StableId.NewUid();
-                    seen.Add(data.Uid);
-                    LevelStorage.Attach(row, data);
+                    var clone = data.Clone(StableId.NewUid());
+                    seen.Add(clone.Uid);
+                    LevelStorage.Attach(row, clone);
                 }
             }
 

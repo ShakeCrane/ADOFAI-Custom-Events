@@ -86,9 +86,10 @@ namespace PEV.Scripting
             internal Color32[][] Pixels;
             internal int TexW, TexH;
             internal int Uploaded;
-            internal bool PixelsReady;
+            internal volatile bool PixelsReady;
+            internal volatile bool Cancelled;
             internal bool Ready;
-            internal string Error;
+            internal volatile string Error;
             internal float WorkerMs;
             internal float UploadTotalMs;
             internal System.Threading.Thread Worker;
@@ -322,6 +323,7 @@ namespace PEV.Scripting
         /// </summary>
         private static readonly int BakeThreads =
             Mathf.Max(1, Environment.ProcessorCount / 2);
+        private static readonly System.Threading.SemaphoreSlim BakeGate = new System.Threading.SemaphoreSlim(1);
 
         public static Frames Get(Request req, out string error)
         {
@@ -330,7 +332,12 @@ namespace PEV.Scripting
             // Blocking convenience for callers with no frame loop of their own (diagnostics,
             // tests). The render path uses Begin + Pump instead, so no frame ever waits.
             while (!frames.Ready && string.IsNullOrEmpty(frames.Error))
+            {
                 Pump(1000f);
+                if (!frames.PixelsReady) System.Threading.Thread.Sleep(1);
+            }
+            error = frames.Error;
+            if (error != null) { Release(frames); return null; }
             return frames;
         }
 
@@ -404,17 +411,24 @@ namespace PEV.Scripting
             foreach (var kv in Cache)
             {
                 var f = kv.Value;
-                if (f == null || !f.PixelsReady || f.Ready) continue;
+                if (f == null || !f.PixelsReady || f.Ready || f.Error != null) continue;
 
                 bool first = f.Uploaded == 0;
                 while (f.Uploaded < f.Textures.Length)
                 {
-                    UploadOne(f, f.Uploaded);
+                    try { UploadOne(f, f.Uploaded); }
+                    catch (Exception e)
+                    {
+                        f.Error = "noise upload failed: " + e.Message;
+                        DestroyFrames(f);
+                        break;
+                    }
                     f.Uploaded++;
                     if (first && f.Uploaded >= 2) break;
                     if (watch.Elapsed.TotalMilliseconds >= budgetMs) break;
                 }
 
+                if (f.Error != null) continue;
                 float slice = (float)watch.Elapsed.TotalMilliseconds;
                 if (slice > f.WorstUploadSliceMs) f.WorstUploadSliceMs = slice;
 
@@ -437,6 +451,7 @@ namespace PEV.Scripting
 
         private static void UploadOne(Frames f, int k)
         {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
             var pixels = f.Pixels[k];
             if (pixels == null) return;
 
@@ -446,15 +461,14 @@ namespace PEV.Scripting
                 filterMode = FilterMode.Bilinear,
                 name = "PEV.Noise." + k
             };
+            f.Textures[k] = tex;
             tex.SetPixels32(pixels);
             tex.Apply(false);
 
-            float started = Time.realtimeSinceStartup;
-            f.Textures[k] = tex;
             f.Sprites[k] = Sprite.Create(
                 tex, new Rect(0f, 0f, f.TexW, f.TexH), new Vector2(0.5f, 0.5f), PixelsPerUnit);
             f.Sprites[k].name = "PEV.NoiseSprite." + k;
-            f.UploadTotalMs += (Time.realtimeSinceStartup - started) * 1000f;
+            f.UploadTotalMs += (float)watch.Elapsed.TotalMilliseconds;
             f.Pixels[k] = null;
         }
 
@@ -463,7 +477,8 @@ namespace PEV.Scripting
             if (frames == null) return;
             frames.Refs--;
             if (frames.Refs > 0) return;
-            if (frames.Key != null) Cache.Remove(frames.Key);
+            if (frames.Key != null && Cache.TryGetValue(frames.Key, out var cached) && ReferenceEquals(cached, frames))
+                Cache.Remove(frames.Key);
             DestroyFrames(frames);
         }
 
@@ -475,6 +490,8 @@ namespace PEV.Scripting
 
         private static void DestroyFrames(Frames frames)
         {
+            frames.Cancelled = true;
+            frames.Pixels = null;
             if (frames.Sprites != null)
             {
                 foreach (var s in frames.Sprites)
@@ -525,6 +542,9 @@ namespace PEV.Scripting
               .Append(F(r.FillOpacity)).Append('|').Append(F(r.Exposure)).Append('|')
               .Append(F(r.EdgeOpacity)).Append('|')
               .Append(F(r.SparkOpacity)).Append('|')
+              .Append(C(r.GlowColor)).Append('|').Append(F(r.GlowOpacity)).Append('|')
+              .Append(F(r.GlowPasses)).Append('|').Append(F(r.FillStrength)).Append('|')
+              .Append(C(r.SceneColor)).Append('|').Append(r.Ready).Append('|')
               .Append(F(r.Brightness)).Append('|').Append(F(r.Saturation)).Append('|')
               .Append(F(r.SampleRate)).Append('|').Append(F(r.LineOpacity)).Append('|')
               .Append(F(r.Displace)).Append('|')
@@ -534,7 +554,8 @@ namespace PEV.Scripting
               .Append(F(r.EdgeMargin)).Append('|').Append(F(r.EdgeFragment)).Append('|')
               .Append(r.FrameCount).Append('|').Append(r.Seed).Append('|')
               .Append(F(r.Margin)).Append('|')
-              .Append(ResolutionBucket(r.TargetPixelWidth)).Append('|');
+              .Append(ResolutionBucket(r.TargetPixelWidth)).Append('|')
+              .Append(r.ScreenPixelWidth).Append('|');
 
             if (r.Pieces != null)
             {
@@ -618,18 +639,21 @@ namespace PEV.Scripting
         /// </summary>
         private static void RunWorker(Request req, Frames f)
         {
+            BakeGate.Wait();
             try
             {
-                float started = Time.realtimeSinceStartup;
-                int frames = f.Textures.Length;
-                RenderPixels(req, f.Pixels, f.TexW, f.TexH);
-                f.WorkerMs = (Time.realtimeSinceStartup - started) * 1000f;
-                f.PixelsReady = true;
+                if (f.Cancelled) return;
+                var pixels = f.Pixels;
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                RenderPixels(req, pixels, f.TexW, f.TexH, () => f.Cancelled);
+                f.WorkerMs = (float)watch.Elapsed.TotalMilliseconds;
+                if (!f.Cancelled) f.PixelsReady = true;
             }
             catch (Exception e)
             {
                 f.Error = "noise bake failed: " + e.Message;
             }
+            finally { BakeGate.Release(); }
         }
 
         /// <summary>
@@ -638,7 +662,7 @@ namespace PEV.Scripting
         /// Pure array work with no Unity calls, so it is safe on a worker thread. The fan-out
         /// is twice over: across frames, and across row bands within a frame.
         /// </summary>
-        private static void RenderPixels(Request req, Color32[][] pixelSets, int texW, int texH)
+        private static void RenderPixels(Request req, Color32[][] pixelSets, int texW, int texH, Func<bool> cancelled)
         {
             int frames = pixelSets.Length;
             int block = Mathf.Clamp(Mathf.RoundToInt(GrainPixels / Mathf.Clamp(req.SampleRate, 0.1f, 8f)), 1, 16);
@@ -661,6 +685,7 @@ namespace PEV.Scripting
             var options = new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = BakeThreads };
             System.Threading.Tasks.Parallel.For(0, frames, options, k =>
             {
+                if (cancelled()) return;
                 // The seed only reaches the glitch pass. The composer's grain comes from the
                 // noise maps, sampled at a drift driven by the frame's own shader time, so
                 // consecutive frames move the same grains rather than re-rolling them — which
@@ -689,6 +714,7 @@ namespace PEV.Scripting
             int bandsPerFrame = Mathf.Clamp(texH / 24, 1, 8);
             System.Threading.Tasks.Parallel.For(0, frames * bandsPerFrame, options, task =>
             {
+                if (cancelled()) return;
                 int k = task / bandsPerFrame;
                 int band = task % bandsPerFrame;
                 int y0 = (int)((long)texH * band / bandsPerFrame);
@@ -704,6 +730,7 @@ namespace PEV.Scripting
             {
                 System.Threading.Tasks.Parallel.For(0, frames, options, k =>
                 {
+                    if (cancelled()) return;
                     var pixels = pixelSets[k];
                     if (pixels == null) return;
                     uint kseed = (uint)(k * 7919) + seed * 2654435761u;

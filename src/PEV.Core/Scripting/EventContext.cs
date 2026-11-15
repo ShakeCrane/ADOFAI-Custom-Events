@@ -62,6 +62,25 @@ namespace PEV.Scripting
             // first keeps the ordering explicit if a texture ever outlives its object.
             try { NoiseFieldRenderer.DestroyAll(); } catch { }
             try { EffectCanvas.DestroyAll(); } catch { }
+            var cam = GameCamera.Current;
+            if (cam != null) cam.GetComponent<ShakeHost>()?.Stop();
+        }
+
+        internal static string ScopedKey(string scope, string key) =>
+            string.IsNullOrEmpty(scope) ? key : scope.Length + ":" + scope + "/" + key;
+
+        public static void DestroyScope(string scope)
+        {
+            ContinuousEffects.DestroyScope(scope);
+            NoiseFieldRenderer.DestroyScope(scope);
+            if (!string.IsNullOrEmpty(scope))
+            {
+                foreach (var ticker in Root.GetComponentsInChildren<EffectTicker>())
+                    if (ticker.Scope == scope) UnityEngine.Object.Destroy(ticker.gameObject);
+                var cam = GameCamera.Current;
+                var shake = cam != null ? cam.GetComponent<ShakeHost>() : null;
+                if (shake != null && shake.Scope == scope) shake.Stop();
+            }
         }
 
         /// <summary>Whitelist dispatch. Unknown names fail loudly instead of silently doing nothing.</summary>
@@ -72,9 +91,9 @@ namespace PEV.Scripting
                 case "flash": return NativeEffects.Flash(args, out error);
                 case "shake":
                 case "screenshake": return NativeEffects.Shake(args, out error);
-                case "create": return ContinuousEffects.Create(Str(args, "key"), args, out error);
-                case "set": return ContinuousEffects.Set(Str(args, "key"), args, out error);
-                case "destroy": return ContinuousEffects.Destroy(Str(args, "key"), out error);
+                case "create": return ContinuousEffects.Create(EffectKey(args), args, out error);
+                case "set": return ContinuousEffects.Set(EffectKey(args), args, out error);
+                case "destroy": return ContinuousEffects.Destroy(EffectKey(args), out error);
 
                 // Noise fields are a host primitive, not part of the author-facing SDK; the
                 // public contract is the .event package format, so this surface may change.
@@ -86,6 +105,12 @@ namespace PEV.Scripting
                     error = $"unsupported effect '{effectName}'";
                     return false;
             }
+        }
+
+        private static string EffectKey(Dictionary<string, object> args)
+        {
+            string key = Str(args, "key");
+            return string.IsNullOrEmpty(key) ? key : ScopedKey(Str(args, "__instance"), key);
         }
 
         /// <summary>

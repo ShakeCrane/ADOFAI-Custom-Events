@@ -41,6 +41,7 @@ namespace PEV.Scripting
                 }
 
                 var ticker = go.AddComponent<EffectTicker>();
+                ticker.Scope = args != null && args.TryGetValue("__instance", out var scope) ? scope?.ToString() : null;
                 ticker.Begin(duration, p =>
                 {
                     var c = color;
@@ -69,7 +70,8 @@ namespace PEV.Scripting
 
                 var host = cam.gameObject.GetComponent<ShakeHost>();
                 if (host == null) host = cam.gameObject.AddComponent<ShakeHost>();
-                host.Play(strength, duration);
+                string scope = args != null && args.TryGetValue("__instance", out var owner) ? owner?.ToString() : null;
+                host.Play(strength, duration, scope);
                 return true;
             }
             catch (Exception e)
@@ -101,7 +103,8 @@ namespace PEV.Scripting
     public class EffectTicker : MonoBehaviour
     {
         private float _duration;
-        private float _elapsed;
+        private double _started;
+        public string Scope;
         private Action<float> _onTick;
         private Action _onDone;
         private bool _running;
@@ -109,17 +112,19 @@ namespace PEV.Scripting
         public void Begin(float duration, Action<float> onTick, Action onDone)
         {
             _duration = Mathf.Max(0.0001f, duration);
-            _elapsed = 0f;
+            _started = SongTime;
             _onTick = onTick;
             _onDone = onDone;
             _running = true;
+            _onTick?.Invoke(0f);
         }
+
+        private static double SongTime => scrConductor.instance != null ? scrConductor.instance.songposition_minusi : 0;
 
         private void Update()
         {
             if (!_running) return;
-            _elapsed += Time.unscaledDeltaTime;
-            float p = Mathf.Clamp01(_elapsed / _duration);
+            float p = Mathf.Clamp01((float)(SongTime - _started) / _duration);
             try { _onTick?.Invoke(p); } catch { }
             if (p >= 1f)
             {
@@ -134,10 +139,12 @@ namespace PEV.Scripting
     {
         private Vector3 _basePos;
         private bool _captured;
-        private float _remaining;
+        private double _started;
+        private float _duration;
         private float _strength;
+        public string Scope { get; private set; }
 
-        public void Play(float strength, float duration)
+        public void Play(float strength, float duration, string scope = null)
         {
             if (!_captured)
             {
@@ -145,21 +152,34 @@ namespace PEV.Scripting
                 _captured = true;
             }
             _strength = strength;
-            _remaining = duration;
+            Scope = scope;
+            _duration = Mathf.Max(0.0001f, duration);
+            _started = scrConductor.instance != null ? scrConductor.instance.songposition_minusi : 0;
         }
 
         private void LateUpdate()
         {
             if (!_captured) return;
-            if (_remaining > 0f)
+            double now = scrConductor.instance != null ? scrConductor.instance.songposition_minusi : _started;
+            float elapsed = (float)(now - _started);
+            if (elapsed >= 0f && elapsed < _duration)
             {
-                _remaining -= Time.unscaledDeltaTime;
-                float falloff = Mathf.Clamp01(_remaining);
-                var offset = UnityEngine.Random.insideUnitCircle * (_strength * falloff);
+                float falloff = 1f - elapsed / _duration;
+                var offset = new Vector2(Mathf.Sin(elapsed * 173f), Mathf.Sin(elapsed * 211f)) * (_strength * falloff);
                 transform.localPosition = _basePos + new Vector3(offset.x, offset.y, 0f);
-                if (_remaining <= 0f) transform.localPosition = _basePos;
             }
+            else Stop();
         }
+
+        public void Stop()
+        {
+            if (_captured) transform.localPosition = _basePos;
+            _captured = false;
+            _duration = 0f;
+            Scope = null;
+        }
+
+        private void OnDisable() => Stop();
     }
 
     /// <summary>A 1x1 white sprite, created once on demand.</summary>

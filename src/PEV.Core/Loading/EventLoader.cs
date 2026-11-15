@@ -95,6 +95,10 @@ namespace PEV.Loading
         public static byte[] ReadResource(string packagePath, string relative)
         {
             if (string.IsNullOrEmpty(relative)) return null;
+            // Both package forms use the same relative, slash-separated namespace.
+            relative = relative.Replace('\\', '/');
+            if (relative.StartsWith("/", StringComparison.Ordinal) || relative.Contains(":") ||
+                relative.Split('/').Any(p => p == "..")) return null;
             if (Directory.Exists(packagePath))
             {
                 string p = Path.Combine(packagePath, relative);

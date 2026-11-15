@@ -10,7 +10,7 @@ function create(ctx, params) {
       if (t < 0 || fired) return;
       fired = true;
 
-      var duration = params.duration * ctx_bpm_seconds(120);
+      var duration = params.duration * ctx.secondsPerBeat;
       fx.shake({ strength: params.strength, duration: duration });
     },
 
@@ -19,7 +19,3 @@ function create(ctx, params) {
     }
   };
 }
-
-// Beats -> seconds. The host does not expose bpm directly in P1, so use a fixed
-// reference of 120 BPM; duration is a rough visual hint, not a sync-critical value.
-function ctx_bpm_seconds(bpm) { return 60.0 / bpm; }

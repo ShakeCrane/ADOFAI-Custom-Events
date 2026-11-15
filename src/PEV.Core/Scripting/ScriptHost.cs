@@ -59,6 +59,7 @@ var __pevReady = true;
         private JsValue _instance;
         private JsValue _updateFn;
         private JsValue _disposeFn;
+        private JsValue _context;
 
         public bool Faulted { get; private set; }
 
@@ -93,6 +94,7 @@ var __pevReady = true;
                     // field texture build inside fx.field counts as script time. At 50ms a
                     // single first-frame texture build faulted two of three instances.
                     options.TimeoutInterval(TimeSpan.FromMilliseconds(2000));
+                    options.MaxStatements(200000);
 
                     options.LimitRecursion(64);
                     options.Strict();
@@ -178,6 +180,9 @@ var __pevReady = true;
             if (value is Vector2 v2) return new[] { v2.x, v2.y };
             if (value is Vector3 v3) return new[] { v3.x, v3.y, v3.z };
             if (value is Color c) return new[] { c.r, c.g, c.b, c.a };
+            if (value is Tuple<int, TileRelativeTo> tile)
+                return new object[] { tile.Item1, tile.Item2.ToString() };
+            if (value is Tuple<float, float> pair) return new[] { pair.Item1, pair.Item2 };
 
             // Enums cross as their name, not their ordinal.
             //
@@ -222,8 +227,10 @@ var __pevReady = true;
                 _engine.SetValue("__ctx", ctxJson);
                 _engine.SetValue("__params", paramsJson);
 
-                var result = _engine.Evaluate(
-                    "(function(){ return (typeof create === 'function') ? create(JSON.parse(__ctx), JSON.parse(__params)) : null; })()");
+                _context = _engine.Evaluate("JSON.parse(__ctx)");
+                var createFn = _engine.Evaluate(
+                    "(function(ctx){ return (typeof create === 'function') ? create(ctx, JSON.parse(__params)) : null; })");
+                var result = _engine.Invoke(createFn, _context);
 
                 _instance = result;
                 if (_instance != null && _instance.IsObject())
@@ -237,7 +244,9 @@ var __pevReady = true;
             catch (Exception e)
             {
                 error = Describe(e, _debugName);
+                LastError = error;
                 Faulted = true;
+                Dispose();
                 return false;
             }
         }
@@ -257,8 +266,9 @@ var __pevReady = true;
                 // function object directly let Jint bind the extra arguments as its own
                 // overload parameters, and update() received undefined instead of t.
                 var call = _engine.Evaluate(
-                    "(function(fn, self, t){ return fn.call(self, t); })");
-                _engine.Invoke(call, _updateFn, _instance, t);
+                    "(function(fn, self, ctx, t){ var state = JSON.parse(__state); " +
+                    "Object.keys(state).forEach(function(k){ctx[k] = state[k];}); return fn.call(self, t); })");
+                _engine.Invoke(call, _updateFn, _instance, _context, t);
                 UpdateCalls++;
             }
             catch (Exception e)
@@ -280,7 +290,8 @@ var __pevReady = true;
                 if (!Faulted && _instance != null && _instance.IsObject() &&
                     _disposeFn != null && _disposeFn.IsObject())
                 {
-                    _engine.Invoke(_disposeFn, _instance);
+                    var call = _engine.Evaluate("(function(fn, self){ return fn.call(self); })");
+                    _engine.Invoke(call, _disposeFn, _instance);
                 }
             }
             catch { /* a throwing dispose must not block cleanup of the rest */ }
@@ -289,7 +300,9 @@ var __pevReady = true;
                 _instance = JsValue.Undefined;
                 _updateFn = JsValue.Undefined;
                 _disposeFn = JsValue.Undefined;
+                _context = JsValue.Undefined;
                 _engine = null;
+                GameBridge.DestroyScope(_debugName);
             }
         }
 

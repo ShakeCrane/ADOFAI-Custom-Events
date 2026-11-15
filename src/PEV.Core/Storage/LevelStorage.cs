@@ -52,13 +52,14 @@ namespace PEV.Storage
         /// <summary>Fast path for the common case; rebuilt transparently when stale.</summary>
         private static readonly Dictionary<LevelEvent, EventInstanceData> ByRef =
             new Dictionary<LevelEvent, EventInstanceData>();
+        private static readonly HashSet<LevelEvent> Detached = new HashSet<LevelEvent>();
 
         public static int AttachedCount => ByUid.Count;
 
         public static bool TryGetData(LevelEvent ev, out EventInstanceData data)
         {
             data = null;
-            if (ev == null) return false;
+            if (ev == null || Detached.Contains(ev)) return false;
 
             if (ByRef.TryGetValue(ev, out data)) return true;
 
@@ -79,9 +80,12 @@ namespace PEV.Storage
             if (ev == null || data == null) return;
 
             if (string.IsNullOrEmpty(data.Uid)) data.Uid = PEV.Util.StableId.NewUid();
+            if (ByUid.TryGetValue(data.Uid, out var existing) && !ReferenceEquals(existing, data))
+                data.Uid = StableId.NewUid();
 
             ByUid[data.Uid] = data;
             ByRef[ev] = data;
+            Detached.Remove(ev);
 
             // Stamp the identity onto the event so it survives Copy().
             try { ev[UidKey] = data.Uid; } catch { }
@@ -91,23 +95,17 @@ namespace PEV.Storage
         public static void Detach(LevelEvent ev)
         {
             if (ev == null) return;
-
-            if (ByRef.TryGetValue(ev, out var data))
-            {
-                ByRef.Remove(ev);
-                ByUid.Remove(data.Uid);
-            }
-            else
-            {
-                string uid = ev.ContainsKey(UidKey) ? ev.GetString(UidKey) : null;
-                if (uid != null) ByUid.Remove(uid);
-            }
+            // Undo snapshots retain the uid. Keep its data until the level is cleared;
+            // Bake walks the current event list, so deleted events are still excluded.
+            ByRef.Remove(ev);
+            Detached.Add(ev);
         }
 
         public static void Clear()
         {
             ByUid.Clear();
             ByRef.Clear();
+            Detached.Clear();
         }
 
         /// <summary>
@@ -145,8 +143,7 @@ namespace PEV.Storage
                 {
                     summary.Malformed++;
                     summary.Problems.Add($"floor {ev.floor}: {error}");
-                    consumed.Add(ev);
-                    AddPlaceholder(level, ev, comment, null, error, summary);
+                    if (AddPlaceholder(level, ev, comment, null, error, summary)) consumed.Add(ev);
                     continue;
                 }
 
@@ -155,8 +152,7 @@ namespace PEV.Storage
                     summary.MissingDefinition++;
                     string reason = $"package '{data.Id}' is not installed";
                     summary.Problems.Add($"floor {ev.floor}: no definition for '{data.Id}'");
-                    consumed.Add(ev);
-                    AddPlaceholder(level, ev, comment, data, reason, summary);
+                    if (AddPlaceholder(level, ev, comment, data, reason, summary)) consumed.Add(ev);
                     continue;
                 }
 
@@ -167,19 +163,18 @@ namespace PEV.Storage
                     summary.DefinitionMismatch++;
                     string reason = $"written by v{data.Version}, local is v{manifest.Version}";
                     summary.Problems.Add($"floor {ev.floor}: '{data.Id}' {reason}");
-                    consumed.Add(ev);
-                    AddPlaceholder(level, ev, comment, data, reason, summary);
+                    if (AddPlaceholder(level, ev, comment, data, reason, summary)) consumed.Add(ev);
                     continue;
                 }
 
                 LevelEventType type = (LevelEventType)StableId.FromEventId(data.Id);
-                if (!EventRegistry.TryGetInfo(type, out var info))
+                if (!EventRegistry.TryGetInfo(type, out var info) ||
+                    !EventRegistry.TryGetByType(type, out var registered) || registered.Id != data.Id)
                 {
                     summary.MissingDefinition++;
                     string reason = $"'{data.Id}' registered but has no metadata";
                     summary.Problems.Add($"floor {ev.floor}: {reason}");
-                    consumed.Add(ev);
-                    AddPlaceholder(level, ev, comment, data, reason, summary);
+                    if (AddPlaceholder(level, ev, comment, data, reason, summary)) consumed.Add(ev);
                     continue;
                 }
 
@@ -190,9 +185,9 @@ namespace PEV.Storage
                 // keep those events unselectable — the exact problem the move was made to fix.
                 if (manifest.DecorationBacked)
                 {
-                    consumed.Add(ev);
                     if (MigrateToDecoration(level, ev, data, manifest, summary))
                     {
+                        consumed.Add(ev);
                         summary.Restored++;
                         summary.Migrated++;
                     }
@@ -254,24 +249,23 @@ namespace PEV.Storage
                 if (rows == null) return false;
 
                 LevelEventType nativeType = LevelEventType.AddDecoration;
-                string key = ((int)nativeType).ToString();
-                if (GCS.levelEventsInfo == null || !GCS.levelEventsInfo.TryGetValue(key, out var info))
-                    return false;
+                if (!DecorationParams.TryGetNativeInfo(out var info)) return false;
 
                 var row = new LevelEvent(source.floor, nativeType, info)
                 {
                     active = source.active,
                     visible = source.visible,
-                    locked = false
+                    locked = source.locked
                 };
 
                 row["decorationImage"] = DecorationCarrier.ImageMarker;
-                row["relativeTo"] = source.floor >= 0 ? "Tile" : "Camera";
+                info.propertiesInfo.TryGetValue("relativeTo", out var relativeToInfo);
+                row["relativeTo"] = ParamCoercion.Coerce(relativeToInfo, source.floor >= 0 ? "Tile" : "Camera");
                 row["depth"] = 0;
-                row["tag"] = "";
+                row["tag"] = DecorationCarrier.DefaultTag;
                 row["visible"] = true;
                 row["opacity"] = 100f;
-                row["color"] = ColorFromHex("#FF5454");
+                row["color"] = "ff5454";
 
                 // Old comment parameters map onto the decoration's own fields where a
                 // counterpart exists, so a chart that used the previous geometry keeps it.
@@ -294,14 +288,15 @@ namespace PEV.Storage
                 Copy(data, row, "opacity", v =>
                 {
                     float pct = Convert.ToSingle(v);
-                    // A comment's opacity was 0..100 already, but a missing one would arrive
-                    // as 0, which would migrate a visible field to fully transparent.
-                    row["opacity"] = Mathf.Clamp(pct <= 0f ? 100f : pct, 0f, 100f);
+                    // Zero is an explicitly transparent field. Missing opacity keeps 100.
+                    row["opacity"] = Mathf.Clamp(pct, 0f, 100f);
                 });
-                Copy(data, row, "color", v => row["color"] = ColorFromHex(v.ToString()));
+                Copy(data, row, "color", v => row["color"] = v.ToString());
 
-                rows.Add(row);
                 Adopt(row, data, summary);
+                if (string.IsNullOrWhiteSpace(row.GetString("tag")))
+                    row["tag"] = DecorationCarrier.DefaultTag;
+                rows.Add(row);
                 return true;
             }
             catch
@@ -320,17 +315,6 @@ namespace PEV.Storage
         {
             if (!data.Effective.TryGetValue(name, out var raw) || raw == null) return;
             try { apply(raw); } catch { }
-        }
-
-        private static Color ColorFromHex(string hex)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(hex)) return Color.white;
-                string s = hex.StartsWith("#") ? hex : "#" + hex;
-                return ColorUtility.TryParseHtmlString(s, out var c) ? c : Color.white;
-            }
-            catch { return Color.white; }
         }
 
         /// <summary>Vector2 from any of the shapes our payloads can hold (list, JArray, Vector2).</summary>
@@ -356,7 +340,7 @@ namespace PEV.Storage
         /// Stands in for a payload we could not resolve. The original comment is kept so
         /// Bake can write it back unchanged; the fields only describe the problem.
         /// </summary>
-        private static void AddPlaceholder(LevelData level, LevelEvent source, string comment,
+        private static bool AddPlaceholder(LevelData level, LevelEvent source, string comment,
             EventInstanceData parsed, string reason, DecodeSummary summary)
         {
             try
@@ -365,7 +349,7 @@ namespace PEV.Storage
                 if (!EventRegistry.TryGetInfo(type, out var info))
                 {
                     summary.Problems.Add("placeholder metadata unavailable; comment left as-is");
-                    return;
+                    return false;
                 }
 
                 var data = parsed ?? new EventInstanceData();
@@ -390,10 +374,12 @@ namespace PEV.Storage
                 level.levelEvents.Add(instance);
                 Attach(instance, data);
                 summary.Placeholders++;
+                return true;
             }
             catch (Exception e)
             {
                 summary.Problems.Add("placeholder creation failed: " + e.Message);
+                return false;
             }
         }
 
@@ -410,7 +396,7 @@ namespace PEV.Storage
             // (undo/redo rebuilds the list), so querying it here is what keeps those
             // instances visible to the encoder.
             var virtuals = level.levelEvents
-                .Where(e => TryGetData(e, out _))
+                .Where(e => e.active && TryGetData(e, out _))
                 .ToList();
 
             if (virtuals.Count == 0) return summary;
@@ -423,6 +409,36 @@ namespace PEV.Storage
             var liveUids = new HashSet<string>();
             foreach (var e in virtuals)
                 if (TryGetData(e, out var d) && !string.IsNullOrEmpty(d.Uid)) liveUids.Add(d.Uid);
+
+            // Build replacements before removing any original output. A failed serialization
+            // must leave the vanilla encoder's result intact.
+            var replacements = new List<Dictionary<string, object>>();
+            foreach (var ev in virtuals)
+            {
+                if (!TryGetData(ev, out var data)) continue;
+                EventRegistry.TryGetInfo(ev.eventType, out var info);
+                foreach (var prop in data.Effective.Keys.ToList())
+                {
+                    try
+                    {
+                        object live = ev.Get<object>(prop);
+                        if (live == null) continue;
+                        PropertyInfo pi = null;
+                        info?.propertiesInfo.TryGetValue(prop, out pi);
+                        data.Raw[prop] = StorageValue.Canonical(pi, live);
+                        data.Effective[prop] = live;
+                    }
+                    catch { }
+                }
+                replacements.Add(new Dictionary<string, object>
+                {
+                    { "floor", ev.floor },
+                    { "eventType", "EditorComment" },
+                    { "comment", data.ToComment() },
+                    { "visible", ev.visible },
+                    { "locked", ev.locked }
+                });
+            }
 
             summary.RemovedStale = actions.RemoveAll(a =>
             {
@@ -442,35 +458,8 @@ namespace PEV.Storage
                 return existing != null && liveUids.Contains(existing.Uid ?? "");
             });
 
-            foreach (var ev in virtuals)
-            {
-                if (!TryGetData(ev, out var data)) continue;
-                EventRegistry.TryGetInfo(ev.eventType, out var info);
-
-                // Pull the live editor values back into the persisted payload, in the
-                // shape a human would have written (enum names, arrays for compounds).
-                foreach (var prop in data.Effective.Keys.ToList())
-                {
-                    try
-                    {
-                        object live = ev.Get<object>(prop);
-                        if (live == null) continue;
-                        PropertyInfo pi = null;
-                        info?.propertiesInfo.TryGetValue(prop, out pi);
-                        data.Raw[prop] = StorageValue.Canonical(pi, live);
-                        data.Effective[prop] = live;
-                    }
-                    catch { /* keep the previously stored value */ }
-                }
-
-                actions.Add(new Dictionary<string, object>
-                {
-                    { "floor", ev.floor },
-                    { "eventType", "EditorComment" },
-                    { "comment", data.ToComment() }
-                });
-                summary.Written++;
-            }
+            actions.AddRange(replacements);
+            summary.Written = replacements.Count;
 
             return summary;
         }

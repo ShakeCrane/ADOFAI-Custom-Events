@@ -232,16 +232,18 @@ namespace PEV.Registry
         private static Sprite TryLoadIcon(EventManifest m)
         {
             if (string.IsNullOrEmpty(m.IconPath)) return null;
+            Texture2D tex = null;
             try
             {
                 byte[] bytes = PEV.Loading.EventLoader.ReadResource(m.SourcePath, m.IconPath);
                 if (bytes == null || bytes.Length == 0) return null;
-                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-                if (!DecodeImage(tex, bytes)) return null;
+                tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                if (!DecodeImage(tex, bytes)) { UnityEngine.Object.Destroy(tex); return null; }
                 return Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f));
             }
             catch
             {
+                if (tex != null) UnityEngine.Object.Destroy(tex);
                 return null;
             }
         }

@@ -201,6 +201,14 @@ namespace PEV.Model
             try { root = JObject.Parse(json); }
             catch (Exception e) { error = "manifest is not valid JSON: " + e.Message; return null; }
 
+            try { return ParseFields(root, sourcePath, out error); }
+            catch (Exception e) { error = "invalid manifest fields: " + e.Message; return null; }
+        }
+
+        private static EventManifest ParseFields(JObject root, string sourcePath, out string error)
+        {
+            error = null;
+
             var m = new EventManifest { SourcePath = sourcePath };
             m.SchemaVersion = root.Value<int?>("schemaVersion") ?? 1;
             m.Id = root.Value<string>("id");
@@ -225,9 +233,15 @@ namespace PEV.Model
                 error = "manifest is missing required field 'id'";
                 return null;
             }
-            if (m.SchemaVersion > 1)
+            if (m.SchemaVersion != 1 || m.ApiVersion != 1)
             {
-                error = $"schemaVersion {m.SchemaVersion} is newer than this core supports (1)";
+                error = $"unsupported schemaVersion {m.SchemaVersion} or apiVersion {m.ApiVersion} (supported: 1)";
+                return null;
+            }
+
+            if (root["params"] != null && !(root["params"] is JArray))
+            {
+                error = "params must be an array";
                 return null;
             }
 
@@ -235,7 +249,7 @@ namespace PEV.Model
             {
                 foreach (var token in arr)
                 {
-                    if (!(token is JObject p)) continue;
+                    if (!(token is JObject p)) { error = "param entry must be an object"; return null; }
                     var spec = new ParamSpec
                     {
                         Name = p.Value<string>("name"),
@@ -253,6 +267,11 @@ namespace PEV.Model
                     if (string.IsNullOrWhiteSpace(spec.Name) || string.IsNullOrWhiteSpace(spec.Type))
                     {
                         error = "a param entry is missing 'name' or 'type'";
+                        return null;
+                    }
+                    if (m.Params.Any(existing => existing.Name == spec.Name) || spec.Name == "__pevUid")
+                    {
+                        error = "duplicate or reserved parameter name '" + spec.Name + "'";
                         return null;
                     }
                     var def = p["default"];
@@ -329,6 +348,8 @@ namespace PEV.Model
                     result.Add(kv.Value.ToString());
                 }
             }
+            else throw new FormatException("parameter conditions must be an array or object");
+            if (result.Count % 2 != 0) throw new FormatException("parameter conditions must contain key/value pairs");
             return result.Count > 0 ? result : null;
         }
 

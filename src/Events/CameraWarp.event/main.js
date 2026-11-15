@@ -15,7 +15,7 @@ function create(ctx, params) {
       // t is seconds since the tile this event sits on was reached.
       if (t < 0) return;
 
-      var durationSec = params.duration * (60.0 / 120.0); // beats -> seconds
+      var durationSec = params.duration * ctx.secondsPerBeat;
       if (t > durationSec) return;
 
       if (!_started) {

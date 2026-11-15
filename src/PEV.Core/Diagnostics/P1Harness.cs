@@ -78,7 +78,9 @@ namespace PEV.Diagnostics
             {
                 if (!Enabled || _ran) return;
                 _ran = true;
-                ((MonoBehaviour)__instance).StartCoroutine(Run(__instance));
+                // Restart replaces the editor scene. Keep the verification coroutine on
+                // the persistent runtime so it can report the restart result and DONE.
+                RuntimeHost.Ensure().StartCoroutine(Run(__instance));
             }
 
             private static IEnumerator Run(scnEditor editor)

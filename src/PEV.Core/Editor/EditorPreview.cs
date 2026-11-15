@@ -80,7 +80,7 @@ namespace PEV.Editor
             {
                 foreach (var ev in rows)
                 {
-                    if (ev == null) continue;
+                    if (ev == null || !ev.active) continue;
                     if (!LevelStorage.TryGetData(ev, out var data)) continue;
                     if (!EventRegistry.TryGetById(data.Id, out var manifest)) continue;
                     if (!DeclaresField(manifest)) continue;
@@ -96,7 +96,7 @@ namespace PEV.Editor
             {
                 foreach (var ev in events)
                 {
-                    if (ev == null) continue;
+                    if (ev == null || !ev.active) continue;
                     if (!LevelStorage.TryGetData(ev, out var data)) continue;
                     if (!EventRegistry.TryGetById(data.Id, out var manifest)) continue;
                     if (!DeclaresField(manifest)) continue;
@@ -150,12 +150,22 @@ namespace PEV.Editor
                 }
 
                 args["shape"] = EnumName(ArgString(args, "shape", "Rect"), "Rect");
+                foreach (var pair in new[]
+                {
+                    new[] { "noiseBrightness", "brightness" },
+                    new[] { "noiseSaturation", "saturation" },
+                    new[] { "noiseSampleRate", "sampleRate" },
+                    new[] { "noiseEvolveSpeed", "evolveSpeed" },
+                    new[] { "noiseScale", "tiling" },
+                    new[] { "glitchRange", "glitch" }
+                })
+                    if (args.TryGetValue(pair[0], out var value)) args[pair[1]] = value;
 
                 // relativeTo and anchor are gone on purpose: they are decoration properties
                 // now, and the renderer reads them off the row rather than from this call.
 
-                int frameCount = Mathf.Clamp(Convert.ToInt32(args["noiseFrameCount"] ?? 8), 2, 32);
-                float evolve = Convert.ToSingle(args["noiseEvolveSpeed"] ?? 12f);
+                int frameCount = Mathf.Clamp(Convert.ToInt32(args.TryGetValue("noiseFrameCount", out var fc) ? fc : 96), 2, 128);
+                float evolve = Convert.ToSingle(args.TryGetValue("noiseEvolveSpeed", out var es) ? es : 48f);
                 int frame = Mathf.FloorToInt((float)_clock * evolve) % frameCount;
                 if (frame < 0) frame += frameCount;
                 args["frame"] = frame;

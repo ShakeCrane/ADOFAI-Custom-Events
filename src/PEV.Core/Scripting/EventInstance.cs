@@ -43,7 +43,7 @@ namespace PEV.Scripting
         /// is rebuilt for playback, so floor times are still stale and produce NaN. Look it
         /// up on the frame the instance starts instead.
         /// </summary>
-        private void ResolveEntryTime()
+        internal void ResolveEntryTime()
         {
             try
             {
@@ -81,6 +81,7 @@ namespace PEV.Scripting
 
             Context = new EventContext
             {
+                Bpm = ReadBpm(),
                 EventTime = EntryTime,
                 FloorSeq = LevelEvent.floor,
                 Params = ReadLiveParams()
@@ -90,6 +91,8 @@ namespace PEV.Scripting
             {
                 Plugin.Log("init failed: " + initError);
                 Phase = InstancePhase.Faulted;
+                Host.Dispose();
+                Host = null;
                 return false;
             }
 
@@ -143,8 +146,9 @@ namespace PEV.Scripting
 
             Context.Time = songTime;
             Context.T = t;
+            Context.Bpm = ReadBpm();
+            BpmRatio = Context.Bpm / 60.0;
             Context.Beat = t * BpmRatio;
-            Context.Bpm = BpmRatio * 60.0;
             Context.IsPlaying = true;
             Context.IsPaused = false;
 
@@ -164,6 +168,14 @@ namespace PEV.Scripting
             Host = null;
             Phase = InstancePhase.Dormant;
             LastT = double.NegativeInfinity;
+            EntryTimeResolved = false;
+        }
+
+        private static double ReadBpm()
+        {
+            var conductor = scrConductor.instance;
+            double bpm = conductor != null ? conductor.bpm : 120.0;
+            return bpm > 0 && !double.IsInfinity(bpm) ? bpm : 120.0;
         }
 
         public void End()

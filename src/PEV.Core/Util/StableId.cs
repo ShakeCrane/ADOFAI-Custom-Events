@@ -31,9 +31,7 @@ namespace PEV.Util
 
         public static string NewUid()
         {
-            // Short, human-readable, unique enough for instance identity.
-            var bytes = Guid.NewGuid().ToByteArray();
-            return BitConverter.ToString(bytes, 0, 4).Replace("-", "").ToLowerInvariant();
+            return Guid.NewGuid().ToString("N");
         }
     }
 }

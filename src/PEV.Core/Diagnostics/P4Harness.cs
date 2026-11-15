@@ -245,7 +245,11 @@ namespace PEV.Diagnostics
             Row("DONE", "ok", "p4 harness finished");
         }
 
-        private static string KeyForFloor(int floor) => "pulse:" + floor;
+        private static string KeyForFloor(int floor)
+        {
+            var inst = GetAllInstances().FirstOrDefault(i => i.Manifest?.Id == "pev.pulse" && i.LevelEvent.floor == floor);
+            return inst == null ? "pulse:" + floor : GameBridge.ScopedKey(inst.Key, "pulse:" + floor);
+        }
 
         private static List<int> PickFloors(scnEditor editor, int count)
         {

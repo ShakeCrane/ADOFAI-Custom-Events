@@ -65,22 +65,31 @@ namespace PEV.Storage
             try { root = JObject.Parse(body); }
             catch (Exception e) { error = "payload is not valid JSON: " + e.Message; return null; }
 
-            var data = new EventInstanceData
+            try
             {
-                Id = root.Value<string>("id"),
-                Version = root.Value<string>("v") ?? "1.0.0",
-                Uid = root.Value<string>("uid")
-            };
-            if (string.IsNullOrWhiteSpace(data.Id))
-            {
-                error = "payload has no id";
-                return null;
-            }
-            if (root["p"] is JObject p)
-                foreach (var prop in p.Properties())
-                    data.Raw[prop.Name] = prop.Value;
+                var data = new EventInstanceData
+                {
+                    Id = root.Value<string>("id"),
+                    Version = root.Value<string>("v") ?? "1.0.0",
+                    Uid = root.Value<string>("uid")
+                };
+                if (string.IsNullOrWhiteSpace(data.Id))
+                {
+                    error = "payload has no id";
+                    return null;
+                }
+                if (root["p"] != null && !(root["p"] is JObject))
+                {
+                    error = "payload parameters must be an object";
+                    return null;
+                }
+                if (root["p"] is JObject p)
+                    foreach (var prop in p.Properties())
+                        data.Raw[prop.Name] = prop.Value;
 
-            return data;
+                return data;
+            }
+            catch (Exception e) { error = "invalid payload fields: " + e.Message; return null; }
         }
 
         /// <summary>
@@ -119,7 +128,7 @@ namespace PEV.Storage
 
             var p = new JObject();
             foreach (var kv in Raw)
-                p[kv.Key] = Canonicalize(kv.Value);
+                p[kv.Key] = kv.Value;
 
             var root = new JObject
             {
@@ -148,32 +157,9 @@ namespace PEV.Storage
                 OriginalComment = OriginalComment
             };
             foreach (var kv in Raw)
-                copy.Raw[kv.Key] = kv.Value.DeepClone();
+                copy.Raw[kv.Key] = kv.Value?.DeepClone();
             copy.Effective = new Dictionary<string, object>(Effective, StringComparer.Ordinal);
             return copy;
-        }
-
-        /// <summary>
-        /// Undo the editor's in-memory representation so the file carries the same shape
-        /// the author wrote: enums as names, tiles/pairs/vectors as plain arrays.
-        /// </summary>
-        private static JToken Canonicalize(JToken token)
-        {
-            if (token == null) return JValue.CreateNull();
-            if (token.Type != JTokenType.Object) return token;
-
-            var obj = token as JObject;
-            // Tuple<int, TileRelativeTo> and Tuple<float, float> both arrive as Item1/Item2.
-            if (obj.Property("Item1") != null && obj.Property("Item2") != null)
-            {
-                return new JArray(Canonicalize(obj["Item1"]), Canonicalize(obj["Item2"]));
-            }
-            // UnityEngine.Vector2 serializes as x/y.
-            if (obj.Property("x") != null && obj.Property("y") != null && obj.Count == 2)
-            {
-                return new JArray(Canonicalize(obj["x"]), Canonicalize(obj["y"]));
-            }
-            return token;
         }
 
         /// <summary>Updates a raw value, keeping it in both the raw and effective views.</summary>
@@ -198,8 +184,8 @@ namespace PEV.Storage
         {
             switch (t.Type)
             {
-                case JTokenType.Float: return t.Value<float>();
-                case JTokenType.Integer: return t.Value<int>();
+                case JTokenType.Float: return ((JValue)t).Value;
+                case JTokenType.Integer: return ((JValue)t).Value;
                 case JTokenType.Boolean: return t.Value<bool>();
                 case JTokenType.String: return t.ToString();
                 case JTokenType.Null: return null;

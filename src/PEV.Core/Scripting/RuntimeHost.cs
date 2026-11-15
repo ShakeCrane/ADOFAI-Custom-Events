@@ -90,7 +90,7 @@ namespace PEV.Scripting
                 {
                     foreach (var ev in decorations)
                     {
-                        if (ev == null) continue;
+                        if (ev == null || !ev.active) continue;
                         if (!LevelStorage.TryGetData(ev, out var data)) continue;
                         if (data.IsPlaceholder) continue;
                         if (!EventRegistry.TryGetById(data.Id, out var manifest)) continue;
@@ -107,6 +107,7 @@ namespace PEV.Scripting
 
             foreach (var ev in level.levelEvents)
             {
+                if (ev == null || !ev.active) continue;
                 if (!LevelStorage.TryGetData(ev, out var data)) continue;
 
                 // A placeholder stands for a package we could not resolve; there is no
@@ -188,7 +189,7 @@ namespace PEV.Scripting
                 int reset = 0;
                 foreach (var inst in _instances)
                 {
-                    if (inst.Phase == InstancePhase.Running) { inst.Reset(); reset++; }
+                    if (inst.Phase != InstancePhase.Dormant) { inst.Reset(); reset++; }
                 }
                 Plugin.Log($"rewind detected (songTime {_lastSongTime:F3} -> {songTime:F3}); reset {reset} instance(s)");
 
@@ -206,6 +207,8 @@ namespace PEV.Scripting
                 var inst = _instances[i];
                 try
                 {
+                    if (inst.Phase == InstancePhase.Dormant && advancing)
+                        inst.ResolveEntryTime();
                     if (inst.Phase == InstancePhase.Dormant && advancing && songTime >= inst.EntryTime)
                         inst.Begin();
 
@@ -215,6 +218,7 @@ namespace PEV.Scripting
                 catch (Exception e)
                 {
                     Plugin.Log($"instance {inst.Key} threw: {e}");
+                    inst.End();
                     inst.Phase = InstancePhase.Faulted;
                 }
             }
@@ -228,6 +232,7 @@ namespace PEV.Scripting
             }
             _instances.Clear();
             _live = false;
+            _lastSongTime = double.NegativeInfinity;
 
             // Bindings point at LevelEvent rows that the next decode replaces. Clearing them
             // is what stops a stale reference from resurrecting a destroyed decoration.

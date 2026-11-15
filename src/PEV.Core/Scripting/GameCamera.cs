@@ -20,8 +20,6 @@ namespace PEV.Scripting
         {
             get
             {
-                if (_cached != null) return _cached;
-
                 // The gameplay camera is owned by scrCamera. Querying the live instance
                 // rather than caching at load time keeps this correct across scene changes.
                 try
@@ -34,6 +32,8 @@ namespace PEV.Scripting
                     }
                 }
                 catch { }
+
+                if (_cached != null && _cached.isActiveAndEnabled) return _cached;
 
                 // Fall back for contexts where scrCamera is not present (menus, tests).
                 if (Camera.main != null)
