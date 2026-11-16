@@ -23,6 +23,7 @@ namespace PEV.Scripting
         private readonly Func<T, T> _snapshot;
         private readonly Func<T, T, bool> _same;
         private readonly Func<int, int, float, T, string> _serialize;
+        private readonly Dictionary<string, PixelResource> _resources;
         private Jint.Engine _engine;
         private VectorCompute _compute;
         private int _computeWidth, _computeHeight;
@@ -49,13 +50,19 @@ namespace PEV.Scripting
         internal Exception LastError { get; private set; }
 
         internal VectorWorker(string source, Func<T, T> snapshot, Func<T, T, bool> same,
-            Func<int, int, float, T, string> serialize)
+            Func<int, int, float, T, string> serialize, IReadOnlyDictionary<string, PixelResource> resources = null)
         {
             if (string.IsNullOrWhiteSpace(source) || source.Length > 262144) throw new ArgumentException("invalid vector program");
             _source = source;
             _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
             _same = same ?? throw new ArgumentNullException(nameof(same));
             _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
+            if (resources != null)
+            {
+                if (resources.Count > 16) throw new ArgumentException("too many pixel resources");
+                _resources = new Dictionary<string, PixelResource>(StringComparer.Ordinal);
+                foreach (var resource in resources) _resources.Add(resource.Key, resource.Value);
+            }
         }
 
         // Called by the owner thread. A completed result remains valid while the next job runs.
@@ -131,7 +138,7 @@ globalThis.Float64Array=undefined; globalThis.BigInt64Array=undefined; globalThi
             }
             if (_compute == null || _computeWidth != request.Width || _computeHeight != request.Height || _computeAspect != request.Aspect)
             {
-                _compute = new VectorCompute(request.Width, request.Height, request.Aspect);
+                _compute = new VectorCompute(request.Width, request.Height, request.Aspect, _resources);
                 _computeWidth = request.Width; _computeHeight = request.Height; _computeAspect = request.Aspect;
                 _engine.SetValue("__compute", new Func<string, string>(_compute.Apply));
             }

@@ -89,7 +89,7 @@ def validate(root, manifest, _included=False):
                         ids.add(child_id)
                 problems.extend(f"included event '{normalized}': {p}" for p in validate(root, child, _included=True))
 
-    for declaration in ("vectorPrograms", "computeGraphs"):
+    for declaration in ("vectorPrograms", "computeGraphs", "pixelResources"):
         if declaration not in manifest:
             continue
         programs = manifest[declaration]

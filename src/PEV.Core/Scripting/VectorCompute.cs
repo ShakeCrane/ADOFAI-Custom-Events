@@ -21,7 +21,7 @@ namespace PEV.Scripting
         private sealed class Surface { internal byte[] Values; internal int[] Owners; }
         private sealed class Seeds { internal int[] Indices, Owners; }
         private sealed class ResultBuffer { internal byte[] Bytes; }
-        private sealed class FloatBuffer { internal int Width, Height; internal float[] Values; }
+        private sealed class FloatBuffer { internal int Width, Height; internal float[] Values; internal PixelResource Resource; }
         private readonly List<object> _buffers = new List<object>();
         private readonly Stack<Surface> _surfaces = new Stack<Surface>();
         private readonly Stack<Seeds> _seeds = new Stack<Seeds>();
@@ -30,6 +30,7 @@ namespace PEV.Scripting
         private readonly byte[][][] _outputs = { new byte[MaxOutputs][], new byte[MaxOutputs][] };
         private readonly Dictionary<string, VectorExpression.Program> _programs = new Dictionary<string, VectorExpression.Program>(StringComparer.Ordinal);
         private readonly Dictionary<string, PixelKernel.Compiled> _pixelPrograms = new Dictionary<string, PixelKernel.Compiled>(StringComparer.Ordinal);
+        private readonly Dictionary<string, PixelResource> _resources = new Dictionary<string, PixelResource>(StringComparer.Ordinal);
         private readonly int _width, _height, _count;
         private readonly float _aspect;
         private readonly Action _checkpoint;
@@ -37,13 +38,27 @@ namespace PEV.Scripting
         private long _allocated, _work, _pixelWork, _deadline;
         private CancellationToken _cancellation;
 
-        internal VectorCompute(int width, int height, float aspect)
+        internal VectorCompute(int width, int height, float aspect, IReadOnlyDictionary<string, PixelResource> resources = null)
         {
             if (width < 1 || height < 1 || width > 4096 || height > 4096 ||
                 (long)width * height > 1048576 || !Finite(aspect) || aspect <= 0f || aspect > 16f)
                 throw new ArgumentOutOfRangeException("invalid vector dimensions or aspect");
             _width = width; _height = height; _count = width * height; _aspect = aspect;
             _checkpoint = Checkpoint;
+            if (resources != null)
+            {
+                if (resources.Count > 16) throw new ArgumentException("too many pixel resources");
+                long total = 0;
+                foreach (var item in resources)
+                {
+                    if (string.IsNullOrEmpty(item.Key) || !System.Text.RegularExpressions.Regex.IsMatch(item.Key, "^[A-Za-z_][A-Za-z0-9_]{0,63}$") || item.Value == null)
+                        throw new ArgumentException("invalid pixel resource");
+                    total += item.Value.SizeBytes;
+                    if (total > 32L * 1024 * 1024) throw new ArgumentException("pixel resource budget exceeded");
+                    _resources.Add(item.Key, item.Value);
+                }
+                Reserve(total);
+            }
         }
 
         internal void Begin(CancellationToken cancellation)
@@ -53,7 +68,7 @@ namespace PEV.Scripting
                 if (buffer is Surface surface) _surfaces.Push(surface);
                 else if (buffer is Seeds seeds) _seeds.Push(seeds);
                 else if (buffer is byte[] bytes) _bytes.Push(bytes);
-                else if (buffer is FloatBuffer floating)
+                else if (buffer is FloatBuffer floating && floating.Resource == null)
                 {
                     if (!_floats.TryGetValue(floating.Values.Length, out var pool)) _floats.Add(floating.Values.Length, pool = new Stack<float[]>());
                     pool.Push(floating.Values);
@@ -318,6 +333,12 @@ namespace PEV.Scripting
             }
             return Put(buffer);
         }
+        private int PixelResourceHandle(JObject root)
+        {
+            if (root["name"]?.Type != JTokenType.String || !_resources.TryGetValue(root.Value<string>("name"), out var resource))
+                throw new ArgumentException("unknown pixel resource");
+            return Put(new FloatBuffer { Width = resource.Width, Height = resource.Height, Resource = resource });
+        }
         private int PixelRun(JObject root)
         {
             int width = Integer(root, "width", 1, 4096), height = Integer(root, "height", 1, 4096);
@@ -332,8 +353,9 @@ namespace PEV.Scripting
             {
                 if (!(sources[i] is JObject spec)) throw new ArgumentException("invalid pixel source");
                 var source = Get<FloatBuffer>(Integer(spec, "handle", 0, int.MaxValue));
-                inputs[i] = new PixelPlane(source.Width, source.Height, 1, source.Values,
-                    spec.Value<string>("filter"), spec.Value<string>("wrap"));
+                string filter = spec.Value<string>("filter"), wrap = spec.Value<string>("wrap");
+                inputs[i] = source.Resource != null ? source.Resource.Plane(filter, wrap) :
+                    new PixelPlane(source.Width, source.Height, 1, source.Values, filter, wrap);
             }
             var values = new float[uniforms.Count];
             for (int i = 0; i < values.Length; i++)
@@ -362,7 +384,8 @@ namespace PEV.Scripting
             {
                 if (channels[i].Type != JTokenType.Integer) throw new ArgumentException("invalid pixel output handle");
                 planes[i] = Get<FloatBuffer>(channels[i].Value<int>());
-                if (planes[i].Width != _width || planes[i].Height != _height) throw new ArgumentException("pixel output size mismatch");
+                if (planes[i].Resource != null || planes[i].Width != _width || planes[i].Height != _height)
+                    throw new ArgumentException("pixel output size mismatch");
             }
             Charge(_count);
             var dst = _outputs[_outputSlot][_outputIndex];
@@ -401,6 +424,7 @@ namespace PEV.Scripting
                 case "propagate": result = Propagate(Integer(root, "seeds", 0, int.MaxValue), root["passes"]); break;
                 case "map": result = Map(Integer(root, "seeds", 0, int.MaxValue), root["colors"], Integer(root, "fallback", 0, 0xffffff)); break;
                 case "pixelFill": result = PixelFill(root); break;
+                case "pixelResource": result = PixelResourceHandle(root); break;
                 case "pixelRun": result = PixelRun(root); break;
                 case "pixelPack": result = PixelPack(root); break;
                 default: throw new ArgumentException("unknown vector operation");

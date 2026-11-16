@@ -77,6 +77,7 @@ namespace PEV.Diagnostics
             Check("PIXEL-kernel-operations", CheckPixelKernel);
             Check("PIXEL-kernel-limits", CheckPixelKernelLimits);
             Check("PIXEL-worker-limits-and-reuse", CheckPixelWorkerLimits);
+            Check("PIXEL-package-resource-limits", CheckPackagePixelResourceLimits);
             Check("PIXEL-kernel-mono-performance", CheckPixelKernelPerformance);
             CheckKeys();
             yield return CheckTextures();
@@ -87,12 +88,61 @@ namespace PEV.Diagnostics
                 CheckGenericVectorProbe(vectorProbe);
                 yield return CheckVectorWorker();
                 yield return CheckPackagedVectorWorker();
+                yield return CheckPackagePixelResources();
             }
             if (Environment.GetEnvironmentVariable("PEV_TEST_REAL_FIELD_BUNDLE") == "1")
                 yield return CheckRealFieldBundle();
             yield return ProbeGlobalSettingsGui();
             CheckEditorPlacement(editor);
             Row("DONE", "ok");
+        }
+
+        private static bool CheckPackagePixelResourceLimits()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "pev-pixel-" + Guid.NewGuid().ToString("N"));
+            string file = Path.Combine(root, "image.png");
+            Directory.CreateDirectory(root);
+            try
+            {
+                var manifest = new EventManifest { SourcePath = root };
+                manifest.PixelResources.Add("image", "../escape.png");
+                try { PixelResourceLoader.Load(manifest, System.Threading.CancellationToken.None); return false; }
+                catch (ArgumentException) { }
+                var image = NoiseTextures.EncodePng(new[] { new Color32(1, 2, 3, 255) }, 1, 1);
+                image[16] = 0; image[17] = 0; image[18] = 16; image[19] = 1; // width 4097
+                File.WriteAllBytes(file, image); manifest.PixelResources["image"] = "image.png";
+                try { PixelResourceLoader.Load(manifest, System.Threading.CancellationToken.None); return false; }
+                catch (ArgumentException) { }
+                using (var cancellation = new System.Threading.CancellationTokenSource())
+                {
+                    cancellation.Cancel();
+                    try { PixelResourceLoader.Load(manifest, cancellation.Token); return false; }
+                    catch (OperationCanceledException) { }
+                }
+                return true;
+            }
+            finally { if (File.Exists(file)) File.Delete(file); Directory.Delete(root); }
+        }
+
+        private static IEnumerator CheckPackagePixelResources()
+        {
+            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest))
+            { Row("PIXEL-package-resources", "FAIL", "missing package"); yield break; }
+            var task = System.Threading.Tasks.Task.Run(() => PixelResourceLoader.Load(manifest, System.Threading.CancellationToken.None));
+            float deadline = Time.realtimeSinceStartup + 10f;
+            while (!task.IsCompleted && Time.realtimeSinceStartup < deadline) yield return null;
+            if (!task.IsCompleted || task.IsFaulted)
+            { Row("PIXEL-package-resources", "FAIL", task.Exception?.ToString()); yield break; }
+            var loaded = task.Result;
+            var expected = LegacyFieldTextureSet.Load(manifest, out string error);
+            if (expected == null || !loaded.TryGetValue("block", out var block) || !loaded.TryGetValue("point", out var point))
+            { Row("PIXEL-package-resources", "FAIL", error); yield break; }
+            var b = block.Plane("point", "clamp"); var p = point.Plane("point", "clamp");
+            bool same = block.Width == expected.BlockWidth && block.Height == expected.BlockHeight &&
+                point.Width == expected.PointWidth && point.Height == expected.PointHeight &&
+                Math.Abs(b.Sample(.5f / block.Width, .5f / block.Height, 0) - expected.Block[0].r / 255f) < .000001f &&
+                Math.Abs(p.Sample(.5f / point.Width, .5f / point.Height, 0) - expected.Point[0].r / 255f) < .000001f;
+            Row("PIXEL-package-resources", same ? "PASS" : "FAIL", "package PNGs decoded off the main thread");
         }
 
         private static bool CheckPixelKernel()
@@ -147,6 +197,8 @@ namespace PEV.Diagnostics
         {
             var vector = new VectorCompute(1, 1, 1f);
             vector.Begin(System.Threading.CancellationToken.None);
+            try { vector.Apply("{\"op\":\"pixelResource\",\"name\":\"outside\"}"); return false; }
+            catch (ArgumentException) { }
             int old = int.Parse(vector.Apply("{\"op\":\"pixelFill\",\"width\":1,\"height\":1,\"value\":0.5}"));
             vector.Begin(System.Threading.CancellationToken.None);
             try
@@ -239,6 +291,27 @@ return [run({op:'pixelPack',channels:[red,green,blue,alpha]})];
                 var pixels = worker.Latest;
                 Row("PIXEL-worker-package-commands", pixels != null && pixels.Length == 1 && pixels[0].Length == 16*8*4 &&
                     pixels[0][0] == 64 && pixels[0][1] == 128 && pixels[0][2] == 191 && pixels[0][3] == 255 ? "PASS" : "FAIL",
+                    worker.LastError?.ToString());
+            }
+            const string resourceSource = @"function computeVector() {
+function run(x) { return Number(__compute(JSON.stringify(x))); }
+var image=run({op:'pixelResource',name:'fixture'});
+function channel(n) { return run({op:'pixelRun',width:2,height:1,sources:[{handle:image,filter:'point',wrap:'clamp'}],
+  uniforms:[],program:[['u'],['v'],['sample',0,n]]}); }
+return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3)]})];
+}";
+            var bytes = new byte[] { 10, 20, 30, 255, 40, 50, 60, 128 };
+            var resources = new Dictionary<string, PixelResource> { ["fixture"] = new PixelResource(2, 1, 4, bytes) };
+            bytes[0] = 99; // The worker must retain its own immutable snapshot.
+            using (var worker = new VectorWorker<string>(resourceSource, x => x, (a,b) => a == b, (w,h,a,x) => x, resources))
+            {
+                worker.Update(2, 1, 2f, "{}");
+                float deadline = Time.realtimeSinceStartup + 10f;
+                while (worker.Latest == null && worker.LastError == null && Time.realtimeSinceStartup < deadline)
+                { worker.Update(2, 1, 2f, "{}"); yield return null; }
+                var pixels = worker.Latest;
+                Row("PIXEL-worker-resource-snapshot", pixels != null && pixels.Length == 1 &&
+                    pixels[0].SequenceEqual(new byte[] { 10, 20, 30, 255, 40, 50, 60, 128 }) ? "PASS" : "FAIL",
                     worker.LastError?.ToString());
             }
             using (var worker = new VectorWorker<string>("function computeVector(){return eval('1');}", x => x, (a,b) => a == b, (w,h,a,x) => x))

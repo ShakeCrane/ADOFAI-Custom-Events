@@ -30,6 +30,16 @@ class PackageValidationTests(unittest.TestCase):
                 self.assertTrue(validate(self.root, dict(valid, computeGraphs=graphs)))
         self.assertTrue(validate(self.root, dict(valid, schemaVersion=3)))
 
+    def test_pixel_resources_are_package_local(self):
+        (self.root / "texture.png").write_bytes(b"png fixture")
+        valid = dict(self.manifest, schemaVersion=4, pixelResources={"texture": "texture.png"})
+        self.assertEqual([], validate(self.root, valid))
+        for resources in ({}, {"texture": "../outside"}, {"texture": "missing.png"},
+                          {"constructor": "texture.png"}, {"texture": None}, []):
+            with self.subTest(resources=resources):
+                self.assertTrue(validate(self.root, dict(valid, pixelResources=resources)))
+        self.assertTrue(validate(self.root, dict(valid, schemaVersion=3)))
+
     def test_non_object_manifest(self):
         for value in (None, [], "manifest", 1):
             with self.subTest(value=value):
