@@ -8,7 +8,7 @@ function create(ctx, params) {
     update: function (t) {
       if (!tag) return;
       var phase = action === "WarnThenActive" ? (t < warning ? "Ready" : "Active") : action;
-      fx.fieldState({ tag: tag, phase: phase });
+      fx.tagValue({ tag: tag, key: "phase", value: phase });
     }
   };
 }

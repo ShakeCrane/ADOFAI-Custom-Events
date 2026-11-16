@@ -763,9 +763,9 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
                         {
                             if (!instance.Begin()) return false;
                             instance.Tick(10, true);
-                            bool ready = GameBridge.FieldPhases.At("review-field") == NoiseFieldPhase.Ready;
+                            bool ready = GameBridge.Values.At(state.SourcePath, "phase", "review-field") == "Ready";
                             instance.Tick(10.75, true);
-                            return ready && GameBridge.FieldPhases.At("review-field") == NoiseFieldPhase.Active;
+                            return ready && GameBridge.Values.At(state.SourcePath, "phase", "review-field") == "Active";
                         }
                         finally { instance.End(); }
                     }
@@ -982,8 +982,8 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
                 {
                     string script = EventScriptCache.Get(stateManifest);
                     if (script == null) return false;
-                    var first = ScriptHost.Create(script, "review/state-a", out _);
-                    var second = ScriptHost.Create(script, "review/state-b", out _);
+                    var first = ScriptHost.Create(script, "review/state-a", out _, stateManifest);
+                    var second = ScriptHost.Create(script, "review/state-b", out _, stateManifest);
                     try
                     {
                         var a = new EventContext { EventTime = 1, EventOrder = 0 };
@@ -992,14 +992,27 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
                             !first.Initialize(a, new Dictionary<string, object> { ["tag"] = "red blue", ["action"] = "Disabled" }, out _) ||
                             !second.Initialize(b, new Dictionary<string, object> { ["tag"] = "blue", ["action"] = "WarnThenActive", ["warningDuration"] = 0.5 }, out _)) return false;
                         first.Update(1, a.ToStateJson()); second.Update(0, b.ToStateJson());
-                        if (GameBridge.FieldPhases.At("red") != NoiseFieldPhase.Disabled ||
-                            GameBridge.FieldPhases.At("blue") != NoiseFieldPhase.Ready) return false;
+                        if (GameBridge.Values.At(stateManifest.SourcePath, "phase", "red") != "Disabled" ||
+                            GameBridge.Values.At(stateManifest.SourcePath, "phase", "blue") != "Ready") return false;
                         second.Update(0.5, b.ToStateJson()); first.Update(1.5, a.ToStateJson());
-                        if (GameBridge.FieldPhases.At("blue") != NoiseFieldPhase.Active) return false;
+                        if (GameBridge.Values.At(stateManifest.SourcePath, "phase", "blue") != "Active") return false;
                         second.Dispose();
-                        return GameBridge.FieldPhases.At("blue") == NoiseFieldPhase.Disabled;
+                        return GameBridge.Values.At(stateManifest.SourcePath, "phase", "blue") == "Disabled";
                     }
                     finally { first?.Dispose(); second?.Dispose(); }
+                });
+                Check("FIELD-legacy-state-script-compatibility", () =>
+                {
+                    const string oldScript = "function create(){return {update:function(){fx.fieldState({tag:'legacy',phase:'Ready'});}};}";
+                    var host = ScriptHost.Create(oldScript, "review/legacy-state", out _, stateManifest);
+                    try
+                    {
+                        var context = new EventContext { EventTime = 1, EventOrder = 0 };
+                        if (host == null || !host.Initialize(context, new Dictionary<string, object>(), out _)) return false;
+                        host.Update(0, context.ToStateJson());
+                        return GameBridge.Values.At(stateManifest.SourcePath, "phase", "legacy") == "Ready";
+                    }
+                    finally { host?.Dispose(); }
                 });
             }
             Check("FIELD-touch-history", () =>
@@ -1031,6 +1044,18 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
                     overrides.At("red blue") == NoiseFieldPhase.Ready;
                 overrides.Remove("c"); overrides.Remove("b");
                 return ok && overrides.At("blue") == NoiseFieldPhase.Disabled;
+            });
+            Check("TAGGED-values-package-isolation", () =>
+            {
+                var values = new TaggedValues();
+                values.Set("a", "package-a", "state", "red blue", "off", 1, 0);
+                values.Set("b", "package-a", "state", "blue", "on", 2, 1);
+                values.Set("c", "package-b", "state", "blue", "other", 3, 1);
+                values.Set("d", "package-a", "color", "blue", "green", 4, 1);
+                if (values.At("package-a", "state", "red") != "off" || values.At("package-a", "state", "blue") != "on" ||
+                    values.At("package-b", "state", "blue") != "other" || values.At("package-a", "color", "blue") != "green") return false;
+                values.Remove("b");
+                return values.At("package-a", "state", "blue") == "off" && values.At("package-b", "state", "blue") == "other";
             });
             Check("FIELD-touch-geometry", () =>
             {

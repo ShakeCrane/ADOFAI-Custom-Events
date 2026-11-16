@@ -52,7 +52,7 @@ namespace PEV.Scripting
     /// </summary>
     public static class GameBridge
     {
-        internal static readonly FieldPhaseOverrides FieldPhases = new FieldPhaseOverrides();
+        internal static readonly TaggedValues Values = new TaggedValues();
         /// <summary>
         /// Everything a script can spawn lives on the effect canvas: its own layer, drawn
         /// by a camera above the game's stack. Parenting to the gameplay camera instead
@@ -62,7 +62,7 @@ namespace PEV.Scripting
 
         public static void DestroyAll()
         {
-            FieldPhases.Clear();
+            Values.Clear();
             try { ContinuousEffects.DestroyAll(); } catch { }
             // Before the canvas: texture release walks our own bookkeeping, and doing it
             // first keeps the ordering explicit if a texture ever outlives its object.
@@ -77,7 +77,7 @@ namespace PEV.Scripting
 
         public static void DestroyScope(string scope)
         {
-            FieldPhases.Remove(scope);
+            Values.Remove(scope);
             ContinuousEffects.DestroyScope(scope);
             NoiseFieldRenderer.DestroyScope(scope);
             if (!string.IsNullOrEmpty(scope))
@@ -101,6 +101,7 @@ namespace PEV.Scripting
                 case "create": return ContinuousEffects.Create(EffectKey(args), args, out error);
                 case "set": return ContinuousEffects.Set(EffectKey(args), args, out error);
                 case "destroy": return ContinuousEffects.Destroy(EffectKey(args), out error);
+                case "tagvalue": return SetTaggedValue(args, out error);
 
                 // Noise fields are a host primitive, not part of the author-facing SDK; the
                 // public contract is the .event package format, so this surface may change.
@@ -120,6 +121,19 @@ namespace PEV.Scripting
             return string.IsNullOrEmpty(key) ? key : ScopedKey(Str(args, "__instance"), key);
         }
 
+        private static bool SetTaggedValue(Dictionary<string, object> args, out string error)
+        {
+            try
+            {
+                if (!args.TryGetValue("__manifest", out var owner) || !(owner is PEV.Model.EventManifest manifest))
+                    throw new ArgumentException("A package owner is required");
+                Values.Set(Str(args, "__instance"), manifest.SourcePath, Str(args, "key"), Str(args, "tag"),
+                    Str(args, "value"), Convert.ToDouble(args["__eventTime"]), Convert.ToInt32(args["__eventOrder"]));
+                error = null; return true;
+            }
+            catch (Exception e) { error = "tagvalue: " + e.Message; return false; }
+        }
+
         /// <summary>
         /// Tag-scoped override of live fields. Only the event that owns the tag writes it,
         /// and it writes absolute values derived from the song clock, so pause and seeks
@@ -131,18 +145,15 @@ namespace PEV.Scripting
             string tag = Str(args, "tag");
             if (string.IsNullOrEmpty(tag)) { error = name + " needs a tag"; return false; }
 
+            // Compatibility for older packages using the internal field state API.
             if (string.Equals(name, "fieldstate", StringComparison.OrdinalIgnoreCase) && args.ContainsKey("phase"))
             {
                 if (!Enum.TryParse(Str(args, "phase"), true, out NoiseFieldPhase phase) ||
                     !Enum.IsDefined(typeof(NoiseFieldPhase), phase))
                 { error = "fieldstate needs a valid phase"; return false; }
-                try
-                {
-                    FieldPhases.Set(Str(args, "__instance"), tag, phase,
-                        Convert.ToDouble(args["__eventTime"]), Convert.ToInt32(args["__eventOrder"]));
-                    return true;
-                }
-                catch (Exception e) { error = "fieldstate: " + e.Message; return false; }
+                args["key"] = "phase";
+                args["value"] = phase.ToString();
+                return SetTaggedValue(args, out error);
             }
 
             bool clear = Bool(args, "clear", false);

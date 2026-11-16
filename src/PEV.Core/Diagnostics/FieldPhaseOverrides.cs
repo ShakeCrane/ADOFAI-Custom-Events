@@ -3,8 +3,6 @@ using System.Collections.Generic;
 
 namespace PEV.Scripting
 {
-    internal enum NoiseFieldPhase { Disabled, Ready, Active }
-
     /// <summary>Combines script-owned field phase overrides by event time and stable order.</summary>
     internal sealed class FieldPhaseOverrides
     {

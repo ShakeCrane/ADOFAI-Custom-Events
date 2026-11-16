@@ -50,6 +50,9 @@ var fx = {
   },
   fieldState: function (o) {
     return JSON.parse(__hostFx('fieldstate', JSON.stringify(o || {})));
+  },
+  tagValue: function (o) {
+    return JSON.parse(__hostFx('tagvalue', JSON.stringify(o || {})));
   }
 };
 var __pevReady = true;
