@@ -41,6 +41,7 @@ namespace PEV.Scripting
         private readonly EventManifest _manifest;
         private readonly ComputeShader _compute;
         private readonly GpuGraphDefinition _graph;
+        private readonly RegionModes _modes;
         private readonly string _contactProgram;
         private readonly Texture2D _displacement, _spark, _noise, _touch;
         private readonly NoiseFieldGpuPlan _plan = new NoiseFieldGpuPlan();
@@ -57,7 +58,9 @@ namespace PEV.Scripting
             if (_compute == null) throw new InvalidOperationException(error);
             if (!manifest.ComputeGraphs.TryGetValue("coverage", out var graphPath))
                 throw new InvalidOperationException("Field compute graph is not declared");
-            _graph = GpuGraphDefinition.Parse(EventLoader.ReadResource(manifest.SourcePath, graphPath, 131072));
+            var graphBytes = EventLoader.ReadResource(manifest.SourcePath, graphPath, 131072);
+            _graph = GpuGraphDefinition.Parse(graphBytes);
+            _modes = RegionModes.Parse(graphBytes);
             if (!manifest.VectorPrograms.TryGetValue("contacts", out var contactPath))
                 throw new InvalidOperationException("Field contact controller is not declared");
             var contactBytes = EventLoader.ReadResource(manifest.SourcePath, contactPath, 262144);
@@ -80,7 +83,7 @@ namespace PEV.Scripting
         {
             if (camera == null || !camera.orthographic) throw new NotSupportedException("An orthographic camera is required");
             float aspect = Mathf.Min(camera.aspect, 16f / 9f);
-            _plan.Build(entries, camera, aspect);
+            _plan.Build(entries, camera, aspect, _modes, GameBridge.Values);
             NoiseFieldPlanetInputs.Collect(camera, _planets);
             _staging.DiscardPendingExcept(_plan.Groups);
 

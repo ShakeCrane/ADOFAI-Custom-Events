@@ -259,5 +259,33 @@
   "outputs": {
     "main": "mainOut",
     "auxiliary": "auxOut"
+  },
+  "regionModes": {
+    "tagKey": "phase",
+    "default": "Active",
+    "invertFlag": 2,
+    "values": {
+      "Disabled": {
+        "shaderFlags": 0,
+        "mainLayer": false,
+        "auxLayer": true,
+        "palette": false,
+        "contacts": false
+      },
+      "Ready": {
+        "shaderFlags": 4,
+        "mainLayer": true,
+        "auxLayer": true,
+        "palette": false,
+        "contacts": false
+      },
+      "Active": {
+        "shaderFlags": 1,
+        "mainLayer": true,
+        "auxLayer": false,
+        "palette": true,
+        "contacts": true
+      }
+    }
   }
 }

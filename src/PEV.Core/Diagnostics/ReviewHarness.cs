@@ -309,6 +309,7 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
             if (!assets) yield break;
             Check("GPU-package-graph-parity", () => CheckGpuGraphParity(manifest));
             Check("GPU-package-graph-limits", () => CheckGpuGraphLimits(manifest));
+            Check("GPU-package-region-modes", () => CheckRegionModes(manifest));
             Check("GPU-package-contacts-parity", () => CheckContactControllerParity(manifest));
             Check("GPU-contact-controller-sandbox", CheckControllerSandbox);
 
@@ -347,6 +348,25 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
             NoiseFieldRenderer.DestroyAll();
             yield return CheckRealFieldDepthSafe(manifest);
             yield return CheckRealFieldDriver(manifest);
+        }
+
+        private static bool CheckRegionModes(EventManifest manifest)
+        {
+            var bytes = EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072);
+            var root = JObject.Parse(System.Text.Encoding.UTF8.GetString(bytes));
+            var spec = (JObject)root["regionModes"];
+            var values = (JObject)spec["values"];
+            values["Custom"] = new JObject { ["shaderFlags"] = 8, ["mainLayer"] = false,
+                ["auxLayer"] = true, ["palette"] = true, ["contacts"] = false };
+            spec["default"] = "Custom"; spec["tagKey"] = "myMode";
+            var modes = RegionModes.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString()));
+            var custom = modes.Resolve("unknown");
+            if (modes.TagKey != "myMode" || custom.ShaderFlags != 8 || custom.MainLayer || !custom.AuxiliaryLayer ||
+                !custom.Palette || custom.Contacts || modes.Resolve("ready").ShaderFlags != 4) return false;
+            values["Custom"]["shaderFlags"] = 2;
+            try { RegionModes.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString())); return false; }
+            catch (ArgumentException) { }
+            return true;
         }
 
         private static bool CheckContactControllerParity(EventManifest manifest)
@@ -552,7 +572,7 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
                 var before = capture();
                 var entry = new NoiseFieldRenderer.Entry
                 {
-                    Provider = manifest, Visible = true, Renderable = true, Opacity = 1f,
+                    Provider = manifest, Visible = true, Renderable = true, Opacity = 1f, Tag = "review-phase",
                     FillColor = new Color32(255, 84, 84, 255), SortingLayerID = 0,
                     SortingOrder = 5, UnityLayer = 31,
                     World = new Placement.Frame { Center = Vector3.zero, Size = new Vector2(1.6f, 1.6f) }
@@ -618,16 +638,16 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
                     colored[0].r<after[0].r-5 ? "PASS" : "FAIL", $"red {after[0]}; green {colored?[0]}");
                 entry.FillColor=new Color32(255,84,84,255);
                 for(int i=0;i<8;i++){coordinator.Render(entries,camera,1f,true,Color.black);yield return null;}
-                entry.GpuPhase = NoiseFieldPhase.Disabled;
+                GameBridge.Values.Set("review/phase", manifest.SourcePath, "phase", "review-phase", "Disabled", 0, 0);
                 for (int i = 0; i < 8; i++) { coordinator.Render(entries, camera, 1f, true, Color.black); yield return null; }
                 var disabled = capture();
-                entry.GpuPhase = NoiseFieldPhase.Ready;
+                GameBridge.Values.Set("review/phase", manifest.SourcePath, "phase", "review-phase", "Ready", 0, 0);
                 for (int i = 0; i < 8; i++) { coordinator.Render(entries, camera, 1f, true, Color.black); yield return null; }
                 var warning = capture();
                 Row("GPU-real-three-phases", !after[0].Equals(disabled[0]) && !disabled[0].Equals(warning[0]) &&
                     !after[0].Equals(warning[0]) ? "PASS" : "FAIL",
                     $"active {after[0]}; disabled {disabled[0]}; ready {warning[0]}");
-                entry.GpuPhase = NoiseFieldPhase.Active;
+                GameBridge.Values.Set("review/phase", manifest.SourcePath, "phase", "review-phase", "Active", 0, 0);
                 var higher = new NoiseFieldRenderer.Entry
                 {
                     Provider = manifest, Visible = true, Renderable = true, Opacity = 1f,
@@ -660,6 +680,7 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
             }
             finally
             {
+                GameBridge.Values.Remove("review/phase");
                 coordinator?.Dispose();
                 RenderTexture.active = prior;
                 if (target != null) { target.Release(); UnityEngine.Object.Destroy(target); }
@@ -1121,28 +1142,33 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
                 var go = new GameObject("PEV.ReviewGpuPlan");
                 try
                 {
+                    if (!EventRegistry.TryGetById("pev.noise-field", out var provider) || !provider.ComputeGraphs.TryGetValue("coverage", out var graphPath)) return false;
+                    var modes = RegionModes.Parse(EventLoader.ReadResource(provider.SourcePath, graphPath, 131072));
+                    var values = new TaggedValues();
+                    values.Set("mode-b", provider.SourcePath, "phase", "test-b", "Ready", 0, 0);
+                    values.Set("mode-c", provider.SourcePath, "phase", "test-c", "Disabled", 0, 0);
                     var camera = go.AddComponent<Camera>();
                     camera.orthographic = true; camera.orthographicSize = 5; camera.aspect = 16f / 9f;
                     go.transform.position = new Vector3(0, 0, -10);
-                    var a = new NoiseFieldRenderer.Entry { GpuSequence = 2, Visible = true, Renderable = true,
+                    var a = new NoiseFieldRenderer.Entry { Provider = provider, Tag = "test-a", GpuSequence = 2, Visible = true, Renderable = true,
                         Opacity = 1, World = new Placement.Frame { Size = new Vector2(2, 2) },
-                        SortingOrder = 1, UnityLayer = 7, GpuPhase = NoiseFieldPhase.Active,
+                        SortingOrder = 1, UnityLayer = 7,
                         FillColor = Color.blue, EdgeColor = Color.red };
-                    var b = new NoiseFieldRenderer.Entry { GpuSequence = 1, Visible = true, Renderable = true,
+                    var b = new NoiseFieldRenderer.Entry { Provider = provider, Tag = "test-b", GpuSequence = 1, Visible = true, Renderable = true,
                         Opacity = 0.5f, World = new Placement.Frame { Size = new Vector2(2, 2) },
-                        SortingOrder = 1, UnityLayer = 7, GpuPhase = NoiseFieldPhase.Ready, GpuInverted = true };
-                    var c = new NoiseFieldRenderer.Entry { GpuSequence = 3, Visible = true, Renderable = true,
+                        SortingOrder = 1, UnityLayer = 7, GpuInverted = true };
+                    var c = new NoiseFieldRenderer.Entry { Provider = provider, Tag = "test-c", GpuSequence = 3, Visible = true, Renderable = true,
                         Opacity = 1, World = new Placement.Frame { Size = new Vector2(2, 2) },
-                        SortingOrder = 1, UnityLayer = 9, GpuPhase = NoiseFieldPhase.Disabled,
+                        SortingOrder = 1, UnityLayer = 9,
                         Shape = NoiseFieldShape.Circle };
                     var plan = new NoiseFieldGpuPlan();
-                    plan.Build(new[] { a, b, c }, camera, camera.aspect);
+                    plan.Build(new[] { a, b, c }, camera, camera.aspect, modes, values);
                     if (plan.Groups.Count != 2) return false;
                     var key = new NoiseFieldGpuPlan.Key { SortingOrder = 1, UnityLayer = 7 };
                     if (!plan.Groups.TryGetValue(key, out var group) || group.Areas.Count != 2 ||
                         group.Areas[0].Flags != 6 || group.Areas[1].Flags != 1 || !group.HasActive || !group.HasDisabled ||
                         group.Colors[1].Red != 0f || group.Colors[1].Blue != 1f || !group.Colored) return false;
-                    plan.Build(new[] { a }, camera, camera.aspect);
+                    plan.Build(new[] { a }, camera, camera.aspect, modes, values);
                     return plan.Groups.Count == 1 && plan.Groups[key].Areas.Count == 1;
                 }
                 finally { UnityEngine.Object.Destroy(go); }

@@ -262,7 +262,6 @@ namespace PEV.Scripting
                     inst.Phase = InstancePhase.Faulted;
                 }
             }
-            NoiseFieldRenderer.EvaluateGpuPhases(GameBridge.Values);
         }
 
         public void Teardown()

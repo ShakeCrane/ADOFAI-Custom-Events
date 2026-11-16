@@ -148,11 +148,8 @@ namespace PEV.Scripting
             // Compatibility for older packages using the internal field state API.
             if (string.Equals(name, "fieldstate", StringComparison.OrdinalIgnoreCase) && args.ContainsKey("phase"))
             {
-                if (!Enum.TryParse(Str(args, "phase"), true, out NoiseFieldPhase phase) ||
-                    !Enum.IsDefined(typeof(NoiseFieldPhase), phase))
-                { error = "fieldstate needs a valid phase"; return false; }
                 args["key"] = "phase";
-                args["value"] = phase.ToString();
+                args["value"] = args["phase"];
                 return SetTaggedValue(args, out error);
             }
 

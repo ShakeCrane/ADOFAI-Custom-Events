@@ -113,7 +113,6 @@ namespace PEV.Scripting
 
             public float Opacity;
             public bool Visible;
-            internal NoiseFieldPhase GpuPhase = NoiseFieldPhase.Active;
             internal bool GpuInverted;
 
             /// <summary>
@@ -327,17 +326,6 @@ namespace PEV.Scripting
         {
             destination.Clear();
             foreach (var entry in Live.Values) destination.Add(entry);
-        }
-
-        internal static void EvaluateGpuPhases(TaggedValues overrides)
-        {
-            if (overrides == null) return;
-            foreach (var entry in Live.Values)
-            {
-                string value = overrides.At(entry.Provider?.SourcePath, "phase", entry.Tag);
-                entry.GpuPhase = Enum.TryParse(value, false, out NoiseFieldPhase phase) && Enum.IsDefined(typeof(NoiseFieldPhase), phase)
-                    ? phase : NoiseFieldPhase.Active;
-            }
         }
 
         /// <summary>
