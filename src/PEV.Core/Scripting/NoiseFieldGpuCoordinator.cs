@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using PEV.Loading;
 using PEV.Model;
 using UnityEngine;
 
@@ -25,13 +26,12 @@ namespace PEV.Scripting
             internal int ViewWidth, ViewHeight;
             internal bool Colored, ShowDisabled, ShowActive;
 
-            internal Group(ComputeShader shader, EventManifest manifest, NoiseFieldGpuPlan.Key key,
+            internal Group(ComputeShader shader, GpuGraphDefinition graph, EventManifest manifest, NoiseFieldGpuPlan.Key key,
                 NoiseFieldTouchHistory history = null)
             {
                 History = history ?? new NoiseFieldTouchHistory();
                 Palette = new NoiseFieldGpuPalette(manifest);
-                manifest.LegacyFieldProfile.TryGetValue("glowWeights", out var glowWeights);
-                Masks = new NoiseFieldGpuMasks(shader, glowWeights);
+                Masks = new NoiseFieldGpuMasks(shader, graph);
                 try { Layer = new NoiseFieldGpuLayer(manifest, key.SortingLayer, key.SortingOrder, key.UnityLayer); }
                 catch { Masks.Dispose(); throw; }
             }
@@ -40,6 +40,7 @@ namespace PEV.Scripting
 
         private readonly EventManifest _manifest;
         private readonly ComputeShader _compute;
+        private readonly GpuGraphDefinition _graph;
         private readonly Texture2D _displacement, _spark, _noise, _touch;
         private readonly NoiseFieldGpuPlan _plan = new NoiseFieldGpuPlan();
         private readonly NoiseFieldGroupStaging<NoiseFieldGpuPlan.Key, Group> _staging =
@@ -53,6 +54,9 @@ namespace PEV.Scripting
                 throw new InvalidOperationException("Field compute shader role is not declared");
             _compute = ShaderBundleCache.LoadCompute(manifest, computePath, out string error);
             if (_compute == null) throw new InvalidOperationException(error);
+            if (!manifest.ComputeGraphs.TryGetValue("coverage", out var graphPath))
+                throw new InvalidOperationException("Field compute graph is not declared");
+            _graph = GpuGraphDefinition.Parse(EventLoader.ReadResource(manifest.SourcePath, graphPath, 131072));
             _displacement = RequireTexture(manifest, "displacement");
             _spark = RequireTexture(manifest, "spark");
             _noise = RequireTexture(manifest, "noise");
@@ -81,10 +85,9 @@ namespace PEV.Scripting
                 _staging.Pending.TryGetValue(pair.Key, out var pending);
                 _staging.Active.TryGetValue(pair.Key, out var previous);
                 var group = pending ?? previous;
-                int width = Math.Max(1, camera.pixelWidth / 8) * 2;
-                int height = Math.Max(1, camera.pixelHeight / 8) * 2;
+                _graph.Size(camera.pixelWidth, camera.pixelHeight, out int width, out int height);
                 if (group == null)
-                    _staging.SetPending(pair.Key, group = new Group(_compute, _manifest, pair.Key)
+                    _staging.SetPending(pair.Key, group = new Group(_compute, _graph, _manifest, pair.Key)
                     {
                         ViewWidth = width, ViewHeight = height, Colored = plan.Colored,
                         ShowDisabled = plan.HasDisabled, ShowActive = plan.HasActive
@@ -102,7 +105,7 @@ namespace PEV.Scripting
                     group.Colored == plan.Colored && group.ShowDisabled == showDisabled && group.ShowActive == showActive;
                 if (!matches)
                 {
-                    var replacement = new Group(_compute, _manifest, pair.Key, group.History)
+                    var replacement = new Group(_compute, _graph, _manifest, pair.Key, group.History)
                     {
                         ViewWidth = width, ViewHeight = height, Colored = plan.Colored,
                         ShowDisabled = showDisabled, ShowActive = showActive

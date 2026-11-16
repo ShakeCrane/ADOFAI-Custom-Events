@@ -307,6 +307,8 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
             }
             Row("GPU-real-bundle-assets", assets && manifest.FieldShaders.Count == 11 ? "PASS" : "FAIL");
             if (!assets) yield break;
+            Check("GPU-package-graph-parity", () => CheckGpuGraphParity(manifest));
+            Check("GPU-package-graph-limits", () => CheckGpuGraphLimits(manifest));
 
             var args = new Dictionary<string, object>
             {
@@ -343,6 +345,75 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
             NoiseFieldRenderer.DestroyAll();
             yield return CheckRealFieldDepthSafe(manifest);
             yield return CheckRealFieldDriver(manifest);
+        }
+
+        private static bool CheckGpuGraphLimits(EventManifest manifest)
+        {
+            var data = EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072);
+            string source = System.Text.Encoding.UTF8.GetString(data);
+            var invalid = new List<string> { "{}", source + "{}", source.Replace("\"divisor\": 8", "\"divisor\": 0"),
+                source.Replace("\"format\": \"r32uint\"", "\"format\": \"unknown\""),
+                source.Replace("\"_Areas\": \"geometry\"", "\"_Areas\": \"missing\"") };
+            foreach (var text in invalid)
+            {
+                try { GpuGraphDefinition.Parse(System.Text.Encoding.UTF8.GetBytes(text)); return false; }
+                catch (Exception) { }
+            }
+            var graph = GpuGraphDefinition.Parse(data);
+            try { graph.Size(16384, 16384, out _, out _); return false; }
+            catch (ArgumentOutOfRangeException) { }
+            try { GpuGraphDefinition.Parse(new byte[131073]); return false; }
+            catch (ArgumentException) { }
+            return true;
+        }
+
+        private static bool CheckGpuGraphParity(EventManifest manifest)
+        {
+            var definition = GpuGraphDefinition.Parse(EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072));
+            var shader = ShaderBundleCache.LoadCompute(manifest, manifest.FieldShaders["compute"], out var error);
+            if (shader == null) throw new InvalidOperationException(error);
+            var noise = ReferenceNoiseTextures.Load(manifest, "displacement", out error);
+            if (noise == null) throw new InvalidOperationException(error);
+            var touchTexture = ReferenceNoiseTextures.Load(manifest, "touch", out error);
+            if (touchTexture == null) throw new InvalidOperationException(error);
+            manifest.LegacyFieldProfile.TryGetValue("glowWeights", out var weights);
+            var areas = new[] {
+                new NoiseFieldGpuMasks.Area { Center = new Vector2(-.15f,.05f), HalfSize = new Vector2(.55f,.3f), AngleRadians = .35f, YScale = 1f, Opacity = .75f, Flags = 1 },
+                new NoiseFieldGpuMasks.Area { Center = new Vector2(.32f,-.12f), HalfSize = new Vector2(.25f,.4f), AngleRadians = -.17f, YScale = 1f, Opacity = 1f, Flags = 3 },
+                new NoiseFieldGpuMasks.Area { Center = Vector2.zero, HalfSize = new Vector2(.2f,.2f), YScale = 1f, Opacity = .5f, Flags = 4 },
+                new NoiseFieldGpuMasks.Area { Center = new Vector2(0,.3f), HalfSize = new Vector2(.3f,.1f), YScale = 1f, Opacity = 1f, Flags = 0 }
+            };
+            var touches = new[] { new NoiseFieldGpuMasks.Touch { Center = new Vector2(.5f,.5f), Scale = 1f } };
+            using (var legacy = new LegacyGpuMaskReference(shader, weights))
+            using (var graph = new NoiseFieldGpuMasks(shader, definition))
+            {
+                for (int i = 0; i < 8; i++)
+                {
+                    int width = i % 2 == 0 ? 256 : 255, height = i % 2 == 0 ? 144 : 143;
+                    int count = i == 0 ? 0 : areas.Length, touchCount = i % 2;
+                    float time = i * .77f;
+                    legacy.Render(areas, count, width, height, 16f / 9f, time, noise, touches, touchCount, touchTexture);
+                    var oldMain = ReadGpuPixels(legacy.Effect); var oldAux = ReadGpuPixels(legacy.Auxiliary);
+                    graph.Render(areas, count, width, height, 16f / 9f, time, noise, touches, touchCount, touchTexture);
+                    if (!oldMain.SequenceEqual(ReadGpuPixels(graph.Effect)) || !oldAux.SequenceEqual(ReadGpuPixels(graph.Auxiliary)))
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        private static Color32[] ReadGpuPixels(RenderTexture source)
+        {
+            var previous = RenderTexture.active;
+            var target = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, true);
+            try
+            {
+                RenderTexture.active = source;
+                target.ReadPixels(new Rect(0, 0, source.width, source.height), 0, 0);
+                target.Apply(false, false);
+                return target.GetPixels32();
+            }
+            finally { RenderTexture.active = previous; UnityEngine.Object.Destroy(target); }
         }
 
         private static IEnumerator CheckRealFieldDriver(EventManifest manifest)

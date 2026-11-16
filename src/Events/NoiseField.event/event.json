@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "id": "pev.noise-field",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
@@ -640,5 +640,8 @@
   ],
   "vectorPrograms": {
     "palette": "workers/palette.js"
+  },
+  "computeGraphs": {
+    "coverage": "pipelines/coverage.json"
   }
 }

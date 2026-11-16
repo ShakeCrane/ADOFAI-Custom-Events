@@ -89,20 +89,22 @@ def validate(root, manifest, _included=False):
                         ids.add(child_id)
                 problems.extend(f"included event '{normalized}': {p}" for p in validate(root, child, _included=True))
 
-    if "vectorPrograms" in manifest:
-        programs = manifest["vectorPrograms"]
+    for declaration in ("vectorPrograms", "computeGraphs"):
+        if declaration not in manifest:
+            continue
+        programs = manifest[declaration]
         if manifest.get("schemaVersion") != 4 or not isinstance(programs, dict) or not 1 <= len(programs) <= 16:
-            problems.append("vectorPrograms requires schemaVersion 4 and 1-16 package-relative scripts")
+            problems.append(f"{declaration} requires schemaVersion 4 and 1-16 package-relative resources")
         else:
             for name, path in programs.items():
                 if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name) or
                         name in ("__proto__", "constructor", "prototype") or not isinstance(path, str) or not path.strip()):
-                    problems.append("invalid vector program declaration")
+                    problems.append(f"invalid {declaration} declaration")
                     continue
                 normalized = path.replace("\\", "/")
                 if (normalized.startswith("/") or ":" in normalized or ".." in PurePosixPath(normalized).parts or
                         not os.path.isfile(os.path.join(root, normalized))):
-                    problems.append(f"invalid or missing vector program '{name}'")
+                    problems.append(f"invalid or missing {declaration} resource '{name}'")
 
     for field in REQUIRED_FIELDS:
         if field not in manifest:

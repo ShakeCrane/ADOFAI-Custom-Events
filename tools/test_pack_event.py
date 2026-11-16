@@ -20,6 +20,16 @@ class PackageValidationTests(unittest.TestCase):
     def test_valid_package(self):
         self.assertEqual([], validate(self.root, self.manifest))
 
+    def test_compute_graph_declarations_are_package_local(self):
+        (self.root / "graph.json").write_text("{}", encoding="utf-8")
+        valid = dict(self.manifest, schemaVersion=4, computeGraphs={"coverage": "graph.json"})
+        self.assertEqual([], validate(self.root, valid))
+        for graphs in ({}, {"coverage": "../graph.json"}, {"coverage": "missing.json"},
+                       {"__proto__": "graph.json"}, {"coverage": None}, []):
+            with self.subTest(graphs=graphs):
+                self.assertTrue(validate(self.root, dict(valid, computeGraphs=graphs)))
+        self.assertTrue(validate(self.root, dict(valid, schemaVersion=3)))
+
     def test_non_object_manifest(self):
         for value in (None, [], "manifest", 1):
             with self.subTest(value=value):

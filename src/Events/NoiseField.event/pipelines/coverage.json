@@ -1,0 +1,263 @@
+{
+  "version": 1,
+  "resolution": {
+    "divisor": 8,
+    "multiplier": 2
+  },
+  "resources": [
+    {
+      "name": "sources",
+      "kind": "texture",
+      "format": "rgba32uint",
+      "filter": "point"
+    },
+    {
+      "name": "auxSources",
+      "kind": "texture",
+      "format": "rgba32uint",
+      "filter": "point"
+    },
+    {
+      "name": "compose",
+      "kind": "texture",
+      "format": "rgba32uint",
+      "filter": "point"
+    },
+    {
+      "name": "auxCompose",
+      "kind": "texture",
+      "format": "rgba32uint",
+      "filter": "point"
+    },
+    {
+      "name": "effect",
+      "kind": "texture",
+      "format": "rgba32uint",
+      "filter": "point"
+    },
+    {
+      "name": "ping",
+      "kind": "texture",
+      "format": "r32uint",
+      "filter": "point"
+    },
+    {
+      "name": "pong",
+      "kind": "texture",
+      "format": "r32uint",
+      "filter": "point"
+    },
+    {
+      "name": "mainOut",
+      "kind": "texture",
+      "format": "rgba8unorm",
+      "filter": "linear"
+    },
+    {
+      "name": "auxOut",
+      "kind": "texture",
+      "format": "rgba8unorm",
+      "filter": "linear"
+    },
+    {
+      "name": "geometry",
+      "kind": "buffer",
+      "stride": 32
+    },
+    {
+      "name": "contacts",
+      "kind": "buffer",
+      "stride": 16
+    }
+  ],
+  "uniforms": {
+    "_Dimensions": {
+      "type": "int2",
+      "input": "dimensions"
+    },
+    "_NoiseDimensions": {
+      "type": "int2",
+      "input": "noiseDimensions"
+    },
+    "_AreaCount": {
+      "type": "int",
+      "input": "geometryCount"
+    },
+    "_Aspect": {
+      "type": "float",
+      "input": "aspect"
+    },
+    "_TimeSeconds": {
+      "type": "float",
+      "input": "time"
+    },
+    "_TouchCount": {
+      "type": "int",
+      "input": "contactCount"
+    },
+    "_ScreenAspect": {
+      "type": "float",
+      "input": "screenAspect"
+    },
+    "_TouchTextureDimensions": {
+      "type": "int2",
+      "input": "contactDimensions"
+    }
+  },
+  "entries": {
+    "render": [
+      {
+        "kernel": "BuildSources",
+        "textures": {
+          "_Sources": "sources",
+          "_AuxSources": "auxSources"
+        },
+        "buffers": {
+          "_Areas": "geometry"
+        }
+      },
+      {
+        "kernel": "ComposeSources",
+        "textures": {
+          "_Sources": "sources",
+          "_AuxSources": "auxSources",
+          "_Compose": "compose",
+          "_AuxCompose": "auxCompose"
+        }
+      },
+      {
+        "kernel": "BuildTouch",
+        "textures": {
+          "_TouchTexture": "$contactTexture",
+          "_AuxCompose": "auxCompose"
+        },
+        "buffers": {
+          "_Touches": "contacts"
+        },
+        "when": "hasContacts"
+      },
+      {
+        "kernel": "WarpActive",
+        "textures": {
+          "_NoiseTexture": "$noise",
+          "_Compose": "compose",
+          "_Effect": "effect",
+          "_RingOutput": "ping"
+        }
+      },
+      {
+        "kernel": "DilateRing",
+        "textures": {
+          "_Effect": "effect",
+          "_RingInput": "ping",
+          "_RingOutput": "pong"
+        },
+        "uniforms": {
+          "_GlowWeight": {
+            "type": "float",
+            "value": 0.458567970132
+          },
+          "_RingPass": {
+            "type": "int",
+            "value": 0
+          }
+        }
+      },
+      {
+        "kernel": "DilateRing",
+        "textures": {
+          "_Effect": "effect",
+          "_RingInput": "pong",
+          "_RingOutput": "ping"
+        },
+        "uniforms": {
+          "_GlowWeight": {
+            "type": "float",
+            "value": 0.282861223139
+          },
+          "_RingPass": {
+            "type": "int",
+            "value": 1
+          }
+        }
+      },
+      {
+        "kernel": "DilateRing",
+        "textures": {
+          "_Effect": "effect",
+          "_RingInput": "ping",
+          "_RingOutput": "pong"
+        },
+        "uniforms": {
+          "_GlowWeight": {
+            "type": "float",
+            "value": 0.156589227109
+          },
+          "_RingPass": {
+            "type": "int",
+            "value": 2
+          }
+        }
+      },
+      {
+        "kernel": "DilateRing",
+        "textures": {
+          "_Effect": "effect",
+          "_RingInput": "pong",
+          "_RingOutput": "ping"
+        },
+        "uniforms": {
+          "_GlowWeight": {
+            "type": "float",
+            "value": 0.07305908496
+          },
+          "_RingPass": {
+            "type": "int",
+            "value": 3
+          }
+        }
+      },
+      {
+        "kernel": "DilateRing",
+        "textures": {
+          "_Effect": "effect",
+          "_RingInput": "ping",
+          "_RingOutput": "pong"
+        },
+        "uniforms": {
+          "_GlowWeight": {
+            "type": "float",
+            "value": 0.024947807942
+          },
+          "_RingPass": {
+            "type": "int",
+            "value": 4
+          }
+        }
+      },
+      {
+        "kernel": "ExportMasks",
+        "textures": {
+          "_Effect": "effect",
+          "_AuxCompose": "auxCompose",
+          "_EffectNormalized": "mainOut",
+          "_AuxNormalized": "auxOut"
+        }
+      }
+    ],
+    "colors": [
+      {
+        "kernel": "WarpColors",
+        "textures": {
+          "_NoiseTexture": "$noise",
+          "_RawActiveColors": "$inputColors",
+          "_WarpedActiveColors": "$outputColors"
+        }
+      }
+    ]
+  },
+  "outputs": {
+    "main": "mainOut",
+    "auxiliary": "auxOut"
+  }
+}

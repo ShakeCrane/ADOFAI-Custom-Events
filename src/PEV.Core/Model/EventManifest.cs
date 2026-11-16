@@ -170,6 +170,7 @@ namespace PEV.Model
         // Additional event definitions in the same package, relative to its root.
         public readonly List<string> IncludedEvents = new List<string>();
         public readonly Dictionary<string, string> VectorPrograms = new Dictionary<string, string>(StringComparer.Ordinal);
+        public readonly Dictionary<string, string> ComputeGraphs = new Dictionary<string, string>(StringComparer.Ordinal);
         public string Id;
         public string Version = "1.0.0";
         public int ApiVersion = 1;
@@ -326,6 +327,19 @@ namespace PEV.Model
                         entry.Value.Type != JTokenType.String || !PEV.Loading.EventLoader.IsPackageRelativePath(entry.Value.Value<string>()))
                     { error = "invalid vector program declaration"; return null; }
                     m.VectorPrograms.Add(entry.Name, entry.Value.Value<string>().Replace('\\', '/'));
+                }
+            }
+            if (root["computeGraphs"] != null)
+            {
+                if (m.SchemaVersion < 4 || !(root["computeGraphs"] is JObject graphs) || graphs.Count < 1 || graphs.Count > 16)
+                { error = "computeGraphs requires schemaVersion 4 and 1-16 package-relative graph definitions"; return null; }
+                foreach (var entry in graphs.Properties())
+                {
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(entry.Name, "^[A-Za-z_][A-Za-z0-9_]{0,63}$") ||
+                        entry.Name == "__proto__" || entry.Name == "constructor" || entry.Name == "prototype" ||
+                        entry.Value.Type != JTokenType.String || !PEV.Loading.EventLoader.IsPackageRelativePath(entry.Value.Value<string>()))
+                    { error = "invalid compute graph declaration"; return null; }
+                    m.ComputeGraphs.Add(entry.Name, entry.Value.Value<string>().Replace('\\', '/'));
                 }
             }
             if (root["shaderBundle"] != null &&
