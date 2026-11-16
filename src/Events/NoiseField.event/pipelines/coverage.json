@@ -287,5 +287,190 @@
         "contacts": true
       }
     }
+  },
+  "compositor": {
+    "bindings": [
+      {
+        "name": "uView",
+        "type": "vector",
+        "input": "view"
+      },
+      {
+        "name": "uUnityTime",
+        "type": "vector",
+        "input": "time"
+      },
+      {
+        "name": "_PEVScreenParams",
+        "type": "vector",
+        "input": "screen"
+      },
+      {
+        "name": "_EffectRT_TexelSize",
+        "type": "vector",
+        "input": "texelSize"
+      },
+      {
+        "name": "uMasks",
+        "type": "texture",
+        "input": "mainMask"
+      },
+      {
+        "name": "uAuxMasks",
+        "type": "texture",
+        "input": "auxMask"
+      },
+      {
+        "name": "uDisplaceTex",
+        "type": "texture",
+        "input": "displacement"
+      },
+      {
+        "name": "uSparkTex",
+        "type": "texture",
+        "input": "spark"
+      },
+      {
+        "name": "uNoiseTex",
+        "type": "texture",
+        "input": "noise"
+      },
+      {
+        "name": "_PEVBackground",
+        "type": "color",
+        "input": "background"
+      },
+      {
+        "name": "_TouchPosCount",
+        "type": "int",
+        "input": "contactCount"
+      },
+      {
+        "name": "_TouchPos",
+        "type": "vectorArray",
+        "input": "contacts",
+        "when": {
+          "hasContacts": true
+        }
+      }
+    ],
+    "layers": [
+      {
+        "name": "secondary",
+        "order": 0,
+        "visible": "showSecondary",
+        "variants": [
+          {
+            "shader": "disabledColored",
+            "when": {
+              "colored": true
+            }
+          },
+          {
+            "shader": "disabled",
+            "when": {}
+          }
+        ],
+        "bindings": [
+          {
+            "name": "uDisabledColors",
+            "type": "texture",
+            "input": "secondaryColors",
+            "when": {
+              "colored": true
+            }
+          }
+        ]
+      },
+      {
+        "name": "primary",
+        "order": 1,
+        "visible": "showPrimary",
+        "variants": [
+          {
+            "shader": "activeNoCapture",
+            "when": {
+              "colored": false,
+              "capture": false,
+              "hover": false
+            }
+          },
+          {
+            "shader": "hoverNoCapture",
+            "when": {
+              "colored": false,
+              "capture": false,
+              "hover": true
+            }
+          },
+          {
+            "shader": "activeCapture",
+            "when": {
+              "colored": false,
+              "capture": true,
+              "hover": false
+            }
+          },
+          {
+            "shader": "hoverCapture",
+            "when": {
+              "colored": false,
+              "capture": true,
+              "hover": true
+            }
+          },
+          {
+            "shader": "activeNoCaptureColored",
+            "when": {
+              "colored": true,
+              "capture": false,
+              "hover": false
+            }
+          },
+          {
+            "shader": "hoverNoCaptureColored",
+            "when": {
+              "colored": true,
+              "capture": false,
+              "hover": true
+            }
+          },
+          {
+            "shader": "activeCaptureColored",
+            "when": {
+              "colored": true,
+              "capture": true,
+              "hover": false
+            }
+          },
+          {
+            "shader": "hoverCaptureColored",
+            "when": {
+              "colored": true,
+              "capture": true,
+              "hover": true
+            }
+          }
+        ],
+        "bindings": [
+          {
+            "name": "uActiveColors",
+            "type": "texture",
+            "input": "primaryColors",
+            "when": {
+              "colored": true
+            }
+          },
+          {
+            "name": "uDisabledColors",
+            "type": "texture",
+            "input": "secondaryColors",
+            "when": {
+              "colored": true
+            }
+          }
+        ]
+      }
+    ]
   }
 }

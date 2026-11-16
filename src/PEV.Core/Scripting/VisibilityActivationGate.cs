@@ -1,7 +1,7 @@
 namespace PEV.Scripting
 {
     /// <summary>Waits one frame after a renderer group becomes active for Unity culling registration.</summary>
-    internal struct NoiseFieldActivationGate
+    internal struct VisibilityActivationGate
     {
         private bool _active;
         private int _activatedFrame;

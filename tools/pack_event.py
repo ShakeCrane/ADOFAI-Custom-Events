@@ -236,8 +236,12 @@ def validate(root, manifest, _included=False):
         shader_roles = {"compute", "disabled", "activeCapture", "hoverCapture", "activeNoCapture", "hoverNoCapture",
                         "disabledColored", "activeCaptureColored", "hoverCaptureColored", "activeNoCaptureColored", "hoverNoCaptureColored"}
         textures, shaders = manifest.get("fieldTextures"), manifest.get("fieldShaders")
+        named_shaders = (isinstance(shaders, dict) and 1 <= len(shaders) <= 32 and "compute" in shaders and
+                         all(isinstance(name, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name) and
+                             not name.startswith("__") for name in shaders))
+        shader_roles_ok = set(shaders) == shader_roles if isinstance(shaders, dict) and manifest.get("schemaVersion") == 3 else named_shaders
         if (manifest.get("schemaVersion") not in (3, 4) or primitive != "fx.field" or not isinstance(textures, dict) or
-                not isinstance(shaders, dict) or set(textures) != texture_roles or set(shaders) != shader_roles):
+                not isinstance(shaders, dict) or set(textures) != texture_roles or not shader_roles_ok):
             problems.append("field shader providers require fieldTextures and fieldShaders for every role")
         else:
             for kind, mapping in (("texture", textures), ("shader", shaders)):

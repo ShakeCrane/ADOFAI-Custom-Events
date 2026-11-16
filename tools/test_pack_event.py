@@ -131,6 +131,11 @@ class PackageValidationTests(unittest.TestCase):
         self.assertTrue(validate(self.root, dict(valid, fieldTextures=dict(textures, touch="../secret"))))
         self.assertTrue(validate(self.root, dict(valid, fieldShaders=dict(shaders, compute="../secret"))))
         self.assertTrue(validate(self.root, dict(valid, fieldTextures={"touch": "main.js"})))
+        custom = dict(valid, schemaVersion=4, fieldShaders={"compute": "assets/compute", "customLayer": "assets/layer"})
+        self.assertEqual([], validate(self.root, custom))
+        self.assertTrue(validate(self.root, dict(custom, fieldShaders={"customLayer": "assets/layer"})))
+        self.assertTrue(validate(self.root, dict(custom, fieldShaders={"compute": "assets/compute", "__unsafe": "assets/layer"})))
+        self.assertTrue(validate(self.root, dict(custom, schemaVersion=3)))
 
     def test_field_wave_validation(self):
         wave = {"base": 0.63, "amplitude": 0.37, "frequency": 43, "scale": 2}

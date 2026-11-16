@@ -26,13 +26,13 @@ namespace PEV.Scripting
             internal int ViewWidth, ViewHeight;
             internal bool Colored, ShowDisabled, ShowActive;
 
-            internal Group(ComputeShader shader, GpuGraphDefinition graph, EventManifest manifest, NoiseFieldGpuPlan.Key key,
+            internal Group(ComputeShader shader, GpuGraphDefinition graph, CompositorDefinition compositor, EventManifest manifest, NoiseFieldGpuPlan.Key key,
                 string contactProgram, FieldContactController history = null)
             {
                 History = history ?? new FieldContactController(contactProgram);
                 Palette = new NoiseFieldGpuPalette(manifest);
                 Masks = new NoiseFieldGpuMasks(shader, graph);
-                try { Layer = new NoiseFieldGpuLayer(manifest, key.SortingLayer, key.SortingOrder, key.UnityLayer); }
+                try { Layer = new NoiseFieldGpuLayer(manifest, compositor, key.SortingLayer, key.SortingOrder, key.UnityLayer); }
                 catch { Masks.Dispose(); throw; }
             }
             public void Dispose() { Layer.Dispose(); Palette.Dispose(); Masks.Dispose(); }
@@ -42,6 +42,7 @@ namespace PEV.Scripting
         private readonly ComputeShader _compute;
         private readonly GpuGraphDefinition _graph;
         private readonly RegionModes _modes;
+        private readonly CompositorDefinition _compositor;
         private readonly string _contactProgram;
         private readonly Texture2D _displacement, _spark, _noise, _touch;
         private readonly NoiseFieldGpuPlan _plan = new NoiseFieldGpuPlan();
@@ -61,6 +62,7 @@ namespace PEV.Scripting
             var graphBytes = EventLoader.ReadResource(manifest.SourcePath, graphPath, 131072);
             _graph = GpuGraphDefinition.Parse(graphBytes);
             _modes = RegionModes.Parse(graphBytes);
+            _compositor = CompositorDefinition.Parse(graphBytes);
             if (!manifest.VectorPrograms.TryGetValue("contacts", out var contactPath))
                 throw new InvalidOperationException("Field contact controller is not declared");
             var contactBytes = EventLoader.ReadResource(manifest.SourcePath, contactPath, 262144);
@@ -96,7 +98,7 @@ namespace PEV.Scripting
                 var group = pending ?? previous;
                 _graph.Size(camera.pixelWidth, camera.pixelHeight, out int width, out int height);
                 if (group == null)
-                    _staging.SetPending(pair.Key, group = new Group(_compute, _graph, _manifest, pair.Key, _contactProgram)
+                    _staging.SetPending(pair.Key, group = new Group(_compute, _graph, _compositor, _manifest, pair.Key, _contactProgram)
                     {
                         ViewWidth = width, ViewHeight = height, Colored = plan.Colored,
                         ShowDisabled = plan.HasDisabled, ShowActive = plan.HasActive
@@ -111,7 +113,7 @@ namespace PEV.Scripting
                     group.Colored == plan.Colored && group.ShowDisabled == showDisabled && group.ShowActive == showActive;
                 if (!matches)
                 {
-                    var replacement = new Group(_compute, _graph, _manifest, pair.Key, _contactProgram, group.History)
+                    var replacement = new Group(_compute, _graph, _compositor, _manifest, pair.Key, _contactProgram, group.History)
                     {
                         ViewWidth = width, ViewHeight = height, Colored = plan.Colored,
                         ShowDisabled = showDisabled, ShowActive = showActive

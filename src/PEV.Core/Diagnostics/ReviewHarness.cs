@@ -310,8 +310,10 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
             Check("GPU-package-graph-parity", () => CheckGpuGraphParity(manifest));
             Check("GPU-package-graph-limits", () => CheckGpuGraphLimits(manifest));
             Check("GPU-package-region-modes", () => CheckRegionModes(manifest));
+            Check("GPU-package-compositor-limits", () => CheckCompositorLimits(manifest));
             Check("GPU-package-contacts-parity", () => CheckContactControllerParity(manifest));
             Check("GPU-contact-controller-sandbox", CheckControllerSandbox);
+            yield return CheckCompositorParitySafe(manifest);
 
             var args = new Dictionary<string, object>
             {
@@ -348,6 +350,114 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
             NoiseFieldRenderer.DestroyAll();
             yield return CheckRealFieldDepthSafe(manifest);
             yield return CheckRealFieldDriver(manifest);
+        }
+
+        private static bool CheckCompositorLimits(EventManifest manifest)
+        {
+            var data = EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072);
+            var root = JObject.Parse(System.Text.Encoding.UTF8.GetString(data));
+            var compositor = CompositorDefinition.Parse(data);
+            if (compositor.Layers.Count != 2 || compositor.Bindings.Count == 0) return false;
+            root["compositor"]["layers"][0]["bindings"][0]["type"] = "nativeCode";
+            try { CompositorDefinition.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString())); return false; }
+            catch (ArgumentException) { }
+            return true;
+        }
+
+        private static IEnumerator CheckCompositorParitySafe(EventManifest manifest)
+        {
+            var probe = CheckCompositorParity(manifest);
+            while (true)
+            {
+                bool more;
+                try { more = probe.MoveNext(); }
+                catch (Exception e) { Row("GPU-compositor-parity", "FAIL", e.ToString()); yield break; }
+                if (!more) yield break;
+                yield return probe.Current;
+            }
+        }
+
+        private static IEnumerator CheckCompositorParity(EventManifest manifest)
+        {
+            GameObject cameraObject = null;
+            RenderTexture target = null;
+            Texture2D read = null, activeColors = null, auxiliaryColors = null;
+            NoiseFieldGpuMasks masks = null;
+            LegacyGpuLayerReference legacy = null;
+            NoiseFieldGpuLayer current = null;
+            var prior = RenderTexture.active;
+            try
+            {
+                byte[] graphData = EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072);
+                var graph = GpuGraphDefinition.Parse(graphData);
+                var compositor = CompositorDefinition.Parse(graphData);
+                var shader = ShaderBundleCache.LoadCompute(manifest, manifest.FieldShaders["compute"], out string error);
+                if (shader == null) throw new InvalidOperationException(error);
+                var displacement = ReferenceNoiseTextures.Load(manifest, "displacement", out error);
+                var spark = ReferenceNoiseTextures.Load(manifest, "spark", out error);
+                var noise = ReferenceNoiseTextures.Load(manifest, "noise", out error);
+                var touch = ReferenceNoiseTextures.Load(manifest, "touch", out error);
+                if (displacement == null || spark == null || noise == null || touch == null) throw new InvalidOperationException(error);
+                cameraObject = new GameObject("PEV.CompositorParityCamera");
+                var camera = cameraObject.AddComponent<Camera>(); camera.enabled = false; camera.orthographic = true;
+                camera.orthographicSize = 1f; camera.aspect = 1f; camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = new Color32(28, 52, 180, 255); cameraObject.transform.position = new Vector3(0, 0, -10);
+                target = new RenderTexture(128, 128, 0, RenderTextureFormat.ARGB32) { antiAliasing = 1 };
+                if (!target.Create()) throw new InvalidOperationException("Cannot create compositor parity target");
+                camera.targetTexture = target;
+                read = new Texture2D(128, 128, TextureFormat.RGBA32, false, true);
+                masks = new NoiseFieldGpuMasks(shader, graph);
+                var areas = new[] {
+                    new NoiseFieldGpuMasks.Area { Center = new Vector2(-.2f,0), HalfSize = new Vector2(.5f,.6f), YScale = 1, Opacity = 1, Flags = 1 },
+                    new NoiseFieldGpuMasks.Area { Center = new Vector2(.35f,0), HalfSize = new Vector2(.25f,.35f), YScale = 1, Opacity = .8f, Flags = 4 }
+                };
+                var touches = new[] { new NoiseFieldGpuMasks.Touch { Center = new Vector2(.5f,.5f), Scale = 1f } };
+                masks.Render(areas, areas.Length, 128, 128, 1f, 1f, displacement, touches, 1, touch);
+                activeColors = new Texture2D(masks.Width, masks.Height, TextureFormat.RGBA32, false, true);
+                auxiliaryColors = new Texture2D(masks.Width, masks.Height, TextureFormat.RGBA32, false, true);
+                activeColors.SetPixels32(Enumerable.Repeat(new Color32(20, 220, 80, 255), masks.Width * masks.Height).ToArray());
+                auxiliaryColors.SetPixels32(Enumerable.Repeat(new Color32(30, 70, 220, 255), masks.Width * masks.Height).ToArray());
+                activeColors.Apply(false, false); auxiliaryColors.Apply(false, false);
+                legacy = new LegacyGpuLayerReference(manifest, 0, 0, 30);
+                current = new NoiseFieldGpuLayer(manifest, compositor, 0, 0, 31);
+                var positions = new Vector4[FieldContactController.Capacity];
+                positions[0] = NoiseFieldGpuLayer.TouchPosition(new Vector2(.5f, .5f), 128, 128);
+                Func<int, Color32[]> capture = layer =>
+                {
+                    camera.cullingMask = unchecked((int)(1u << layer)); camera.Render();
+                    RenderTexture.active = target; read.ReadPixels(new Rect(0, 0, 128, 128), 0, 0); read.Apply(false, false);
+                    RenderTexture.active = prior; return read.GetPixels32();
+                };
+                var backgroundOnly = capture(29);
+                int scenarios = 0, visibleScenarios = 0;
+                for (int i = 0; i < 24; i++)
+                {
+                    bool colored = (i & 1) != 0, captureScene = (i & 2) != 0, hover = (i & 4) != 0;
+                    int layers = i / 8; bool showDisabled = layers != 1, showActive = layers != 2;
+                    var first = colored ? activeColors : null; var second = colored ? auxiliaryColors : null;
+                    legacy.Draw(camera, masks, displacement, spark, noise, 1f, 1f, captureScene, hover,
+                        showDisabled, showActive, Color.black, positions, hover ? 1 : 0, first, second);
+                    current.Draw(camera, masks, displacement, spark, noise, 1f, 1f, captureScene, hover,
+                        showDisabled, showActive, Color.black, positions, hover ? 1 : 0, first, second);
+                    yield return null;
+                    var before = capture(30); var after = capture(31);
+                    if (!before.SequenceEqual(backgroundOnly)) visibleScenarios++;
+                    if (!before.SequenceEqual(after))
+                    { Row("GPU-compositor-parity", "FAIL", $"scenario {i}, differing pixels {before.Zip(after, (a,b) => !a.Equals(b)).Count(x => x)}"); yield break; }
+                    scenarios++;
+                }
+                Row("GPU-compositor-parity", scenarios == 24 && visibleScenarios == 24 ? "PASS" : "FAIL",
+                    scenarios + " material and layer combinations; " + visibleScenarios + " visibly rendered");
+            }
+            finally
+            {
+                current?.Dispose(); legacy?.Dispose(); masks?.Dispose(); RenderTexture.active = prior;
+                if (target != null) { target.Release(); UnityEngine.Object.Destroy(target); }
+                if (read != null) UnityEngine.Object.Destroy(read);
+                if (activeColors != null) UnityEngine.Object.Destroy(activeColors);
+                if (auxiliaryColors != null) UnityEngine.Object.Destroy(auxiliaryColors);
+                if (cameraObject != null) UnityEngine.Object.Destroy(cameraObject);
+            }
         }
 
         private static bool CheckRegionModes(EventManifest manifest)
@@ -902,6 +1012,16 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
                 json["fieldTextures"]["touch"] = "../outside";
                 return EventManifest.Parse(json.ToString(), "", out _) == null;
             });
+            Check("FIELD-custom-shader-roles", () =>
+            {
+                if (!EventRegistry.TryGetById("pev.noise-field", out var manifest)) return false;
+                var json = JObject.Parse(System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, "event.json")));
+                json["fieldShaders"] = new JObject { ["compute"] = "assets/compute", ["customLayer"] = "assets/layer" };
+                var parsed = EventManifest.Parse(json.ToString(), "", out _);
+                if (parsed == null || parsed.FieldShaders.Count != 2 || !parsed.FieldShaders.ContainsKey("customLayer")) return false;
+                json["fieldShaders"]["customLayer"] = "../escape";
+                return EventManifest.Parse(json.ToString(), "", out _) == null;
+            });
             Check("GLOBAL-settings-corrupt-file-preserved", () =>
             {
                 string path = Path.GetTempFileName();
@@ -1100,7 +1220,7 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
                 System.Runtime.InteropServices.Marshal.SizeOf(typeof(NoiseFieldGpuMasks.Touch)) == 16);
             Check("FIELD-renderer-activation-gate", () =>
             {
-                var gate = new NoiseFieldActivationGate();
+                var gate = new VisibilityActivationGate();
                 return !gate.Observe(true, 10) && !gate.Observe(true, 10) && gate.Observe(true, 11) &&
                     gate.Observe(false, 11) && !gate.Observe(true, 11) && gate.Observe(true, 12);
             });

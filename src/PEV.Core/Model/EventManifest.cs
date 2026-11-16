@@ -450,7 +450,9 @@ namespace PEV.Model
             {
                 if (m.SchemaVersion < 3 || m.HostPrimitive != "fx.field" ||
                     !ReadResourceMap(root["fieldTextures"], m.FieldTextures, new[] { "displacement", "spark", "noise", "touch" }) ||
-                    !ReadResourceMap(root["fieldShaders"], m.FieldShaders, new[] { "compute", "disabled", "activeCapture", "hoverCapture", "activeNoCapture", "hoverNoCapture", "disabledColored", "activeCaptureColored", "hoverCaptureColored", "activeNoCaptureColored", "hoverNoCaptureColored" }))
+                    !(m.SchemaVersion >= 4
+                        ? ReadNamedResourceMap(root["fieldShaders"], m.FieldShaders) && m.FieldShaders.ContainsKey("compute")
+                        : ReadResourceMap(root["fieldShaders"], m.FieldShaders, new[] { "compute", "disabled", "activeCapture", "hoverCapture", "activeNoCapture", "hoverNoCapture", "disabledColored", "activeCaptureColored", "hoverCaptureColored", "activeNoCaptureColored", "hoverNoCaptureColored" })))
                 { error = "field shader providers require package-relative fieldTextures and fieldShaders for every role"; return null; }
             }
 
@@ -606,6 +608,18 @@ namespace PEV.Model
                 string path = map.Value<string>(role);
                 if (!PEV.Loading.EventLoader.IsPackageRelativePath(path)) return false;
                 target[role] = path;
+            }
+            return true;
+        }
+
+        private static bool ReadNamedResourceMap(JToken token, Dictionary<string, string> target)
+        {
+            if (!(token is JObject map) || map.Count < 1 || map.Count > 32) return false;
+            foreach (var item in map.Properties())
+            {
+                if (!ValidFieldArgumentName(item.Name) || item.Value.Type != JTokenType.String ||
+                    !PEV.Loading.EventLoader.IsPackageRelativePath(item.Value.Value<string>())) return false;
+                target.Add(item.Name, item.Value.Value<string>());
             }
             return true;
         }
