@@ -33,7 +33,7 @@ namespace PEV.Scripting
             float aspect, float songTime, Texture2D noise, Touch[] touches, int touchCount, Texture2D touchTexture)
         {
             if (areas == null || count < 0 || count > areas.Length) throw new ArgumentOutOfRangeException(nameof(count));
-            if (touchCount < 0 || touchCount > NoiseFieldTouchHistory.Capacity ||
+            if (touchCount < 0 || touchCount > FieldContactController.Capacity ||
                 (touchCount > 0 && (touches == null || touchCount > touches.Length || touchTexture == null)))
                 throw new ArgumentOutOfRangeException(nameof(touchCount));
             if (viewportWidth <= 0 || viewportHeight <= 0 || aspect <= 0 || float.IsNaN(aspect) ||

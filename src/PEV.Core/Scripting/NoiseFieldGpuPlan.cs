@@ -23,7 +23,7 @@ namespace PEV.Scripting
         {
             public readonly List<NoiseFieldGpuMasks.Area> Areas = new List<NoiseFieldGpuMasks.Area>();
             public readonly List<NoiseFieldColorOwnership.Zone> Colors = new List<NoiseFieldColorOwnership.Zone>();
-            public readonly List<NoiseFieldTouchGeometry.Area> TouchAreas = new List<NoiseFieldTouchGeometry.Area>();
+            public readonly List<FieldContactController.Area> TouchAreas = new List<FieldContactController.Area>();
             public bool HasActive, HasDisabled, Colored;
             internal void Clear() { Areas.Clear(); Colors.Clear(); TouchAreas.Clear(); HasActive = HasDisabled = Colored = false; }
         }
@@ -91,10 +91,10 @@ namespace PEV.Scripting
                     if (!expected.HasValue) group.Colored = true;
                     else group.Colored |= color.r != expected.Value.r || color.g != expected.Value.g || color.b != expected.Value.b;
                 }
-                group.TouchAreas.Add(new NoiseFieldTouchGeometry.Area
+                group.TouchAreas.Add(new FieldContactController.Area
                 {
-                    Center = area.Center, Size = area.HalfSize * 2f,
-                    RotationDegrees = area.AngleRadians * Mathf.Rad2Deg,
+                    Center = area.Center, HalfSize = area.HalfSize,
+                    Angle = area.AngleRadians,
                     Active = entry.GpuPhase == NoiseFieldPhase.Active,
                     Inverted = entry.GpuInverted, Visible = true
                 });

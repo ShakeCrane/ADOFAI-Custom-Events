@@ -518,7 +518,7 @@ namespace PEV.Diagnostics
             // Validate the actual gameplay planet source in a running level, rather than
             // relying only on synthetic touch contacts in the unit-level checks.
             yield return new WaitForSeconds(0.2f);
-            var planets = new List<NoiseFieldTouchHistory.Contact>();
+            var planets = new List<FieldContactController.Contact>();
             NoiseFieldPlanetInputs.Collect(GameCamera.Current, planets);
             Row("PLANET-INPUT", planets.Count > 0 && planets.Select(p => p.Id).Distinct().Count() == planets.Count
                     ? "PASS" : "FAIL",

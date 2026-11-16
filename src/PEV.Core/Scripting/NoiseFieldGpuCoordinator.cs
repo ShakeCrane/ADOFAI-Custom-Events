@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using PEV.Loading;
 using PEV.Model;
 using UnityEngine;
@@ -17,19 +18,18 @@ namespace PEV.Scripting
             internal readonly NoiseFieldGpuMasks Masks;
             internal readonly NoiseFieldGpuLayer Layer;
             internal readonly NoiseFieldGpuPalette Palette;
-            internal readonly NoiseFieldTouchHistory History;
-            internal readonly List<NoiseFieldTouchHistory.Contact> Contacts = new List<NoiseFieldTouchHistory.Contact>();
-            internal readonly NoiseFieldGpuMasks.Touch[] Touches = new NoiseFieldGpuMasks.Touch[NoiseFieldTouchHistory.Capacity];
-            internal readonly Vector4[] TouchPositions = new Vector4[NoiseFieldTouchHistory.Capacity];
+            internal readonly FieldContactController History;
+            internal readonly NoiseFieldGpuMasks.Touch[] Touches = new NoiseFieldGpuMasks.Touch[FieldContactController.Capacity];
+            internal readonly Vector4[] TouchPositions = new Vector4[FieldContactController.Capacity];
             internal NoiseFieldGpuMasks.Area[] Areas = new NoiseFieldGpuMasks.Area[4];
             internal NoiseFieldColorOwnership.Zone[] Colors = Array.Empty<NoiseFieldColorOwnership.Zone>();
             internal int ViewWidth, ViewHeight;
             internal bool Colored, ShowDisabled, ShowActive;
 
             internal Group(ComputeShader shader, GpuGraphDefinition graph, EventManifest manifest, NoiseFieldGpuPlan.Key key,
-                NoiseFieldTouchHistory history = null)
+                string contactProgram, FieldContactController history = null)
             {
-                History = history ?? new NoiseFieldTouchHistory();
+                History = history ?? new FieldContactController(contactProgram);
                 Palette = new NoiseFieldGpuPalette(manifest);
                 Masks = new NoiseFieldGpuMasks(shader, graph);
                 try { Layer = new NoiseFieldGpuLayer(manifest, key.SortingLayer, key.SortingOrder, key.UnityLayer); }
@@ -41,11 +41,12 @@ namespace PEV.Scripting
         private readonly EventManifest _manifest;
         private readonly ComputeShader _compute;
         private readonly GpuGraphDefinition _graph;
+        private readonly string _contactProgram;
         private readonly Texture2D _displacement, _spark, _noise, _touch;
         private readonly NoiseFieldGpuPlan _plan = new NoiseFieldGpuPlan();
         private readonly NoiseFieldGroupStaging<NoiseFieldGpuPlan.Key, Group> _staging =
             new NoiseFieldGroupStaging<NoiseFieldGpuPlan.Key, Group>();
-        private readonly List<NoiseFieldTouchHistory.Contact> _planets = new List<NoiseFieldTouchHistory.Contact>();
+        private readonly List<FieldContactController.Contact> _planets = new List<FieldContactController.Contact>();
 
         internal NoiseFieldGpuCoordinator(EventManifest manifest)
         {
@@ -57,6 +58,11 @@ namespace PEV.Scripting
             if (!manifest.ComputeGraphs.TryGetValue("coverage", out var graphPath))
                 throw new InvalidOperationException("Field compute graph is not declared");
             _graph = GpuGraphDefinition.Parse(EventLoader.ReadResource(manifest.SourcePath, graphPath, 131072));
+            if (!manifest.VectorPrograms.TryGetValue("contacts", out var contactPath))
+                throw new InvalidOperationException("Field contact controller is not declared");
+            var contactBytes = EventLoader.ReadResource(manifest.SourcePath, contactPath, 262144);
+            if (contactBytes == null) throw new InvalidOperationException("Field contact controller is missing");
+            _contactProgram = new UTF8Encoding(false, true).GetString(contactBytes);
             _displacement = RequireTexture(manifest, "displacement");
             _spark = RequireTexture(manifest, "spark");
             _noise = RequireTexture(manifest, "noise");
@@ -87,30 +93,26 @@ namespace PEV.Scripting
                 var group = pending ?? previous;
                 _graph.Size(camera.pixelWidth, camera.pixelHeight, out int width, out int height);
                 if (group == null)
-                    _staging.SetPending(pair.Key, group = new Group(_compute, _graph, _manifest, pair.Key)
+                    _staging.SetPending(pair.Key, group = new Group(_compute, _graph, _manifest, pair.Key, _contactProgram)
                     {
                         ViewWidth = width, ViewHeight = height, Colored = plan.Colored,
                         ShowDisabled = plan.HasDisabled, ShowActive = plan.HasActive
                     });
-                group.Contacts.Clear();
-                foreach (var planet in _planets)
-                {
-                    var chart = new Vector2(planet.Position.x * 2f - 1f, (planet.Position.y * 2f - 1f) / aspect);
-                    if (NoiseFieldTouchGeometry.Contains(plan.TouchAreas, chart)) group.Contacts.Add(planet);
-                }
-                group.History.Update(group.Contacts, songTime);
+                // With no input and no live contact animation, no controller work can
+                // affect the frame; retain its clock so it still detects later seeks.
+                if (_planets.Count > 0 || group.History.Visible)
+                    group.History.Update(plan.TouchAreas, _planets, aspect, songTime);
                 bool showDisabled = plan.HasDisabled;
                 bool showActive = plan.HasActive || group.History.Visible;
                 bool matches = group.ViewWidth == width && group.ViewHeight == height &&
                     group.Colored == plan.Colored && group.ShowDisabled == showDisabled && group.ShowActive == showActive;
                 if (!matches)
                 {
-                    var replacement = new Group(_compute, _graph, _manifest, pair.Key, group.History)
+                    var replacement = new Group(_compute, _graph, _manifest, pair.Key, _contactProgram, group.History)
                     {
                         ViewWidth = width, ViewHeight = height, Colored = plan.Colored,
                         ShowDisabled = showDisabled, ShowActive = showActive
                     };
-                    replacement.Contacts.AddRange(group.Contacts);
                     _staging.SetPending(pair.Key, replacement);
                     group = replacement;
                 }
@@ -118,16 +120,15 @@ namespace PEV.Scripting
                     Array.Resize(ref group.Areas, Math.Max(plan.Areas.Count, group.Areas.Length * 2));
                 plan.Areas.CopyTo(group.Areas, 0);
                 int touchCount = 0;
-                for (int i = 0; i < NoiseFieldTouchHistory.Capacity; i++)
+                for (int i = 0; i < group.History.Slots.Count; i++)
                 {
-                    var slot = group.History.GetSlot(i);
-                    if (slot.Scale <= 0f) continue;
+                    var slot = group.History.Slots[i];
                     group.Touches[touchCount++] = new NoiseFieldGpuMasks.Touch { Center = slot.Position, Scale = slot.Scale };
                 }
-                int positionCount = Math.Min(group.Contacts.Count, NoiseFieldTouchHistory.Capacity);
+                int positionCount = group.History.Contacts.Count;
                 for (int i = 0; i < positionCount; i++)
                 {
-                    Vector2 p = group.Contacts[i].Position;
+                    Vector2 p = group.History.Contacts[i].Position;
                     group.TouchPositions[i] = NoiseFieldGpuLayer.TouchPosition(p, camera.pixelWidth, camera.pixelHeight);
                 }
                 group.Masks.Render(group.Areas, plan.Areas.Count, camera.pixelWidth, camera.pixelHeight,

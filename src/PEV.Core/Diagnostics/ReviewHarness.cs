@@ -309,6 +309,8 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
             if (!assets) yield break;
             Check("GPU-package-graph-parity", () => CheckGpuGraphParity(manifest));
             Check("GPU-package-graph-limits", () => CheckGpuGraphLimits(manifest));
+            Check("GPU-package-contacts-parity", () => CheckContactControllerParity(manifest));
+            Check("GPU-contact-controller-sandbox", CheckControllerSandbox);
 
             var args = new Dictionary<string, object>
             {
@@ -345,6 +347,67 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
             NoiseFieldRenderer.DestroyAll();
             yield return CheckRealFieldDepthSafe(manifest);
             yield return CheckRealFieldDriver(manifest);
+        }
+
+        private static bool CheckContactControllerParity(EventManifest manifest)
+        {
+            string path = manifest.VectorPrograms["contacts"];
+            string source = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, path, 262144));
+            var actual = new FieldContactController(source);
+            var expected = new NoiseFieldTouchHistory();
+            var areas = new[] {
+                new FieldContactController.Area { Center = Vector2.zero, HalfSize = new Vector2(.9f,.7f), Angle = .2f, Active = true, Visible = true },
+                new FieldContactController.Area { Center = new Vector2(.15f,.05f), HalfSize = new Vector2(.12f,.15f), Angle = -.1f, Active = true, Visible = true, Inverted = true },
+                new FieldContactController.Area { Center = new Vector2(.15f,.05f), HalfSize = new Vector2(.04f,.06f), Active = true, Visible = true, Inverted = true },
+                new FieldContactController.Area { Center = Vector2.zero, HalfSize = new Vector2(2,2), Visible = true, Active = false }
+            };
+            var legacyAreas = areas.Select(a => new NoiseFieldTouchGeometry.Area { Center = a.Center, Size = a.HalfSize * 2,
+                RotationDegrees = a.Angle * Mathf.Rad2Deg, Active = a.Active, Visible = a.Visible, Inverted = a.Inverted }).ToArray();
+            var random = new System.Random(1731);
+            double sumMs = 0, worstMs = 0;
+            for (int frame = 0; frame < 200; frame++)
+            {
+                float time = frame < 130 ? frame * .013f : (frame - 130) * .02f;
+                var points = new List<FieldContactController.Contact>();
+                for (int i = 0; i < frame % 13; i++)
+                    points.Add(new FieldContactController.Contact { Id = i, Position = new Vector2((float)random.NextDouble(), (float)random.NextDouble()) });
+                var hits = points.Where(p => NoiseFieldTouchGeometry.Contains(legacyAreas,
+                    new Vector2(p.Position.x * 2f - 1f, (p.Position.y * 2f - 1f) / (16f / 9f)))).ToArray();
+                expected.Update(hits.Select(p => new NoiseFieldTouchHistory.Contact { Id = p.Id, Position = p.Position }).ToArray(), time);
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                actual.Update(areas, points, 16f / 9f, time);
+                watch.Stop(); sumMs += watch.Elapsed.TotalMilliseconds; worstMs = Math.Max(worstMs, watch.Elapsed.TotalMilliseconds);
+                if (actual.Visible != expected.Visible || actual.Contacts.Count != Math.Min(hits.Length, FieldContactController.Capacity))
+                    throw new InvalidOperationException($"frame {frame} visible {actual.Visible}/{expected.Visible}, contacts {actual.Contacts.Count}/{hits.Length}");
+                for (int i = 0; i < actual.Contacts.Count; i++) if (actual.Contacts[i].Id != hits[i].Id)
+                    throw new InvalidOperationException($"frame {frame} contact {i}");
+                int n = 0;
+                for (int i = 0; i < NoiseFieldTouchHistory.Capacity; i++)
+                {
+                    var slot = expected.GetSlot(i);
+                    if (slot.Scale <= 0) continue;
+                    if (n >= actual.Slots.Count || Vector2.Distance(actual.Slots[n].Position, slot.Position) > .00001f ||
+                        Mathf.Abs(actual.Slots[n].Scale - slot.Scale) > .00001f)
+                        throw new InvalidOperationException($"frame {frame} slot {i}/{n} counts {actual.Slots.Count}, expected {slot.Position} scale {slot.Scale}");
+                    n++;
+                }
+                if (n != actual.Slots.Count) throw new InvalidOperationException($"frame {frame} slot count {actual.Slots.Count}/{n}");
+            }
+            Row("GPU-contact-controller-cost", "INFO", $"200 frames, mean {sumMs / 200:F3}ms, worst {worstMs:F3}ms");
+            return true;
+        }
+
+        private static bool CheckControllerSandbox()
+        {
+            var safe = new JsonController("function updateController(x){return {ok:typeof System==='undefined' && typeof Uint8Array==='undefined'};}");
+            if (safe.Update("{}").Value<bool>("ok") != true) return false;
+            foreach (var source in new[] { "function updateController(){return eval('1');}",
+                "function updateController(){while(true){} return {};}", "function updateController(){return {x:'a'.repeat(20000)};}" })
+            {
+                try { new JsonController(source).Update("{}"); return false; }
+                catch (Exception) { }
+            }
+            return true;
         }
 
         private static bool CheckGpuGraphLimits(EventManifest manifest)

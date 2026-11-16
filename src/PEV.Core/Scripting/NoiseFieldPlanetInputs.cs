@@ -6,14 +6,14 @@ namespace PEV.Scripting
 {
     internal static class NoiseFieldPlanetInputs
     {
-        private static readonly Comparison<NoiseFieldTouchHistory.Contact> CompareIds =
+        private static readonly Comparison<FieldContactController.Contact> CompareIds =
             (left, right) => left.Id.CompareTo(right.Id);
         /// <summary>
         /// Collects actual playable planets, not pooled unused planets or visual copies.
         /// Call on the main thread; stable Unity instance IDs survive list reordering.
         /// The caller owns the list and filters positions against composed field geometry.
         /// </summary>
-        internal static void Collect(Camera camera, List<NoiseFieldTouchHistory.Contact> contacts)
+        internal static void Collect(Camera camera, List<FieldContactController.Contact> contacts)
         {
             contacts.Clear();
             if (camera == null || ADOBase.playerManager == null || ADOBase.playerManager.players == null) return;
@@ -30,7 +30,7 @@ namespace PEV.Scripting
                     // Perspective projection still cannot use points behind the camera.
                     if ((!camera.orthographic && uv.z <= 0) || float.IsNaN(uv.x) || float.IsInfinity(uv.x) ||
                         float.IsNaN(uv.y) || float.IsInfinity(uv.y)) continue;
-                    contacts.Add(new NoiseFieldTouchHistory.Contact
+                    contacts.Add(new FieldContactController.Contact
                     {
                         Id = planet.GetInstanceID(),
                         Position = new Vector2(uv.x, uv.y)
