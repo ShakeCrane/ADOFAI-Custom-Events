@@ -28,6 +28,7 @@ namespace PEV.Scripting
         }
 
         private readonly ComputeShader _shader;
+        private readonly float[] _glowWeights;
         private readonly int _build, _compose, _warp, _ring, _export, _touch, _warpColors;
         private RenderTexture _sources, _auxSources, _composeMask, _auxCompose, _effect, _ping, _pong;
         private RenderTexture _effectNormalized, _auxNormalized;
@@ -39,9 +40,10 @@ namespace PEV.Scripting
         internal int Width => _width;
         internal int Height => _height;
 
-        internal NoiseFieldGpuMasks(ComputeShader shader)
+        internal NoiseFieldGpuMasks(ComputeShader shader, float[] glowWeights)
         {
             _shader = shader != null ? shader : throw new ArgumentNullException(nameof(shader));
+            _glowWeights = glowWeights != null ? (float[])glowWeights.Clone() : Array.Empty<float>();
             _build = shader.FindKernel("BuildSources");
             _compose = shader.FindKernel("ComposeSources");
             _warp = shader.FindKernel("WarpActive");
@@ -162,13 +164,9 @@ namespace PEV.Scripting
             _shader.SetTexture(_warp, "_RingOutput", _ping);
             Dispatch(_warp);
 
-            float total = 0f;
-            for (int i = 1; i <= 6; i++) total += Mathf.Pow(i, 2.65f);
-            for (int pass = 0; pass < 6; pass++)
+            for (int pass = 0; pass < _glowWeights.Length; pass++)
             {
-                float weight = Mathf.Pow(6 - pass, 2.65f) / total;
-                if (weight < 0.01f) break;
-                _shader.SetFloat("_GlowWeight", weight);
+                _shader.SetFloat("_GlowWeight", _glowWeights[pass]);
                 _shader.SetInt("_RingPass", pass);
                 _shader.SetTexture(_ring, "_Effect", _effect);
                 _shader.SetTexture(_ring, "_RingInput", _ping);

@@ -32,10 +32,16 @@ class Program
             Area(.15f,.08f,.17f,.14f,true,false,.4f,0,.3f,.9f,.2f)
         };
         int failures = 0;
+        var customFallback = NoiseFieldColorOwnership.Build(4, 2, 1f,
+            Array.Empty<NoiseFieldColorOwnership.Zone>(), 0x12ab34);
+        if (customFallback.Active[0] != 0x12 || customFallback.Active[1] != 0xab ||
+            customFallback.Active[2] != 0x34 || customFallback.Disabled[0] != 0x12 ||
+            customFallback.Disabled[1] != 0xab || customFallback.Disabled[2] != 0x34)
+            throw new Exception("Package default color was not propagated to unowned palette pixels");
         foreach (var dims in new[] { new[] { 256, 144 }, new[] { 255, 143 } })
         {
             int width = Math.Max(1, dims[0] / 8) * 2, height = Math.Max(1, dims[1] / 8) * 2;
-            var result = NoiseFieldColorOwnership.Build(width, height, 16f / 9f, areas);
+            var result = NoiseFieldColorOwnership.Build(width, height, 16f / 9f, areas, 0xff5454);
             foreach (var pair in new[] { ("raw-active", result.Active), ("disabled", result.Disabled) })
             {
                 var expected = File.ReadAllBytes(Path.Combine(args[0], $"{dims[0]}x{dims[1]}-{pair.Item1}.bin"));
@@ -48,28 +54,28 @@ class Program
             }
         }
         var workspace = new NoiseFieldColorOwnership.Workspace();
-        var firstResult = NoiseFieldColorOwnership.Build(64, 36, 16f / 9f, areas, workspace);
+        var firstResult = NoiseFieldColorOwnership.Build(64, 36, 16f / 9f, areas, workspace, 0xff5454);
         var saved = (byte[])firstResult.Active.Clone();
         var changedAreas = (NoiseFieldColorOwnership.Zone[])areas.Clone();
         changedAreas[0].Red = 1f;
-        var second = NoiseFieldColorOwnership.Build(64, 36, 16f / 9f, changedAreas, workspace);
+        var second = NoiseFieldColorOwnership.Build(64, 36, 16f / 9f, changedAreas, workspace, 0xff5454);
         if (!Equal(firstResult.Active, saved) || ReferenceEquals(firstResult.Active, second.Active))
             throw new Exception("Alternating workspace buffers are not isolated");
-        var third = NoiseFieldColorOwnership.Build(64, 36, 16f / 9f, areas, workspace);
+        var third = NoiseFieldColorOwnership.Build(64, 36, 16f / 9f, areas, workspace, 0xff5454);
         if (!ReferenceEquals(firstResult.Active, third.Active) || !Equal(third.Active, saved))
             throw new Exception("Workspace did not correctly reuse and reset buffers");
         Console.WriteLine("Palette workspace alternation and reuse: PASS");
         using (var worker = new NoiseFieldColorWorker())
         {
             var snapshot = (NoiseFieldColorOwnership.Zone[])areas.Clone();
-            var expected = NoiseFieldColorOwnership.Build(64, 36, 16f / 9f, snapshot);
-            worker.Update(64, 36, 16f / 9f, snapshot);
+            var expected = NoiseFieldColorOwnership.Build(64, 36, 16f / 9f, snapshot, 0xff5454);
+            worker.Update(64, 36, 16f / 9f, snapshot, 0xff5454);
             snapshot[0].Red = 1f; // the worker must own the input it was given
             DateTime deadline = DateTime.UtcNow.AddSeconds(10);
             while (worker.Latest == null && DateTime.UtcNow < deadline)
             {
                 Thread.Sleep(5);
-                worker.Update(64, 36, 16f / 9f, areas);
+                worker.Update(64, 36, 16f / 9f, areas, 0xff5454);
                 if (worker.LastError != null) throw worker.LastError;
             }
             if (worker.Latest == null || !Equal(worker.Latest.Active, expected.Active))
@@ -77,14 +83,14 @@ class Program
             for (int i = 0; i < 20; i++)
             {
                 Thread.Sleep(2);
-                if (worker.Update(64, 36, 16f / 9f, areas)) throw new Exception("Unchanged palette rebuilt");
+                if (worker.Update(64, 36, 16f / 9f, areas, 0xff5454)) throw new Exception("Unchanged palette rebuilt");
             }
-            worker.Update(62, 34, 16f / 9f, areas);
+            worker.Update(62, 34, 16f / 9f, areas, 0xff5454);
             deadline = DateTime.UtcNow.AddSeconds(10);
             while (worker.LatestWidth != 62 && DateTime.UtcNow < deadline)
             {
                 Thread.Sleep(5);
-                worker.Update(62, 34, 16f / 9f, areas);
+                worker.Update(62, 34, 16f / 9f, areas, 0xff5454);
                 if (worker.LastError != null) throw worker.LastError;
             }
             if (worker.LatestWidth != 62 || worker.LatestHeight != 34) throw new Exception("Resize did not complete");
@@ -92,25 +98,40 @@ class Program
             for (int i = 0; i < 20; i++)
             {
                 moving[0].CenterX = -0.2f + i * 0.01f;
-                worker.Update(128, 72, 16f / 9f, moving);
+                worker.Update(128, 72, 16f / 9f, moving, 0xff5454);
             }
-            var latest = NoiseFieldColorOwnership.Build(128, 72, 16f / 9f, moving);
+            var latest = NoiseFieldColorOwnership.Build(128, 72, 16f / 9f, moving, 0xff5454);
             deadline = DateTime.UtcNow.AddSeconds(10);
             while ((worker.LatestWidth != 128 || !Equal(worker.Latest.Active, latest.Active)) && DateTime.UtcNow < deadline)
             {
                 Thread.Sleep(5);
-                worker.Update(128, 72, 16f / 9f, moving);
+                worker.Update(128, 72, 16f / 9f, moving, 0xff5454);
                 if (worker.LastError != null) throw worker.LastError;
             }
             if (worker.LatestWidth != 128 || !Equal(worker.Latest.Active, latest.Active))
                 throw new Exception("Moving palette did not converge to the last requested snapshot");
             Console.WriteLine("Worker snapshot, idle reuse, resize and latest-request convergence: PASS");
         }
+        using (var worker = new NoiseFieldColorWorker())
+        {
+            var empty = Array.Empty<NoiseFieldColorOwnership.Zone>();
+            worker.Update(4, 2, 1f, empty, 0xff5454);
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (worker.Latest == null && DateTime.UtcNow < deadline)
+            { Thread.Sleep(5); worker.Update(4, 2, 1f, empty, 0xff5454); }
+            if (worker.Latest == null) throw new Exception("Initial default palette did not complete");
+            worker.Update(4, 2, 1f, empty, 0x12ab34);
+            while (worker.Latest.Active[0] != 0x12 && DateTime.UtcNow < deadline)
+            { Thread.Sleep(5); worker.Update(4, 2, 1f, empty, 0x12ab34); }
+            if (worker.Latest.Active[0] != 0x12 || worker.Latest.Active[1] != 0xab || worker.Latest.Active[2] != 0x34)
+                throw new Exception("Changing the package default color did not invalidate the worker cache");
+            Console.WriteLine("Package default palette isolation: PASS");
+        }
         var canceledWorker = new NoiseFieldColorWorker();
-        canceledWorker.Update(400, 224, 16f / 9f, areas);
+        canceledWorker.Update(400, 224, 16f / 9f, areas, 0xff5454);
         canceledWorker.Dispose();
         canceledWorker.Dispose();
-        try { canceledWorker.Update(1, 1, 1f, areas); throw new Exception("Disposed worker accepted work"); }
+        try { canceledWorker.Update(1, 1, 1f, areas, 0xff5454); throw new Exception("Disposed worker accepted work"); }
         catch (ObjectDisposedException) { }
         Console.WriteLine("Worker disposal and cancellation: PASS");
         var staging = new NoiseFieldGroupStaging<int, Resource>();
@@ -136,13 +157,13 @@ class Program
         if (args.Length == 2)
         {
             var benchWorkspace = new NoiseFieldColorOwnership.Workspace();
-            for (int i = 0; i < 3; i++) NoiseFieldColorOwnership.Build(400, 224, 16f / 9f, areas, benchWorkspace);
+            for (int i = 0; i < 3; i++) NoiseFieldColorOwnership.Build(400, 224, 16f / 9f, areas, benchWorkspace, 0xff5454);
             var times = new double[20];
             long before = GC.GetAllocatedBytesForCurrentThread();
             for (int i = 0; i < times.Length; i++)
             {
                 long start = Stopwatch.GetTimestamp();
-                NoiseFieldColorOwnership.Build(400, 224, 16f / 9f, areas, benchWorkspace);
+                NoiseFieldColorOwnership.Build(400, 224, 16f / 9f, areas, benchWorkspace, 0xff5454);
                 times[i] = (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
             }
             long allocated = GC.GetAllocatedBytesForCurrentThread() - before;

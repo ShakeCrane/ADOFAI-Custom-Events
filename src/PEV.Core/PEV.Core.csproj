@@ -11,7 +11,18 @@
     <DebugType>none</DebugType>
     <Optimize>true</Optimize>
     <NoWarn>CS0436;CS0618</NoWarn>
+    <IncludeDiagnostics Condition="'$(IncludeDiagnostics)' == ''">false</IncludeDiagnostics>
   </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IncludeDiagnostics)' == 'true'">
+    <DefineConstants>$(DefineConstants);PEV_DIAGNOSTICS</DefineConstants>
+    <OutputPath>bin\$(Configuration)-diagnostics\</OutputPath>
+    <IntermediateOutputPath>obj\$(Configuration)-diagnostics\</IntermediateOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IncludeDiagnostics)' != 'true'">
+    <Compile Remove="Diagnostics\**\*.cs" />
+  </ItemGroup>
 
   <PropertyGroup>
     <GameDir>D:\Program Files (x86)\Steam\steamapps\common\A Dance of Fire and Ice</GameDir>

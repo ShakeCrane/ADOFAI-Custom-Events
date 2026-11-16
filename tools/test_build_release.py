@@ -27,7 +27,7 @@ class SplitReleaseTest(unittest.TestCase):
             (packages / "Acornima.dll").write_bytes(b"acornima")
             (root / "LICENSE").write_text("license", encoding="utf-8")
             (docs / "INSTALL-zh-CN.md").write_text("install", encoding="utf-8")
-            for name in ("NoiseField.event", "NoiseFieldState.event"):
+            for name in ("NoiseField.event",):
                 folder = events / name
                 folder.mkdir(parents=True)
                 (folder / "main.js").write_text("function create() {}", encoding="utf-8")
@@ -45,9 +45,10 @@ class SplitReleaseTest(unittest.TestCase):
                 with zipfile.ZipFile(core_zip) as archive:
                     self.assertIn("PEV.Core/PEV.Core.dll", archive.namelist())
                     self.assertFalse(any("/Events/" in name for name in archive.namelist()))
-                for name in ("NoiseField.event", "NoiseFieldState.event"):
+                for name in ("NoiseField.event",):
                     with zipfile.ZipFile(output / name) as archive:
                         self.assertEqual(name, json.loads(archive.read("event.json"))["id"])
+                self.assertEqual({"PEV.Core-1.0.0.zip", "NoiseField.event"}, {p.name for p in output.iterdir()})
                 with self.assertRaises(SystemExit):
                     build_release.main()
                 self.assertEqual(original, core_zip.read_bytes())

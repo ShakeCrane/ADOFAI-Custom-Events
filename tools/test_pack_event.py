@@ -27,7 +27,7 @@ class PackageValidationTests(unittest.TestCase):
 
     def test_invalid_fields_are_reported(self):
         for field, values in {
-            "schemaVersion": (None, "1", True, 0, 4, []),
+            "schemaVersion": (None, "1", True, 0, 5, []),
             "apiVersion": (None, "1", True, 0, 3, {}),
             "id": (None, "", "  ", 3),
             "version": (None, "", 3),
@@ -169,6 +169,22 @@ class PackageValidationTests(unittest.TestCase):
         pack(self.root, output)
         with zipfile.ZipFile(output) as archive:
             self.assertEqual(["main.js"], archive.namelist())
+
+    def test_included_events_require_valid_independent_definitions(self):
+        nested = self.root / "included"
+        nested.mkdir()
+        child = {"schemaVersion": 1, "id": "example.state", "version": "1.0.0", "entry": "main.js"}
+        (nested / "state.json").write_text(json.dumps(child), encoding="utf-8")
+        parent = dict(self.manifest, schemaVersion=4, includedEvents=["included/state.json"])
+        self.assertEqual([], validate(self.root, parent))
+        self.assertTrue(validate(self.root, dict(parent, schemaVersion=3)))
+        self.assertTrue(validate(self.root, dict(parent, includedEvents=["../outside.json"])))
+        self.assertTrue(validate(self.root, dict(parent, includedEvents=["missing.json"])))
+        self.assertTrue(validate(self.root, dict(parent, includedEvents=["included/state.json", "included/STATE.json"])))
+        (nested / "state.json").write_text(json.dumps(dict(child, id=parent["id"])), encoding="utf-8")
+        self.assertTrue(validate(self.root, parent))
+        (nested / "state.json").write_text(json.dumps(dict(child, schemaVersion=4, includedEvents=["nested.json"])), encoding="utf-8")
+        self.assertTrue(validate(self.root, parent))
 
     def test_noise_draft_staging_is_self_contained_and_never_overwrites(self):
         bundle = self.root / "draft.bundle"

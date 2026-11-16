@@ -167,6 +167,8 @@ namespace PEV.Model
     public class EventManifest
     {
         public int SchemaVersion = 1;
+        // Additional event definitions in the same package, relative to its root.
+        public readonly List<string> IncludedEvents = new List<string>();
         public string Id;
         public string Version = "1.0.0";
         public int ApiVersion = 1;
@@ -292,11 +294,25 @@ namespace PEV.Model
                 error = "manifest is missing required field 'id'";
                 return null;
             }
-            if ((m.SchemaVersion != 1 && m.SchemaVersion != 2 && m.SchemaVersion != 3) ||
+            if ((m.SchemaVersion != 1 && m.SchemaVersion != 2 && m.SchemaVersion != 3 && m.SchemaVersion != 4) ||
                 (m.ApiVersion != 1 && m.ApiVersion != 2))
             {
-                error = $"unsupported schemaVersion {m.SchemaVersion} or apiVersion {m.ApiVersion} (supported schemas: 1, 2, 3; API: 1, 2)";
+                error = $"unsupported schemaVersion {m.SchemaVersion} or apiVersion {m.ApiVersion} (supported schemas: 1, 2, 3, 4; API: 1, 2)";
                 return null;
+            }
+            if (root["includedEvents"] != null)
+            {
+                if (m.SchemaVersion < 4 || !(root["includedEvents"] is JArray included) || included.Count < 1 || included.Count > 16)
+                { error = "includedEvents requires schemaVersion 4 and 1-16 manifest paths"; return null; }
+                var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var item in included)
+                {
+                    string path = item.Type == JTokenType.String ? item.Value<string>()?.Replace('\\', '/') : null;
+                    if (!PEV.Loading.EventLoader.IsPackageRelativePath(path) ||
+                        string.Equals(path, "event.json", StringComparison.OrdinalIgnoreCase) || !paths.Add(path))
+                    { error = "includedEvents contains an invalid or duplicate package-relative path"; return null; }
+                    m.IncludedEvents.Add(path);
+                }
             }
             if (root["shaderBundle"] != null &&
                 (m.SchemaVersion < 2 || !PEV.Loading.EventLoader.IsPackageRelativePath(m.ShaderBundlePath)))

@@ -793,6 +793,37 @@ namespace PEV.Diagnostics
                 }
                 finally { Directory.Delete(root, true); }
             });
+            Check("PACKAGE-included-events", () =>
+            {
+                string root = Path.Combine(Path.GetTempPath(), "pev-included-" + Guid.NewGuid().ToString("N"));
+                string dirs = Path.Combine(root, "dirs"), zips = Path.Combine(root, "zips");
+                string package = Path.Combine(dirs, "example.event");
+                Directory.CreateDirectory(Path.Combine(package, "child"));
+                Directory.CreateDirectory(zips);
+                try
+                {
+                    File.WriteAllText(Path.Combine(package, "event.json"),
+                        "{\"schemaVersion\":4,\"id\":\"example.parent\",\"includedEvents\":[\"child/state.json\"]}");
+                    File.WriteAllText(Path.Combine(package, "child", "state.json"),
+                        "{\"schemaVersion\":1,\"id\":\"example.state\",\"entry\":\"child/state.js\"}");
+                    string script = Path.Combine(package, "child", "state.js");
+                    File.WriteAllText(script, "function create(){}", new System.Text.UTF8Encoding(false));
+                    var fromDir = EventLoader.Scan(new[] { dirs });
+                    if (fromDir.Errors.Count != 0 || fromDir.Loaded.Count != 2 ||
+                        fromDir.Loaded[1].Id != "example.state" ||
+                        EventLoader.ReadResource(fromDir.Loaded[1].SourcePath, fromDir.Loaded[1].Entry) == null) return false;
+                    string zip = Path.Combine(zips, "example.event");
+                    ZipFile.CreateFromDirectory(package, zip);
+                    var fromZip = EventLoader.Scan(new[] { zips });
+                    if (fromZip.Errors.Count != 0 || fromZip.Loaded.Count != 2 ||
+                        fromZip.Loaded[1].Id != "example.state" ||
+                        EventLoader.ReadResource(fromZip.Loaded[1].SourcePath, fromZip.Loaded[1].Entry) == null) return false;
+                    File.Delete(script);
+                    var broken = EventLoader.Scan(new[] { dirs });
+                    return broken.Loaded.Count == 0 && broken.Errors.Count == 1;
+                }
+                finally { Directory.Delete(root, true); }
+            });
             Check("FIELD-reference-texture", () =>
             {
                 string root = Path.Combine(Path.GetTempPath(), "pev-texture-" + Guid.NewGuid().ToString("N"));
@@ -1194,11 +1225,11 @@ namespace PEV.Diagnostics
                 var zones = new[] { new NoiseFieldColorOwnership.Zone {
                     CenterX = 0, CenterY = 0, HalfX = 0.5f, HalfY = 0.5f, YScale = 1f,
                     Opacity = 1f, Active = true, Red = 0f, Green = 1f, Blue = 0f } };
-                worker.Update(16, 8, 2f, zones);
+                worker.Update(16, 8, 2f, zones, 0xff5454);
                 float workerDeadline = Time.realtimeSinceStartup + 5f;
                 while (worker.Latest == null && worker.LastError == null && Time.realtimeSinceStartup < workerDeadline)
                 {
-                    worker.Update(16, 8, 2f, zones);
+                    worker.Update(16, 8, 2f, zones, 0xff5454);
                     yield return null;
                 }
                 Check("FIELD-color-worker-runtime", () => worker.LastError == null && worker.Latest != null &&

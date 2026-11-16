@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "id": "pev.noise-field",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
@@ -634,5 +634,8 @@
       }
     }
   ],
-  "shaderBundle": "assets/noise-field.bundle"
+  "shaderBundle": "assets/noise-field.bundle",
+  "includedEvents": [
+    "included/state.json"
+  ]
 }

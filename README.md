@@ -117,7 +117,7 @@ python tools/build_release.py --version 0.1.0
 ```
 
 That builds `src/PEV.Core` and writes the core-only `dist/PEV.Core-<version>.zip`
-alongside separate `NoiseField.event` and `NoiseFieldState.event` files. The current
+alongside a separate `NoiseField.event` containing the field and its state control. The current
 Core still contains field-specific rendering code; see [the boundary audit](docs/CORE-BOUNDARY-AUDIT.md).
 
 The game path is set at the top of `src/PEV.Core/PEV.Core.csproj`.

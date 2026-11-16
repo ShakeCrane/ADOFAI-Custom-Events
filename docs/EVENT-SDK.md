@@ -1,6 +1,6 @@
 # Programmable Events — 事件开发指南
 
-> 本文包含当前开发版 Core 的 schema 3 / API 2；旧版 Core 不支持这些新增字段。校准游戏版本 r150（ADOFAI 3.4+）。
+> 本文包含当前开发版 Core 的 schema 4 / API 2；旧版 Core 不支持这些新增字段。校准游戏版本 r150（ADOFAI 3.4+）。
 > 读者：事件作者，以及代为编写事件的 AI Agent。
 
 ---
@@ -56,7 +56,7 @@ CameraWarp.event
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| `schemaVersion` | 是 | manifest 格式版本，支持 `1`、`2` 和 `3`；普通脚本包可继续使用 `1` |
+| `schemaVersion` | 是 | manifest 格式版本，支持 `1`、`2`、`3` 和 `4`；普通脚本包可继续使用 `1` |
 | `id` | 是 | **身份**，与文件名无关。建议 `作者.事件名` |
 | `version` | 是 | 事件定义版本，语义化版本 |
 | `apiVersion` | 否 | 脚本 API 版本，支持 `1` 和 `2`；全局设置需要 `2` |
@@ -70,8 +70,11 @@ CameraWarp.event
 | `globalSettings` | 否 | schema 3、API 2 的事件级全局设置声明；由 Core 通用绘制到 UMM 面板 |
 | `decorationDefaults` | 否 | schema 3 的原生装饰新建默认值，支持六位十六进制 `color` 与非空 `tag` |
 | `decorationMigration` | 否 | schema 3 的旧事件数据到原生装饰属性的声明式迁移映射 |
+| `includedEvents` | 否 | schema 4 的包内其他事件 manifest 路径数组，最多 16 个；所有路径相对于事件包根目录 |
 
 `shaderBundle` 必须是包内相对路径；打包器会检查文件存在。旧版 Core 不认识 schema 2，使用它的包需要更新 Core。声明该字段不会赋予脚本额外的文件、材质或 shader 访问权限。
+
+`includedEvents` 适合一个 `.event` 包提供多个相关的编辑器入口。例如 `"includedEvents": ["included/state.json"]` 会连同主事件一起注册状态事件；被包含 manifest 的 `entry` 和图标路径也相对于同一包根目录。包内事件必须有不同的 ID，不支持嵌套包含；一个被包含 manifest 无效时，整个包不注册。卸载这个包会同时移除这些定义，谱面中保存的数据继续遵循缺失事件规则。这个功能需要 schema 4 Core；旧版包格式保持不变。
 
 ### 事件级全局设置
 

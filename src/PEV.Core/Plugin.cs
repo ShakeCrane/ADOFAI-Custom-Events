@@ -60,6 +60,7 @@ namespace PEV.Core
                 Log("  ERROR " + e);
 
             new Harmony(HarmonyId).PatchAll(Assembly.GetExecutingAssembly());
+#if PEV_DIAGNOSTICS
             Diagnostics.P0Harness.Configure(entry.Path);
             Diagnostics.P1Harness.Configure(entry.Path);
             Diagnostics.P2Harness.Configure(entry.Path);
@@ -67,6 +68,7 @@ namespace PEV.Core
             Diagnostics.P4Harness.Configure(entry.Path);
             Diagnostics.PN1Harness.Configure(entry.Path);
             Diagnostics.ReviewHarness.Configure(entry.Path);
+#endif
             Log("harmony patched");
             return true;
         }

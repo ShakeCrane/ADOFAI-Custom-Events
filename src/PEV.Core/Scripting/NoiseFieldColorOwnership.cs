@@ -57,24 +57,24 @@ namespace PEV.Scripting
             }
         }
 
-        internal static Result Build(int width, int height, float aspect, Zone[] zones) =>
-            Build(width, height, aspect, zones, new Workspace());
+        internal static Result Build(int width, int height, float aspect, Zone[] zones, int defaultRgb) =>
+            Build(width, height, aspect, zones, new Workspace(), defaultRgb);
 
-        internal static Result Build(int width, int height, float aspect, Zone[] zones, Workspace workspace)
+        internal static Result Build(int width, int height, float aspect, Zone[] zones, Workspace workspace, int defaultRgb)
         {
             if (width <= 0 || height <= 0 || !(aspect > 0) || float.IsInfinity(aspect) || zones == null || workspace == null)
                 throw new ArgumentException("Invalid palette geometry");
             int count = checked(width * height);
             workspace.Ensure(count);
             var result = workspace.Results[workspace.Next];
-            BuildLayer(width, height, count, aspect, zones, true, workspace, result.Active);
-            BuildLayer(width, height, count, aspect, zones, false, workspace, result.Disabled);
+            BuildLayer(width, height, count, aspect, zones, true, workspace, result.Active, defaultRgb);
+            BuildLayer(width, height, count, aspect, zones, false, workspace, result.Disabled, defaultRgb);
             workspace.Next ^= 1;
             return result;
         }
 
         private static void BuildLayer(int width, int height, int count, float aspect, Zone[] zones, bool active,
-            Workspace workspace, byte[] rgba)
+            Workspace workspace, byte[] rgba, int defaultRgb)
         {
             var normal = workspace.Normal; var inverse = workspace.Inverse; var green = workspace.Green;
             var normalOwner = workspace.NormalOwner; var inverseOwner = workspace.InverseOwner;
@@ -147,9 +147,9 @@ namespace PEV.Scripting
             for (int i = 0; i < count; i++)
             {
                 int owner = seeds[i] < 0 ? -1 : owners[seeds[i]];
-                rgba[i * 4] = owner < 0 ? (byte)255 : Unorm(zones[owner].Red);
-                rgba[i * 4 + 1] = owner < 0 ? (byte)84 : Unorm(zones[owner].Green);
-                rgba[i * 4 + 2] = owner < 0 ? (byte)84 : Unorm(zones[owner].Blue);
+                rgba[i * 4] = owner < 0 ? (byte)(defaultRgb >> 16) : Unorm(zones[owner].Red);
+                rgba[i * 4 + 1] = owner < 0 ? (byte)(defaultRgb >> 8) : Unorm(zones[owner].Green);
+                rgba[i * 4 + 2] = owner < 0 ? (byte)defaultRgb : Unorm(zones[owner].Blue);
                 rgba[i * 4 + 3] = 255;
             }
         }

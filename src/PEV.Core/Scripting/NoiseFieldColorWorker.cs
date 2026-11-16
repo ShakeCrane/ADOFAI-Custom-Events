@@ -18,6 +18,7 @@ namespace PEV.Scripting
         private sealed class Request
         {
             internal int Width, Height;
+            internal int DefaultRgb;
             internal float Aspect;
             internal NoiseFieldColorOwnership.Zone[] Zones;
         }
@@ -40,13 +41,13 @@ namespace PEV.Scripting
 
         // Called from the owning thread, including while paused so a worker can complete.
         // Returns true only when the caller should upload a new result.
-        internal bool Update(int width, int height, float aspect, NoiseFieldColorOwnership.Zone[] zones)
+        internal bool Update(int width, int height, float aspect, NoiseFieldColorOwnership.Zone[] zones, int defaultRgb)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(NoiseFieldColorWorker));
             if (zones == null) throw new ArgumentNullException(nameof(zones));
-            if (!Matches(_desired, width, height, aspect, zones))
+            if (!Matches(_desired, width, height, aspect, zones, defaultRgb))
             {
-                _desired = new Request { Width = width, Height = height, Aspect = aspect,
+                _desired = new Request { Width = width, Height = height, Aspect = aspect, DefaultRgb = defaultRgb,
                     Zones = (NoiseFieldColorOwnership.Zone[])zones.Clone() };
                 _failed = null;
                 LastError = null;
@@ -84,7 +85,7 @@ namespace PEV.Scripting
                     {
                         cancellation.ThrowIfCancellationRequested();
                         return new Completed { Request = request,
-                            Result = NoiseFieldColorOwnership.Build(request.Width, request.Height, request.Aspect, request.Zones, _workspace) };
+                            Result = NoiseFieldColorOwnership.Build(request.Width, request.Height, request.Aspect, request.Zones, _workspace, request.DefaultRgb) };
                     }
                     finally { Slots.Release(); }
                 });
@@ -96,10 +97,10 @@ namespace PEV.Scripting
         private Request _finished;
 
         private static bool Matches(Request request, int width, int height, float aspect,
-            NoiseFieldColorOwnership.Zone[] zones)
+            NoiseFieldColorOwnership.Zone[] zones, int defaultRgb)
         {
             if (request == null || request.Width != width || request.Height != height ||
-                request.Aspect != aspect || request.Zones.Length != zones.Length) return false;
+                request.Aspect != aspect || request.DefaultRgb != defaultRgb || request.Zones.Length != zones.Length) return false;
             for (int i = 0; i < zones.Length; i++)
             {
                 var a = request.Zones[i]; var b = zones[i];

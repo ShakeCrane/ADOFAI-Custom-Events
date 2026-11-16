@@ -15,7 +15,7 @@ namespace PEV.Scripting
         {
             internal readonly NoiseFieldGpuMasks Masks;
             internal readonly NoiseFieldGpuLayer Layer;
-            internal readonly NoiseFieldGpuPalette Palette = new NoiseFieldGpuPalette();
+            internal readonly NoiseFieldGpuPalette Palette;
             internal readonly NoiseFieldTouchHistory History;
             internal readonly List<NoiseFieldTouchHistory.Contact> Contacts = new List<NoiseFieldTouchHistory.Contact>();
             internal readonly NoiseFieldGpuMasks.Touch[] Touches = new NoiseFieldGpuMasks.Touch[NoiseFieldTouchHistory.Capacity];
@@ -29,7 +29,9 @@ namespace PEV.Scripting
                 NoiseFieldTouchHistory history = null)
             {
                 History = history ?? new NoiseFieldTouchHistory();
-                Masks = new NoiseFieldGpuMasks(shader);
+                Palette = new NoiseFieldGpuPalette(manifest);
+                manifest.LegacyFieldProfile.TryGetValue("glowWeights", out var glowWeights);
+                Masks = new NoiseFieldGpuMasks(shader, glowWeights);
                 try { Layer = new NoiseFieldGpuLayer(manifest, key.SortingLayer, key.SortingOrder, key.UnityLayer); }
                 catch { Masks.Dispose(); throw; }
             }

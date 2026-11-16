@@ -65,7 +65,23 @@ namespace PEV.Loading
                     report.Errors.Add($"{Path.GetFileName(path)}: {error}");
                     return;
                 }
-                report.Loaded.Add(manifest);
+                // A compound package is registered atomically: a broken included event must
+                // not silently leave half of a feature installed. All entries and resources
+                // use the same package root, for both ZIPs and directory packages.
+                var definitions = new List<EventManifest> { manifest };
+                var ids = new HashSet<string>(StringComparer.Ordinal) { manifest.Id };
+                foreach (string includedPath in manifest.IncludedEvents)
+                {
+                    byte[] bytes = ReadResource(path, includedPath);
+                    if (bytes == null) throw new InvalidDataException("included event not found: " + includedPath);
+                    var included = EventManifest.Parse(Encoding.UTF8.GetString(bytes), path, out string includedError);
+                    if (included == null) throw new InvalidDataException("invalid included event " + includedPath + ": " + includedError);
+                    if (included.IncludedEvents.Count != 0) throw new InvalidDataException("nested includedEvents are not supported");
+                    if (!ids.Add(included.Id)) throw new InvalidDataException("duplicate event id inside package: " + included.Id);
+                    if (ReadResource(path, included.Entry) == null) throw new InvalidDataException("included event entry not found: " + included.Entry);
+                    definitions.Add(included);
+                }
+                report.Loaded.AddRange(definitions);
             }
             catch (Exception e)
             {

@@ -11,7 +11,6 @@ Produces a core-only Unity Mod Manager package and separate event packages:
     └── Events/ (empty)
 
     NoiseField.event
-    NoiseFieldState.event
 
 Usage:
     python tools/build_release.py [--version 0.1.0] [--out dist]
@@ -68,7 +67,7 @@ def main():
     if not os.path.isfile(dll):
         raise SystemExit(f"missing build output: {dll}")
 
-    event_names = ("NoiseField.event", "NoiseFieldState.event")
+    event_names = ("NoiseField.event",)
     for name in event_names:
         src = os.path.join(EVENTS, name)
         if not os.path.isdir(src):

@@ -8,17 +8,24 @@ namespace PEV.Scripting
     internal sealed class NoiseFieldGpuPalette : IDisposable
     {
         private readonly NoiseFieldColorWorker _worker = new NoiseFieldColorWorker();
+        private readonly int _defaultRgb;
         private Texture2D _rawActive, _disabled;
         private RenderTexture _active;
 
         internal Texture Active => _active;
         internal Texture Disabled => _disabled;
 
+        internal NoiseFieldGpuPalette(PEV.Model.EventManifest provider)
+        {
+            _defaultRgb = int.TryParse(provider?.DecorationDefaultColor, System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out int rgb) ? rgb : 0xffffff;
+        }
+
         internal bool Update(NoiseFieldGpuMasks masks, Texture2D noise, float aspect,
             NoiseFieldColorOwnership.Zone[] zones)
         {
             int width = masks.Width, height = masks.Height;
-            bool updated = _worker.Update(width, height, aspect, zones);
+            bool updated = _worker.Update(width, height, aspect, zones, _defaultRgb);
             if (_worker.LastError != null) throw new InvalidOperationException("Palette worker failed", _worker.LastError);
             if (!updated && _worker.Latest != null && _worker.LatestWidth == width && _worker.LatestHeight == height && _worker.LatestAspect == aspect &&
                 (_rawActive == null || _disabled == null || _active == null || !_active.IsCreated())) updated = true;

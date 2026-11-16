@@ -11,7 +11,7 @@
 - 字段编辑器预览的键和参数映射由包声明；生产代码不通过噪域事件 ID 或特定参数名识别字段。`Choice` 下拉选项由包定义，字段基础形状类型仍属于原语。
 - 旧字段渲染使用的 PNG、视觉配置和辉光权重移到事件包中；Core 不再内嵌事件 PNG。CPU 贴图缓存按资源提供者及其配置隔离，字段参数未提供时采用中性默认值。
 - GPU 路径从各包声明加载资源、波形、视觉数值和采样设置；按提供者隔离运行及故障回退，避免某一包的加载失败禁用其他包。单一真实 bundle 已在游戏内验证；多个不同有效 bundle 的并行运行尚未验证。
-- `Diagnostics/` 中出现具体事件 ID 和参数用于测试夹具，不参与一般事件的功能调度。
+- `Diagnostics/` 的事件专属测试夹具只编译到单独的诊断版 DLL，不进入正式 Core DLL。构建诊断版使用 `dotnet build src/PEV.Core/PEV.Core.csproj -c Release -p:IncludeDiagnostics=true`，输出在 `bin/Release-diagnostics/`；正式构建仍输出 `bin/Release/`。
 
 ## 升级与兼容
 
@@ -23,7 +23,7 @@
 
 已确认的待迁移实现包括 `NoiseComposer` / `NoiseTextureFactory` 的旧 CPU 特效，`NoiseFieldColorOwnership` 的 Phira 色彩归属，以及 `NoiseFieldGpuMasks` / `NoiseFieldGpuCoordinator` 中写死的 pass 顺序、辉光和状态行为。删除这些代码前，事件包必须能表达并驱动对应流程，不能以牺牲画面或关闭 CPU 回退冒充解耦。
 
-分发脚本现生成不含事件的 Core 压缩包及独立事件文件。空事件目录启动和独立事件安装均已在游戏实测；目前状态控制仍是第二个独立 `.event`，尚未达到“核心 + 一个完整噪域包”的最终交付形态。两项待办都完成之前，分包结果只能视为中间产物。
+分发脚本现生成不含事件文件的 Core 压缩包和一个独立噪域 `.event`。事件包通过通用 schema 4 包含状态控制事件；仅安装该包时，两个事件入口、状态脚本和 GPU 渲染已在游戏实测。空事件目录下 Core 也能独立启动。分发形式已经拆开，但 Core 内的事件专属逻辑尚未迁出，因此这仍是中间产物。
 
 Unity shader bundle 已构建并内置于噪域事件包。游戏内已检查资源加载、GPU 接管、单层与两层 depth、实时场景采样开关、三态和反转镂空；更复杂谱面、多个不同有效 GPU 资源提供者的并行显示及完整游戏画面与参考的逐帧对照仍未完成，详见 [发布验证记录](NOISEFIELD-RELEASE-VALIDATION.md)。
 
