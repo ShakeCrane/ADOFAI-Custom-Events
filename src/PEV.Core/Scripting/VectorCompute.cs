@@ -21,17 +21,20 @@ namespace PEV.Scripting
         private sealed class Surface { internal byte[] Values; internal int[] Owners; }
         private sealed class Seeds { internal int[] Indices, Owners; }
         private sealed class ResultBuffer { internal byte[] Bytes; }
+        private sealed class FloatBuffer { internal int Width, Height; internal float[] Values; }
         private readonly List<object> _buffers = new List<object>();
         private readonly Stack<Surface> _surfaces = new Stack<Surface>();
         private readonly Stack<Seeds> _seeds = new Stack<Seeds>();
         private readonly Stack<byte[]> _bytes = new Stack<byte[]>();
+        private readonly Dictionary<int, Stack<float[]>> _floats = new Dictionary<int, Stack<float[]>>();
         private readonly byte[][][] _outputs = { new byte[MaxOutputs][], new byte[MaxOutputs][] };
         private readonly Dictionary<string, VectorExpression.Program> _programs = new Dictionary<string, VectorExpression.Program>(StringComparer.Ordinal);
+        private readonly Dictionary<string, PixelKernel.Compiled> _pixelPrograms = new Dictionary<string, PixelKernel.Compiled>(StringComparer.Ordinal);
         private readonly int _width, _height, _count;
         private readonly float _aspect;
         private readonly Action _checkpoint;
         private int _generation, _outputSlot = 1, _outputIndex, _commands;
-        private long _allocated, _work, _deadline;
+        private long _allocated, _work, _pixelWork, _deadline;
         private CancellationToken _cancellation;
 
         internal VectorCompute(int width, int height, float aspect)
@@ -50,10 +53,15 @@ namespace PEV.Scripting
                 if (buffer is Surface surface) _surfaces.Push(surface);
                 else if (buffer is Seeds seeds) _seeds.Push(seeds);
                 else if (buffer is byte[] bytes) _bytes.Push(bytes);
+                else if (buffer is FloatBuffer floating)
+                {
+                    if (!_floats.TryGetValue(floating.Values.Length, out var pool)) _floats.Add(floating.Values.Length, pool = new Stack<float[]>());
+                    pool.Push(floating.Values);
+                }
             }
             _buffers.Clear();
             _generation = _generation >= (int.MaxValue / MaxBuffers - 1) ? 1 : _generation + 1;
-            _outputSlot = 1 - _outputSlot; _outputIndex = 0; _commands = 0; _work = 0;
+            _outputSlot = 1 - _outputSlot; _outputIndex = 0; _commands = 0; _work = _pixelWork = 0;
             _cancellation = cancellation;
             _deadline = Stopwatch.GetTimestamp() + 2 * Stopwatch.Frequency;
             Checkpoint();
@@ -287,6 +295,91 @@ namespace PEV.Scripting
             return Put(new ResultBuffer { Bytes = dst });
         }
 
+        private FloatBuffer FloatPlane(int width, int height)
+        {
+            if (width < 1 || height < 1 || width > 4096 || height > 4096 || (long)width * height > 1048576)
+                throw new ArgumentOutOfRangeException("pixel plane dimensions");
+            int count = width * height;
+            float[] values;
+            if (_floats.TryGetValue(count, out var pool) && pool.Count > 0) values = pool.Pop();
+            else { Reserve((long)count * sizeof(float)); values = new float[count]; }
+            return new FloatBuffer { Width = width, Height = height, Values = values };
+        }
+        private int PixelFill(JObject root)
+        {
+            int width = Integer(root, "width", 1, 4096), height = Integer(root, "height", 1, 4096);
+            float value = Number(root, "value", -1000000f, 1000000f);
+            var buffer = FloatPlane(width, height);
+            Charge(buffer.Values.Length);
+            for (int i = 0; i < buffer.Values.Length; i++)
+            {
+                if ((i & 4095) == 0) Checkpoint();
+                buffer.Values[i] = value;
+            }
+            return Put(buffer);
+        }
+        private int PixelRun(JObject root)
+        {
+            int width = Integer(root, "width", 1, 4096), height = Integer(root, "height", 1, 4096);
+            if (!(root["program"] is JArray program) || !(root["sources"] is JArray sources) || sources.Count > 16 ||
+                !(root["uniforms"] is JArray uniforms) || uniforms.Count > 128)
+                throw new ArgumentException("invalid pixel kernel command");
+            long work = (long)width * height * program.Count;
+            if (work < 0 || _pixelWork > 350000000L - work) throw new InvalidOperationException("pixel work limit exceeded");
+            _pixelWork += work; Checkpoint();
+            var inputs = new PixelPlane[sources.Count];
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                if (!(sources[i] is JObject spec)) throw new ArgumentException("invalid pixel source");
+                var source = Get<FloatBuffer>(Integer(spec, "handle", 0, int.MaxValue));
+                inputs[i] = new PixelPlane(source.Width, source.Height, 1, source.Values,
+                    spec.Value<string>("filter"), spec.Value<string>("wrap"));
+            }
+            var values = new float[uniforms.Count];
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (uniforms[i].Type != JTokenType.Float && uniforms[i].Type != JTokenType.Integer)
+                    throw new ArgumentException("invalid pixel uniform");
+                values[i] = uniforms[i].Value<float>();
+                if (!Finite(values[i]) || Math.Abs(values[i]) > 1000000f) throw new ArgumentException("invalid pixel uniform");
+            }
+            string key = program.ToString(Formatting.None) + "/" + inputs.Length + "/" + values.Length;
+            if (!_pixelPrograms.TryGetValue(key, out var kernel))
+            {
+                if (_pixelPrograms.Count >= 32) throw new InvalidOperationException("too many pixel programs");
+                _pixelPrograms.Add(key, kernel = PixelKernel.Compile(program, inputs.Length, values.Length));
+            }
+            var result = FloatPlane(width, height);
+            kernel.Execute(inputs, values, result.Values, width, height, _cancellation, _checkpoint);
+            return Put(result);
+        }
+        private int PixelPack(JObject root)
+        {
+            if (!(root["channels"] is JArray channels) || channels.Count != 4 || _outputIndex >= MaxOutputs)
+                throw new ArgumentException("invalid pixel output channels");
+            var planes = new FloatBuffer[4];
+            for (int i = 0; i < planes.Length; i++)
+            {
+                if (channels[i].Type != JTokenType.Integer) throw new ArgumentException("invalid pixel output handle");
+                planes[i] = Get<FloatBuffer>(channels[i].Value<int>());
+                if (planes[i].Width != _width || planes[i].Height != _height) throw new ArgumentException("pixel output size mismatch");
+            }
+            Charge(_count);
+            var dst = _outputs[_outputSlot][_outputIndex];
+            if (dst == null) { Reserve((long)_count * 4); _outputs[_outputSlot][_outputIndex] = dst = new byte[_count * 4]; }
+            _outputIndex++;
+            for (int i = 0; i < _count; i++)
+            {
+                if ((i & 4095) == 0) Checkpoint();
+                for (int channel = 0; channel < 4; channel++)
+                {
+                    float value = planes[channel].Values[i];
+                    dst[i * 4 + channel] = Finite(value) ? Unorm(value) : (byte)0;
+                }
+            }
+            return Put(new ResultBuffer { Bytes = dst });
+        }
+
         internal string Apply(string input)
         {
             Checkpoint();
@@ -307,6 +400,9 @@ namespace PEV.Scripting
                 case "differenceSeeds": result = DifferenceSeeds(Integer(root, "a", 0, int.MaxValue), Integer(root, "b", 0, int.MaxValue), Integer(root, "value", 0, int.MaxValue)); break;
                 case "propagate": result = Propagate(Integer(root, "seeds", 0, int.MaxValue), root["passes"]); break;
                 case "map": result = Map(Integer(root, "seeds", 0, int.MaxValue), root["colors"], Integer(root, "fallback", 0, 0xffffff)); break;
+                case "pixelFill": result = PixelFill(root); break;
+                case "pixelRun": result = PixelRun(root); break;
+                case "pixelPack": result = PixelPack(root); break;
                 default: throw new ArgumentException("unknown vector operation");
             }
             return result.ToString(CultureInfo.InvariantCulture);

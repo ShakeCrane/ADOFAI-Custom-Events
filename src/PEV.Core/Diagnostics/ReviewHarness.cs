@@ -74,6 +74,10 @@ namespace PEV.Diagnostics
             CheckPayloads();
             CheckStorage(editor);
             CheckScripts();
+            Check("PIXEL-kernel-operations", CheckPixelKernel);
+            Check("PIXEL-kernel-limits", CheckPixelKernelLimits);
+            Check("PIXEL-worker-limits-and-reuse", CheckPixelWorkerLimits);
+            Check("PIXEL-kernel-mono-performance", CheckPixelKernelPerformance);
             CheckKeys();
             yield return CheckTextures();
             yield return CheckFields();
@@ -89,6 +93,77 @@ namespace PEV.Diagnostics
             yield return ProbeGlobalSettingsGui();
             CheckEditorPlacement(editor);
             Row("DONE", "ok");
+        }
+
+        private static bool CheckPixelKernel()
+        {
+            var plane = new PixelPlane(2, 2, 1, new[] { 1f, 2f, 3f, 4f }, "point", "clamp");
+            var program = PixelKernel.Compile(JArray.Parse("[[\"u\"],[\"v\"],[\"sample\",0,0]]"), 1, 0);
+            var output = new float[8];
+            program.Execute(new[] { plane }, Array.Empty<float>(), output, 4, 2, System.Threading.CancellationToken.None);
+            if (!output.SequenceEqual(new[] { 1f, 1f, 2f, 2f, 3f, 3f, 4f, 4f })) return false;
+            var linear = new PixelPlane(2, 1, 1, new[] { 1f, 3f }, "linear", "repeat");
+            var mirrored = new PixelPlane(2, 1, 1, new[] { 1f, 3f }, "point", "mirror");
+            if (Math.Abs(linear.Sample(0, .5f, 0) - 2f) > .00001f ||
+                Math.Abs(linear.Sample(.5f, .5f, 0) - 2f) > .00001f || mirrored.Sample(-.25f, .5f, 0) != 1f) return false;
+            var expression = PixelKernel.Compile(JArray.Parse("[[\"u\"],[\"c\",0.5],[\"ge\"],[\"uniform\",0],[\"set\",0],[\"get\",0],[\"c\",-1],[\"select\"],[\"clamp\"]]"), 0, 1);
+            expression.Execute(Array.Empty<PixelPlane>(), new[] { .75f }, output, 4, 2, System.Threading.CancellationToken.None);
+            return output.SequenceEqual(new[] { 0f, 0f, .75f, .75f, 0f, 0f, .75f, .75f });
+        }
+
+        private static bool CheckPixelKernelLimits()
+        {
+            foreach (string text in new[] { "[[\"call\",\"System\"]]", "[[\"add\"]]", "[[\"get\",0]]",
+                "[[\"c\",0],[\"c\",0],[\"sample\",1,0]]", "[[\"uniform\",1]]" })
+            {
+                try { PixelKernel.Compile(JArray.Parse(text), 1, 1); return false; }
+                catch (Exception) { }
+            }
+            var kernel = PixelKernel.Compile(JArray.Parse("[[\"u\"]]"), 0, 0);
+            using (var cancellation = new System.Threading.CancellationTokenSource())
+            {
+                cancellation.Cancel();
+                try { kernel.Execute(Array.Empty<PixelPlane>(), Array.Empty<float>(), new float[1], 1, 1, cancellation.Token); return false; }
+                catch (OperationCanceledException) { }
+            }
+            try { kernel.Execute(Array.Empty<PixelPlane>(), Array.Empty<float>(), new float[2], 1, 1, System.Threading.CancellationToken.None); return false; }
+            catch (ArgumentException) { }
+            return true;
+        }
+
+        private static bool CheckPixelKernelPerformance()
+        {
+            var program = PixelKernel.Compile(JArray.Parse("[[\"u\"],[\"v\"],[\"sample\",0,0],[\"set\",0],[\"u\"],[\"v\"],[\"sample\",1,0],[\"get\",0],[\"add\"],[\"uniform\",0],[\"mul\"],[\"c\",0.1],[\"add\"],[\"clamp\"]]"), 2, 1);
+            var source = new PixelPlane(128, 128, 1, Enumerable.Repeat(.25f, 128 * 128).ToArray(), "point", "repeat");
+            var output = new float[400 * 224];
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            for (int i = 0; i < 5; i++) program.Execute(new[] { source, source }, new[] { 1f }, output, 400, 224, System.Threading.CancellationToken.None);
+            watch.Stop();
+            Row("PIXEL-kernel-cost", "INFO", $"400x224, two samples, mean {watch.Elapsed.TotalMilliseconds / 5:F2} ms/pass on game Mono");
+            return Math.Abs(output[0] - .6f) < .00001f && Math.Abs(output[output.Length - 1] - .6f) < .00001f;
+        }
+
+        private static bool CheckPixelWorkerLimits()
+        {
+            var vector = new VectorCompute(1, 1, 1f);
+            vector.Begin(System.Threading.CancellationToken.None);
+            int old = int.Parse(vector.Apply("{\"op\":\"pixelFill\",\"width\":1,\"height\":1,\"value\":0.5}"));
+            vector.Begin(System.Threading.CancellationToken.None);
+            try
+            {
+                vector.Apply("{\"op\":\"pixelRun\",\"width\":1,\"height\":1,\"sources\":[{\"handle\":" + old +
+                    ",\"filter\":\"point\",\"wrap\":\"clamp\"}],\"uniforms\":[],\"program\":[[\"u\"]]}");
+                return false;
+            }
+            catch (ArgumentException) { }
+            try { vector.Apply("{\"op\":\"pixelFill\",\"width\":4096,\"height\":4096,\"value\":0}"); return false; }
+            catch (ArgumentOutOfRangeException) { }
+            int source = int.Parse(vector.Apply("{\"op\":\"pixelFill\",\"width\":1,\"height\":1,\"value\":0.5}"));
+            string invalid = "{\"op\":\"pixelRun\",\"width\":1,\"height\":1,\"sources\":[{\"handle\":" + source +
+                ",\"filter\":\"point\",\"wrap\":\"clamp\"}],\"uniforms\":[],\"program\":[[\"call\",\"System\"]]}";
+            try { vector.Apply(invalid); return false; }
+            catch (ArgumentException) { }
+            return true;
         }
 
         private static IEnumerator CheckPackagedVectorWorker()
@@ -143,6 +218,27 @@ return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
                 var data=worker.Latest;
                 Row("VECTOR-worker-sandbox", data != null && data.Length == 1 && data[0].Length == 16*8*4 &&
                     data[0][0] == 64 && data[0][1] == 128 && data[0][2] == 191 ? "PASS" : "FAIL",
+                    worker.LastError?.ToString());
+            }
+            const string pixelSource = @"function computeVector(input) {
+function run(x) { return Number(__compute(JSON.stringify(x))); }
+var red=run({op:'pixelFill',width:16,height:8,value:input.red});
+var green=run({op:'pixelRun',width:16,height:8,sources:[{handle:red,filter:'point',wrap:'clamp'}],uniforms:[],
+  program:[['u'],['v'],['sample',0,0],['c',2],['mul'],['clamp']]});
+var blue=run({op:'pixelFill',width:16,height:8,value:0.75});
+var alpha=run({op:'pixelFill',width:16,height:8,value:1});
+return [run({op:'pixelPack',channels:[red,green,blue,alpha]})];
+}";
+            using (var worker = new VectorWorker<string>(pixelSource, x => x, (a,b) => a == b, (w,h,a,x) => x))
+            {
+                const string payload = "{\"red\":0.25}";
+                worker.Update(16,8,2f,payload);
+                float deadline = Time.realtimeSinceStartup + 10f;
+                while (worker.Latest == null && worker.LastError == null && Time.realtimeSinceStartup < deadline)
+                { worker.Update(16,8,2f,payload); yield return null; }
+                var pixels = worker.Latest;
+                Row("PIXEL-worker-package-commands", pixels != null && pixels.Length == 1 && pixels[0].Length == 16*8*4 &&
+                    pixels[0][0] == 64 && pixels[0][1] == 128 && pixels[0][2] == 191 && pixels[0][3] == 255 ? "PASS" : "FAIL",
                     worker.LastError?.ToString());
             }
             using (var worker = new VectorWorker<string>("function computeVector(){return eval('1');}", x => x, (a,b) => a == b, (w,h,a,x) => x))
