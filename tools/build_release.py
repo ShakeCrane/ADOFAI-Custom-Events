@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Build the release zip.
 
-Produces a drop-in Unity Mod Manager package:
+Produces a core-only Unity Mod Manager package and separate event packages:
 
     PEV.Core/
     ├── Info.json
     ├── PEV.Core.dll
     ├── Jint.dll
     ├── Acornima.dll
-    └── Events/
-        ├── CameraWarp.event
-        ├── Pulse.event
-        └── ScreenShake.event
+    └── Events/ (empty)
+
+    NoiseField.event
+    NoiseFieldState.event
 
 Usage:
     python tools/build_release.py [--version 0.1.0] [--out dist]
@@ -27,7 +27,7 @@ import sys
 import tempfile
 import zipfile
 
-from pack_event import validate
+from pack_event import pack, validate
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE = os.path.join(ROOT, "src", "PEV.Core")
@@ -68,10 +68,11 @@ def main():
     if not os.path.isfile(dll):
         raise SystemExit(f"missing build output: {dll}")
 
-    for name in sorted(os.listdir(EVENTS)):
+    event_names = ("NoiseField.event", "NoiseFieldState.event")
+    for name in event_names:
         src = os.path.join(EVENTS, name)
-        if not os.path.isdir(src) or not name.endswith(".event"):
-            continue
+        if not os.path.isdir(src):
+            raise SystemExit(f"missing event source: {src}")
         with open(os.path.join(src, "event.json"), encoding="utf-8") as fh:
             manifest = json.load(fh)
         problems = validate(src, manifest)
@@ -79,9 +80,11 @@ def main():
             raise SystemExit(f"invalid event {name}: " + "; ".join(problems))
 
     zip_path = os.path.join(out_dir, f"{MOD_ID}-{args.version}.zip")
+    event_paths = [os.path.join(out_dir, name) for name in event_names]
     os.makedirs(out_dir, exist_ok=True)
-    if os.path.exists(zip_path):
-        raise SystemExit(f"refusing to overwrite existing release: {zip_path}")
+    for output in [zip_path] + event_paths:
+        if os.path.exists(output):
+            raise SystemExit(f"refusing to overwrite existing release: {output}")
     print("staging...")
     with tempfile.TemporaryDirectory(prefix="pev-release-") as staging_root:
         stage = os.path.join(staging_root, MOD_ID)
@@ -104,12 +107,8 @@ def main():
                 "EntryMethod": ENTRY,
             }, fh, indent=2)
             fh.write("\n")
-        for name in sorted(os.listdir(EVENTS)):
-            src = os.path.join(EVENTS, name)
-            if not os.path.isdir(src) or not name.endswith(".event"):
-                continue
-            shutil.copytree(src, os.path.join(stage, "Events", name))
-            print(f"  + Events/{name}")
+        for name in event_names:
+            pack(os.path.join(EVENTS, name), os.path.join(staging_root, name))
         print("packing...")
         with zipfile.ZipFile(zip_path, "x", zipfile.ZIP_DEFLATED) as zf:
             for dirpath, _dirnames, filenames in os.walk(stage):
@@ -117,6 +116,10 @@ def main():
                     full = os.path.join(dirpath, fn)
                     rel = os.path.relpath(full, staging_root).replace(os.sep, "/")
                     zf.write(full, rel)
+        for name, output in zip(event_names, event_paths):
+            with open(os.path.join(staging_root, name), "rb") as source, open(output, "xb") as dest:
+                shutil.copyfileobj(source, dest)
+            print(f"  + {output}")
 
     size = os.path.getsize(zip_path)
     print(f"\n{zip_path}  ({size / 1024 / 1024:.1f} MB)")

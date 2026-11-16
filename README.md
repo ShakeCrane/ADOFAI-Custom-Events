@@ -94,7 +94,8 @@ be usable by both people and AI agents.
 
 ## Example events
 
-Shipped in `Mods/PEV.Core/Events/`:
+Install event packages separately in `Mods/PEV.Core/Events/`. The Core distribution
+does not include event packages:
 
 | Event | Demonstrates |
 |---|---|
@@ -115,8 +116,9 @@ assemblies).
 python tools/build_release.py --version 0.1.0
 ```
 
-That builds `src/PEV.Core`, stages the runtime DLLs and example events, and writes
-`dist/PEV.Core-<version>.zip`.
+That builds `src/PEV.Core` and writes the core-only `dist/PEV.Core-<version>.zip`
+alongside separate `NoiseField.event` and `NoiseFieldState.event` files. The current
+Core still contains field-specific rendering code; see [the boundary audit](docs/CORE-BOUNDARY-AUDIT.md).
 
 The game path is set at the top of `src/PEV.Core/PEV.Core.csproj`.
 
