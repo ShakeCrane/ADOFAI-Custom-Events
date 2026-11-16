@@ -39,10 +39,10 @@ namespace PEV.Registry
         public static int Register(ParamSpec spec, Action<string> log = null)
         {
             if (spec == null || spec.OptionLabels == null || spec.OptionLabels.Count == 0) return 0;
-            if (string.IsNullOrEmpty(spec.Type) || !spec.Type.StartsWith("Enum:", StringComparison.Ordinal))
+            if (string.IsNullOrEmpty(spec.EffectiveType) || !spec.EffectiveType.StartsWith("Enum:", StringComparison.Ordinal))
                 return 0;
 
-            string enumType = spec.Type.Substring("Enum:".Length).Trim();
+            string enumType = spec.EffectiveType.Substring("Enum:".Length).Trim();
             if (enumType.Length == 0) return 0;
 
             // Setup is what populates the section dictionaries. GetFullSectionLocalization

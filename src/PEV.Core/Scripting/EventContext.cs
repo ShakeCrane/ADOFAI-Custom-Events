@@ -21,10 +21,12 @@ namespace PEV.Scripting
         public bool IsPaused;
 
         public Dictionary<string, object> Params;
+        public Dictionary<string, object> Settings;
+        internal int EventOrder;
 
         public string ToStateJson()
         {
-            return JsonConvert.SerializeObject(new Dictionary<string, object>
+            var state = new Dictionary<string, object>
             {
                 { "time", Time },
                 { "eventTime", EventTime },
@@ -37,7 +39,9 @@ namespace PEV.Scripting
                 { "floorSeq", FloorSeq },
                 { "isPlaying", IsPlaying },
                 { "isPaused", IsPaused }
-            });
+            };
+            if (Settings != null) state["settings"] = Settings;
+            return JsonConvert.SerializeObject(state);
         }
     }
 
@@ -48,6 +52,7 @@ namespace PEV.Scripting
     /// </summary>
     public static class GameBridge
     {
+        internal static readonly FieldPhaseOverrides FieldPhases = new FieldPhaseOverrides();
         /// <summary>
         /// Everything a script can spawn lives on the effect canvas: its own layer, drawn
         /// by a camera above the game's stack. Parenting to the gameplay camera instead
@@ -57,6 +62,7 @@ namespace PEV.Scripting
 
         public static void DestroyAll()
         {
+            FieldPhases.Clear();
             try { ContinuousEffects.DestroyAll(); } catch { }
             // Before the canvas: texture release walks our own bookkeeping, and doing it
             // first keeps the ordering explicit if a texture ever outlives its object.
@@ -71,6 +77,7 @@ namespace PEV.Scripting
 
         public static void DestroyScope(string scope)
         {
+            FieldPhases.Remove(scope);
             ContinuousEffects.DestroyScope(scope);
             NoiseFieldRenderer.DestroyScope(scope);
             if (!string.IsNullOrEmpty(scope))
@@ -123,6 +130,20 @@ namespace PEV.Scripting
             error = null;
             string tag = Str(args, "tag");
             if (string.IsNullOrEmpty(tag)) { error = name + " needs a tag"; return false; }
+
+            if (string.Equals(name, "fieldstate", StringComparison.OrdinalIgnoreCase) && args.ContainsKey("phase"))
+            {
+                if (!Enum.TryParse(Str(args, "phase"), true, out NoiseFieldPhase phase) ||
+                    !Enum.IsDefined(typeof(NoiseFieldPhase), phase))
+                { error = "fieldstate needs a valid phase"; return false; }
+                try
+                {
+                    FieldPhases.Set(Str(args, "__instance"), tag, phase,
+                        Convert.ToDouble(args["__eventTime"]), Convert.ToInt32(args["__eventOrder"]));
+                    return true;
+                }
+                catch (Exception e) { error = "fieldstate: " + e.Message; return false; }
+            }
 
             bool clear = Bool(args, "clear", false);
             var offset = Vec2(args, "offset", Vector2.zero);

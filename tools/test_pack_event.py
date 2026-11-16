@@ -26,8 +26,8 @@ class PackageValidationTests(unittest.TestCase):
 
     def test_invalid_fields_are_reported(self):
         for field, values in {
-            "schemaVersion": (None, "1", True, 0, 3, []),
-            "apiVersion": (None, "1", True, 0, 2, {}),
+            "schemaVersion": (None, "1", True, 0, 4, []),
+            "apiVersion": (None, "1", True, 0, 3, {}),
             "id": (None, "", "  ", 3),
             "version": (None, "", 3),
             "entry": (None, "", []),
@@ -61,6 +61,65 @@ class PackageValidationTests(unittest.TestCase):
             with self.subTest(type_name=type_name):
                 manifest = dict(self.manifest, params=[{"name": "x", "type": type_name}])
                 self.assertTrue(validate(self.root, manifest))
+
+    def test_global_settings_validation_and_version(self):
+        setting = {"name": "capture", "type": "Bool", "default": True}
+        valid = dict(self.manifest, schemaVersion=3, apiVersion=2, globalSettings=[setting])
+        self.assertEqual([], validate(self.root, valid))
+        for replacement in (None, [], {"name": "__proto__", "type": "Bool", "default": True},
+                            {"name": "capture", "type": "Bool", "default": "true"},
+                            {"name": "capture", "type": "Int", "default": True},
+                            {"name": "capture", "type": "Bool", "default": True, "binding": "unknown"}):
+            with self.subTest(replacement=replacement):
+                self.assertTrue(validate(self.root, dict(valid, globalSettings=[replacement])))
+        self.assertTrue(validate(self.root, dict(valid, schemaVersion=2)))
+        self.assertTrue(validate(self.root, dict(valid, apiVersion=1)))
+        self.assertTrue(validate(self.root, dict(valid, globalSettings=[setting, setting])))
+
+    def test_decoration_defaults_are_scoped_and_validated(self):
+        valid = dict(self.manifest, schemaVersion=3, decoration=True, decorationDefaults={"color": "ff5454"})
+        self.assertEqual([], validate(self.root, valid))
+        for defaults in ({"color": "#ff5454"}, {"color": "oops"}, {"depth": 2}, [], None):
+            self.assertTrue(validate(self.root, dict(valid, decorationDefaults=defaults)))
+        self.assertTrue(validate(self.root, dict(valid, decoration=False)))
+
+    def test_manifest_choice_validation(self):
+        choice = {"name": "action", "type": "Choice", "options": ["Off", "On"], "default": "On"}
+        valid = dict(self.manifest, schemaVersion=3, params=[choice])
+        self.assertEqual([], validate(self.root, valid))
+        for options in ([], ["On", "On"], ["has space"], ["value__"], ["1bad"], [None], list(range(65))):
+            self.assertTrue(validate(self.root, dict(valid, params=[dict(choice, options=options)])))
+        self.assertTrue(validate(self.root, dict(valid, schemaVersion=2)))
+        self.assertTrue(validate(self.root, dict(valid, params=[dict(choice, default="missing")])))
+
+    def test_field_uniforms_are_declared_and_validated(self):
+        valid = dict(self.manifest, schemaVersion=3, hostPrimitive="fx.field",
+                     fieldUniforms={"_EdgeOpacity": 0.8, "_EdgeColor": [1, 0.3, 0.3, 1]})
+        self.assertEqual([], validate(self.root, valid))
+        for values in ({"uView": 1}, {"bad-name": 1}, {"x": True}, {"x": [1, 2]}, {"x": 1e100}, None):
+            self.assertTrue(validate(self.root, dict(valid, fieldUniforms=values)))
+        self.assertTrue(validate(self.root, dict(valid, hostPrimitive="fx.field.state")))
+
+    def test_field_asset_roles_are_package_declared(self):
+        (self.root / "field.bundle").write_bytes(b"fixture")
+        textures = {role: "main.js" for role in ("displacement", "spark", "noise", "touch")}
+        roles = ("compute", "disabled", "activeCapture", "hoverCapture", "activeNoCapture", "hoverNoCapture",
+                 "disabledColored", "activeCaptureColored", "hoverCaptureColored", "activeNoCaptureColored", "hoverNoCaptureColored")
+        shaders = {role: f"assets/{role}" for role in roles}
+        valid = dict(self.manifest, schemaVersion=3, hostPrimitive="fx.field", shaderBundle="field.bundle",
+                     fieldTextures=textures, fieldShaders=shaders)
+        self.assertEqual([], validate(self.root, valid))
+        self.assertTrue(validate(self.root, dict(valid, fieldTextures=dict(textures, touch="../secret"))))
+        self.assertTrue(validate(self.root, dict(valid, fieldShaders=dict(shaders, compute="../secret"))))
+        self.assertTrue(validate(self.root, dict(valid, fieldTextures={"touch": "main.js"})))
+
+    def test_field_wave_validation(self):
+        wave = {"base": 0.63, "amplitude": 0.37, "frequency": 43, "scale": 2}
+        valid = dict(self.manifest, schemaVersion=3, hostPrimitive="fx.field", fieldWaves={"shine": wave})
+        self.assertEqual([], validate(self.root, valid))
+        for bad in ({"shine": {"base": 1}}, {"uView": wave}, {"shine": dict(wave, scale=float("inf"))}, None):
+            self.assertTrue(validate(self.root, dict(valid, fieldWaves=bad)))
+        self.assertTrue(validate(self.root, dict(valid, fieldUniforms={"shine": 1})))
 
     def test_qualified_enum_is_valid(self):
         manifest = dict(self.manifest, params=[{"name": "x", "type": "Enum:Example.Type, Assembly"}])

@@ -1,12 +1,56 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "id": "pev.noise-field",
   "version": "1.1.0",
-  "apiVersion": 1,
+  "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
   "category": "DecorationFx",
   "decoration": true,
+  "hostPrimitive": "fx.field",
+  "fieldTextures": {
+    "displacement": "assets/BlockNoise1.png", "spark": "assets/PointNoise.png",
+    "noise": "assets/FD_Noise_00000.png", "touch": "assets/TouchHover.png"
+  },
+  "fieldWaves": {
+    "_TouchPosShine": { "base": 0.63, "amplitude": 0.37, "frequency": 43, "scale": 2 }
+  },
+  "fieldShaders": {
+    "compute": "assets/noisefieldcoverage.compute",
+    "disabled": "assets/generated/PEVNoise_100_disabled.shader",
+    "activeCapture": "assets/generated/PEVNoise_000_capture.shader",
+    "hoverCapture": "assets/generated/PEVNoise_010_capture.shader",
+    "activeNoCapture": "assets/generated/PEVNoise_000_nocapture.shader",
+    "hoverNoCapture": "assets/generated/PEVNoise_010_nocapture.shader",
+    "disabledColored": "assets/generated/PEVNoise_101_disabled.shader",
+    "activeCaptureColored": "assets/generated/PEVNoise_001_capture.shader",
+    "hoverCaptureColored": "assets/generated/PEVNoise_011_capture.shader",
+    "activeNoCaptureColored": "assets/generated/PEVNoise_001_nocapture.shader",
+    "hoverNoCaptureColored": "assets/generated/PEVNoise_011_nocapture.shader"
+  },
+  "decorationDefaults": { "color": "ff5454" },
+  "fieldUniforms": {
+    "_EdgeOpacity": 0.8, "_FillStrength": 0.667, "_FillOpacity": 0.667, "_GlowIntensity": 0.8,
+    "_SparkMapOpacity": 5.69, "_SparkHueShiftAmount": 0.2, "_SparkDisplaceIntensity": 2.39,
+    "_DisplaceBlendIntensity": 0.411, "_DisplaceSpeed": 1.5, "_DisplaceStrength": 0.15,
+    "_TouchPosRadius": 0.5, "_TouchPosSDFSmoothness": 0.47, "_TouchPosSDFFalloff": 0.41,
+    "_BackgroundPixelScale": 6, "uDisabledFillOpacity": 0.4, "uDisabledSparkOpacity": 3.5,
+    "uDisabledSparkIntensity": 2.29, "uDisabledSpeed": 0.3, "_ShineSpeed": 37.9,
+    "_ShineBrightness": 0.12, "_TouchDisplaceSpeed": 2.9, "_TouchDisplaceStrength": 0.08,
+    "_NoiseEvoSpeed": 0.03, "_NoiseDirChangeSpeed": 60, "_NoiseDisplaceStrength": 1,
+    "_NoiseRadius": 0.48, "_NoiseSmoothness": 1, "_SDFCellSize": 0.11,
+    "_SDFSmoothness": 0.63, "_SDFFalloff": 0.34, "_SDFMoveSpeed": 9.3,
+    "_TouchBackgroundPixelScale": 8, "uReadyExtra": 0,
+    "_EdgeColor": [1, 0.33018857, 0.33018857, 1],
+    "_FillColor": [0.7132075, 0.23549296, 0.23549296, 1],
+    "_GlowColor": [1, 0.17924517, 0.17924517, 1],
+    "_DisplaceDirection": [1, 1, 0, 0],
+    "uDisabledFillColor": [0.497, 0.13766898, 0.13766898, 1],
+    "_ShineColor": [1, 1, 1, 1], "_TouchDisplaceDirection": [1, 1, 0, 0],
+    "_NoiseTint": [1, 0, 0, 1], "_TouchGlowColor": [1, 0, 0, 1],
+    "_SparkTint": [1, 0.28490567, 0.28490567, 0],
+    "uDisabledSparkTint": [0.31132078, 0.077830195, 0.077830195, 0]
+  },
   "name": {
     "en": "Noise Field",
     "zh-CN": "噪声域"
@@ -15,6 +59,18 @@
     "en": "Draft reference-based GPU noise field. Legacy settings are retained but deprecated.",
     "zh-CN": "参考实现的 GPU 噪域草稿；旧版参数保留数据并标注弃用。"
   },
+  "globalSettings": [
+    {
+      "name": "captureScene",
+      "type": "Bool",
+      "default": true,
+      "binding": "fx.field.captureScene",
+      "label": {
+        "en": "Realtime scene sampling (disable for better performance)",
+        "zh-CN": "实时场景采样（关闭可提高性能）"
+      }
+    }
+  ],
   "params": [
     {
       "name": "invert",

@@ -135,6 +135,7 @@ namespace PEV.Registry
             {
                 try
                 {
+                    ChoiceEnumFactory.Prepare(m, spec);
                     // A decoration-backed manifest keeps its palette entry but does not declare
                     // its own properties: they were injected into AddDecoration instead, and a
                     // second copy here would build a parallel panel nobody can open. Leaving

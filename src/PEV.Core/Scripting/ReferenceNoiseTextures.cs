@@ -12,28 +12,29 @@ namespace PEV.Scripting
         private static readonly Dictionary<string, Texture2D> Cache =
             new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
 
-        internal static Texture2D Load(EventManifest manifest, string name, out string error)
+        internal static Texture2D Load(EventManifest manifest, string role, out string error)
         {
             error = null;
-            bool touch = name == "TouchHover.png";
-            bool point = name == "PointNoise.png";
+            bool touch = role == "touch";
+            bool point = role == "spark";
             if (manifest == null || string.IsNullOrEmpty(manifest.SourcePath) ||
-                (name != "BlockNoise1.png" && name != "FD_Noise_00000.png" && !point && !touch))
+                (role != "displacement" && role != "noise" && !point && !touch) ||
+                !manifest.FieldTextures.TryGetValue(role, out var path) || !EventLoader.IsPackageRelativePath(path))
             {
-                error = "unknown reference texture or package";
+                error = "unknown texture role, package or resource path";
                 return null;
             }
-            string key = manifest.SourcePath + "\n" + name;
+            string key = manifest.SourcePath + "\n" + role + "\n" + path;
             if (Cache.TryGetValue(key, out var existing) && existing != null) return existing;
             Texture2D texture = null;
             try
             {
-                byte[] bytes = EventLoader.ReadResource(manifest.SourcePath, "assets/" + name);
-                if (bytes == null) { error = "reference texture is missing: " + name; return null; }
+                byte[] bytes = EventLoader.ReadResource(manifest.SourcePath, path);
+                if (bytes == null) { error = "field texture is missing: " + path; return null; }
                 Color32[] pixels = NoiseTextures.DecodePng(bytes, out int width, out int height);
                 if (pixels == null || width <= 0 || height <= 0)
                 {
-                    error = "reference texture is invalid: " + name;
+                    error = "field texture is invalid: " + path;
                     return null;
                 }
                 // The decoder returns PNG top-down rows; Unity's first row is bottom-up.
@@ -48,7 +49,7 @@ namespace PEV.Scripting
                 }
                 texture = new Texture2D(width, height, TextureFormat.RGBA32, false, true)
                 {
-                    name = "PEV.Reference." + name,
+                    name = "PEV.Field." + role,
                     wrapMode = touch ? TextureWrapMode.Clamp : point ? TextureWrapMode.Repeat : TextureWrapMode.Mirror,
                     filterMode = touch ? FilterMode.Bilinear : FilterMode.Point
                 };

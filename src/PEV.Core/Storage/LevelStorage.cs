@@ -265,7 +265,10 @@ namespace PEV.Storage
                 row["tag"] = DecorationCarrier.DefaultTag;
                 row["visible"] = true;
                 row["opacity"] = 100f;
-                row["color"] = "ff5454";
+                if (!string.IsNullOrEmpty(manifest.DecorationDefaultColor))
+                    row["color"] = manifest.DecorationDefaultColor;
+                else if (NoiseFieldRenderer.IsFieldEvent(manifest))
+                    row["color"] = "ff5454"; // historical field-comment migration only
 
                 // Old comment parameters map onto the decoration's own fields where a
                 // counterpart exists, so a chart that used the previous geometry keeps it.
@@ -274,24 +277,26 @@ namespace PEV.Storage
                 // decoration stores scale as a percentage of its own base. Converting through
                 // the documented base size is what keeps a migrated field the size it was —
                 // copying the number across would make every migrated field 100× too small.
-                Copy(data, row, "size", v =>
+                if (NoiseFieldRenderer.IsFieldEvent(manifest))
                 {
-                    Vector2 tiles = ToVector2(v);
-                    row["scale"] = new Vector2(
-                        tiles.x / DecorationBridge.BaseSizeTiles.x * 100f,
-                        tiles.y / DecorationBridge.BaseSizeTiles.y * 100f);
-                });
-                Copy(data, row, "positionOffset", v => row["position"] = ToVector2(v));
-                Copy(data, row, "rotation", v => row["rotation"] = Convert.ToSingle(v));
-                Copy(data, row, "tag", v => row["tag"] = v.ToString());
-                Copy(data, row, "depth", v => row["depth"] = Convert.ToInt32(v));
-                Copy(data, row, "opacity", v =>
-                {
-                    float pct = Convert.ToSingle(v);
-                    // Zero is an explicitly transparent field. Missing opacity keeps 100.
-                    row["opacity"] = Mathf.Clamp(pct, 0f, 100f);
-                });
-                Copy(data, row, "color", v => row["color"] = v.ToString());
+                    Copy(data, row, "size", v =>
+                    {
+                        Vector2 tiles = ToVector2(v);
+                        row["scale"] = new Vector2(
+                            tiles.x / DecorationBridge.BaseSizeTiles.x * 100f,
+                            tiles.y / DecorationBridge.BaseSizeTiles.y * 100f);
+                    });
+                    Copy(data, row, "positionOffset", v => row["position"] = ToVector2(v));
+                    Copy(data, row, "rotation", v => row["rotation"] = Convert.ToSingle(v));
+                    Copy(data, row, "tag", v => row["tag"] = v.ToString());
+                    Copy(data, row, "depth", v => row["depth"] = Convert.ToInt32(v));
+                    Copy(data, row, "opacity", v =>
+                    {
+                        float pct = Convert.ToSingle(v);
+                        row["opacity"] = Mathf.Clamp(pct, 0f, 100f);
+                    });
+                    Copy(data, row, "color", v => row["color"] = v.ToString());
+                }
 
                 Adopt(row, data, summary);
                 if (string.IsNullOrWhiteSpace(row.GetString("tag")))

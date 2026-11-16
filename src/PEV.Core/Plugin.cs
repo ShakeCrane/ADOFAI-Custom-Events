@@ -25,7 +25,8 @@ namespace PEV.Core
         public static UnityModManager.ModEntry Mod;
         public static string EventsDirectory;
         public static bool Verbose = true;
-        internal static NoiseFieldSettings Settings = new NoiseFieldSettings();
+        internal static EventGlobalSettings EventSettings = new EventGlobalSettings();
+        private static string _settingsPath;
 
         private static string _logPath;
 
@@ -35,8 +36,10 @@ namespace PEV.Core
             _logPath = Path.Combine(entry.Path, "pev-core.log");
             TryResetLog();
 
-            try { Settings = UnityModManager.ModSettings.Load<NoiseFieldSettings>(entry) ?? new NoiseFieldSettings(); }
-            catch (Exception e) { Log("settings load failed: " + e.Message); Settings = new NoiseFieldSettings(); }
+            EventSettings = new EventGlobalSettings();
+            _settingsPath = Path.Combine(entry.Path, "event-settings.json");
+            try { EventSettings.Load(_settingsPath); }
+            catch (Exception e) { Log("event settings load failed; original file preserved: " + e.Message); }
             entry.OnGUI = OnGUI;
             entry.OnSaveGUI = OnSaveGUI;
 
@@ -70,13 +73,33 @@ namespace PEV.Core
 
         private static void OnGUI(UnityModManager.ModEntry entry)
         {
-            if (Environment.GetEnvironmentVariable("PEV_EXPERIMENTAL_NOISE_GPU") != "1") return;
-            Settings.RealtimeSceneSampling = GUILayout.Toggle(Settings.RealtimeSceneSampling, "噪域实时场景采样（关闭可提高性能）");
+            DrawEventSettings();
+        }
+
+        internal static void DrawEventSettings()
+        {
+            string locale;
+            try { locale = RDString.language.ToString(); } catch { locale = "English"; }
+            foreach (var manifest in EventRegistry.All.OrderBy(m => m.LocaleName(locale), StringComparer.Ordinal))
+            {
+                if (manifest.GlobalSettings.Count == 0) continue;
+                GUILayout.Label(manifest.LocaleName(locale));
+                foreach (var setting in manifest.GlobalSettings)
+                {
+                    bool current = EventSettings.Get(manifest, setting);
+                    bool selected = GUILayout.Toggle(current, setting.Label(locale));
+                    if (selected != current)
+                    {
+                        try { EventSettings.Set(manifest, setting, selected); }
+                        catch (Exception e) { Log("event setting change failed: " + e.Message); }
+                    }
+                }
+            }
         }
 
         private static void OnSaveGUI(UnityModManager.ModEntry entry)
         {
-            try { Settings.Save(entry); }
+            try { EventSettings.Save(_settingsPath); }
             catch (Exception e) { Log("settings save failed: " + e.Message); }
         }
 

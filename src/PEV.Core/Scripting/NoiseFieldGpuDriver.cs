@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using PEV.Core;
+using PEV.Model;
 using PEV.Registry;
 using UnityEngine;
 
@@ -17,11 +18,30 @@ namespace PEV.Scripting
         private readonly List<NoiseFieldRenderer.Entry> _entries = new List<NoiseFieldRenderer.Entry>();
         private bool _faulted;
 
-        internal void Tick(bool playing, double songTime, bool captureScene)
+        internal void Tick(bool playing, double songTime)
         {
             if (!_enabled || _faulted) return;
-            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest) ||
-                string.IsNullOrEmpty(manifest.ShaderBundlePath)) return;
+            EventManifest manifest = null;
+            foreach (var candidate in EventRegistry.All)
+            {
+                if (candidate.HostPrimitive != "fx.field" || string.IsNullOrEmpty(candidate.ShaderBundlePath)) continue;
+                if (manifest != null)
+                {
+                    _faulted = true;
+                    Plugin.Log("experimental field GPU disabled: multiple field shader providers are not yet supported");
+                    DisposeCoordinator();
+                    NoiseFieldRenderer.SetGpuRendering(false);
+                    return;
+                }
+                manifest = candidate;
+            }
+            if (manifest == null)
+            {
+                DisposeCoordinator();
+                NoiseFieldRenderer.SetGpuRendering(false);
+                return;
+            }
+            bool captureScene = Plugin.EventSettings.GetBoundBool(manifest, "fx.field.captureScene", true);
             NoiseFieldRenderer.CopyEntriesTo(_entries);
             if (_entries.Count == 0)
             {

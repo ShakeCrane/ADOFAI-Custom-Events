@@ -116,6 +116,8 @@ namespace PEV.Registry
                 foreach (var spec in m.Params)
                 {
                     if (string.IsNullOrEmpty(spec.Name)) continue;
+                    try { ChoiceEnumFactory.Prepare(m, spec); }
+                    catch (Exception e) { log?.Invoke($"choice '{spec.Name}' failed: {e.Message}"); continue; }
 
                     // Before the early-outs below: the caption table is per parameter type, not
                     // per row, so an enum whose panel row is native still needs its options.

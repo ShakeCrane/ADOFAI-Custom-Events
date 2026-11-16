@@ -5,11 +5,37 @@ using Newtonsoft.Json.Linq;
 
 namespace PEV.Model
 {
+    /// <summary>A package-owned, mod-wide setting exposed by Core.</summary>
+    public sealed class GlobalSettingSpec
+    {
+        public string Name;
+        public bool Default;
+        public string Binding;
+        public readonly Dictionary<string, string> Labels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        public string Label(string locale) =>
+            !string.IsNullOrEmpty(locale) && Labels.TryGetValue(locale, out var text) ? text :
+            Labels.TryGetValue("English", out var english) ? english : Name;
+    }
+
+    public sealed class FieldUniformSpec
+    {
+        public string Name;
+        public float[] Values;
+    }
+
+    public sealed class FieldWaveSpec
+    {
+        public string Name;
+        public float Base, Amplitude, Frequency, Scale;
+        public float At(float time) => (Base + Amplitude * (UnityEngine.Mathf.Sin(time * Frequency) * 0.5f + 0.5f)) * Scale;
+    }
     /// <summary>One parameter declared by an event manifest.</summary>
     public class ParamSpec
     {
         public string Name;
         public string Type;          // game PropertyInfo type literal, e.g. "Float", "Enum:Ease"
+        internal string ResolvedType;
+        internal string EffectiveType => ResolvedType ?? Type;
         public object Default;
         public double? Min;
         public double? Max;
@@ -89,7 +115,7 @@ namespace PEV.Model
             var d = new Dictionary<string, object>
             {
                 { "name", Name },
-                { "type", Type }
+                { "type", EffectiveType }
             };
             if (Default != null) d["default"] = Default;
             if (Min.HasValue) d["min"] = (float)Min.Value;
@@ -143,6 +169,13 @@ namespace PEV.Model
         public string IconPath;
         /// <summary>Optional package-local Unity shader bundle (schema 2).</summary>
         public string ShaderBundlePath;
+        public readonly List<GlobalSettingSpec> GlobalSettings = new List<GlobalSettingSpec>();
+        public string DecorationDefaultColor;
+        public string HostPrimitive;
+        public readonly List<FieldUniformSpec> FieldUniforms = new List<FieldUniformSpec>();
+        public readonly List<FieldWaveSpec> FieldWaves = new List<FieldWaveSpec>();
+        public readonly Dictionary<string, string> FieldTextures = new Dictionary<string, string>(StringComparer.Ordinal);
+        public readonly Dictionary<string, string> FieldShaders = new Dictionary<string, string>(StringComparer.Ordinal);
         public string Category = "VisualFx";
         public string DisplayName = "";
         public string Description = "";
@@ -226,6 +259,13 @@ namespace PEV.Model
             m.ShaderBundlePath = root.Value<string>("shaderBundle");
             m.Category = root.Value<string>("category") ?? "VisualFx";
             m.DecorationBacked = root.Value<bool?>("decoration") ?? false;
+            if (root["hostPrimitive"] != null)
+            {
+                if (m.SchemaVersion < 3 || root["hostPrimitive"].Type != JTokenType.String ||
+                    root.Value<string>("hostPrimitive") != "fx.field")
+                { error = "invalid hostPrimitive (requires schemaVersion 3)"; return null; }
+                m.HostPrimitive = root.Value<string>("hostPrimitive");
+            }
             m.Description = LocalizedValue(root["description"]) ?? "";
             m.DisplayName = LocalizedValue(root["name"]) ?? m.Id;
 
@@ -241,16 +281,126 @@ namespace PEV.Model
                 error = "manifest is missing required field 'id'";
                 return null;
             }
-            if ((m.SchemaVersion != 1 && m.SchemaVersion != 2) || m.ApiVersion != 1)
+            if ((m.SchemaVersion != 1 && m.SchemaVersion != 2 && m.SchemaVersion != 3) ||
+                (m.ApiVersion != 1 && m.ApiVersion != 2))
             {
-                error = $"unsupported schemaVersion {m.SchemaVersion} or apiVersion {m.ApiVersion} (supported schemas: 1, 2; API: 1)";
+                error = $"unsupported schemaVersion {m.SchemaVersion} or apiVersion {m.ApiVersion} (supported schemas: 1, 2, 3; API: 1, 2)";
                 return null;
             }
             if (root["shaderBundle"] != null &&
-                (m.SchemaVersion != 2 || !PEV.Loading.EventLoader.IsPackageRelativePath(m.ShaderBundlePath)))
+                (m.SchemaVersion < 2 || !PEV.Loading.EventLoader.IsPackageRelativePath(m.ShaderBundlePath)))
             {
-                error = "shaderBundle requires schemaVersion 2 and a package-relative path";
+                error = "shaderBundle requires schemaVersion 2 or newer and a package-relative path";
                 return null;
+            }
+
+            if (root["globalSettings"] != null)
+            {
+                if (m.SchemaVersion < 3 || m.ApiVersion < 2 || !(root["globalSettings"] is JArray settings))
+                { error = "globalSettings requires schemaVersion 3, apiVersion 2 and an array"; return null; }
+                foreach (var item in settings)
+                {
+                    if (!(item is JObject spec) || spec["name"]?.Type != JTokenType.String ||
+                        spec["type"]?.Type != JTokenType.String || spec.Value<string>("type") != "Bool" ||
+                        spec["default"]?.Type != JTokenType.Boolean)
+                    { error = "globalSettings entries require a name, type Bool and boolean default"; return null; }
+                    string name = spec.Value<string>("name");
+                    if (string.IsNullOrWhiteSpace(name) || name == "__proto__" || name == "constructor" ||
+                        name == "prototype" || m.GlobalSettings.Any(existing => existing.Name == name))
+                    { error = "invalid or duplicate global setting name '" + name + "'"; return null; }
+                    string binding = null;
+                    if (spec["binding"] != null)
+                    {
+                        if (spec["binding"].Type != JTokenType.String ||
+                            spec.Value<string>("binding") != "fx.field.captureScene" ||
+                            m.HostPrimitive != "fx.field" ||
+                            m.GlobalSettings.Any(existing => existing.Binding == spec.Value<string>("binding")))
+                        { error = "invalid or duplicate global setting binding"; return null; }
+                        binding = spec.Value<string>("binding");
+                    }
+                    var setting = new GlobalSettingSpec { Name = name, Default = spec.Value<bool>("default"), Binding = binding };
+                    ReadLocales(spec["label"], setting.Labels);
+                    if (spec["label"]?.Type == JTokenType.String)
+                        setting.Labels["English"] = spec.Value<string>("label");
+                    m.GlobalSettings.Add(setting);
+                }
+            }
+
+            if (root["decorationDefaults"] != null)
+            {
+                if (m.SchemaVersion < 3 || !m.DecorationBacked || !(root["decorationDefaults"] is JObject defaults) ||
+                    defaults.Properties().Any(p => p.Name != "color") ||
+                    (defaults["color"] != null && (defaults["color"].Type != JTokenType.String ||
+                    !System.Text.RegularExpressions.Regex.IsMatch(defaults.Value<string>("color"), "^[0-9a-fA-F]{6}$"))))
+                { error = "decorationDefaults requires a decoration-backed schema 3 event and optional six-digit color"; return null; }
+                m.DecorationDefaultColor = defaults.Value<string>("color");
+            }
+
+            if (root["fieldUniforms"] != null)
+            {
+                if (m.SchemaVersion < 3 || m.HostPrimitive != "fx.field" || !(root["fieldUniforms"] is JObject uniforms) || uniforms.Count > 128)
+                { error = "fieldUniforms requires a schema 3 fx.field event and an object with at most 128 entries"; return null; }
+                var reserved = new HashSet<string>(StringComparer.Ordinal)
+                {
+                    "uView", "uUnityTime", "_PEVScreenParams", "_EffectRT_TexelSize", "_TouchPosCount", "_TouchPos", "_TouchPosShine",
+                    "uMasks", "uAuxMasks", "uDisplaceTex", "uSparkTex", "uNoiseTex", "uActiveColors", "uDisabledColors", "_PEVBackground", "_GrabTexture"
+                };
+                foreach (var property in uniforms.Properties())
+                {
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(property.Name, "^[A-Za-z_][A-Za-z0-9_]{0,63}$") || reserved.Contains(property.Name))
+                    { error = "invalid or reserved field uniform '" + property.Name + "'"; return null; }
+                    var values = property.Value is JArray array ? array.ToArray() : new[] { property.Value };
+                    if ((property.Value is JArray ? values.Length != 4 : values.Length != 1) ||
+                        values.Any(v => v.Type != JTokenType.Float && v.Type != JTokenType.Integer))
+                    { error = "field uniform '" + property.Name + "' must be a number or four numbers"; return null; }
+                    var converted = new float[values.Length];
+                    for (int i = 0; i < values.Length; i++)
+                    {
+                        double number = values[i].Value<double>();
+                        converted[i] = (float)number;
+                        if (double.IsNaN(number) || double.IsInfinity(number) || float.IsInfinity(converted[i]))
+                        { error = "field uniform values must be finite"; return null; }
+                    }
+                    m.FieldUniforms.Add(new FieldUniformSpec { Name = property.Name, Values = converted });
+                }
+            }
+
+            if (root["fieldTextures"] != null || root["fieldShaders"] != null ||
+                (m.HostPrimitive == "fx.field" && !string.IsNullOrEmpty(m.ShaderBundlePath)))
+            {
+                if (m.SchemaVersion < 3 || m.HostPrimitive != "fx.field" ||
+                    !ReadResourceMap(root["fieldTextures"], m.FieldTextures, new[] { "displacement", "spark", "noise", "touch" }) ||
+                    !ReadResourceMap(root["fieldShaders"], m.FieldShaders, new[] { "compute", "disabled", "activeCapture", "hoverCapture", "activeNoCapture", "hoverNoCapture", "disabledColored", "activeCaptureColored", "hoverCaptureColored", "activeNoCaptureColored", "hoverNoCaptureColored" }))
+                { error = "field shader providers require package-relative fieldTextures and fieldShaders for every role"; return null; }
+            }
+
+            if (root["fieldWaves"] != null)
+            {
+                if (m.SchemaVersion < 3 || m.HostPrimitive != "fx.field" || !(root["fieldWaves"] is JObject waves) || waves.Count > 16)
+                { error = "fieldWaves requires a schema 3 fx.field event and at most 16 entries"; return null; }
+                var reserved = new HashSet<string>(StringComparer.Ordinal)
+                {
+                    "uView", "uUnityTime", "_PEVScreenParams", "_EffectRT_TexelSize", "_TouchPosCount", "_TouchPos",
+                    "uMasks", "uAuxMasks", "uDisplaceTex", "uSparkTex", "uNoiseTex", "uActiveColors", "uDisabledColors", "_PEVBackground", "_GrabTexture"
+                };
+                foreach (var property in waves.Properties())
+                {
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(property.Name, "^[A-Za-z_][A-Za-z0-9_]{0,63}$") || reserved.Contains(property.Name) ||
+                        m.FieldUniforms.Any(u => u.Name == property.Name) || !(property.Value is JObject wave) || wave.Count != 4)
+                    { error = "invalid or reserved field wave '" + property.Name + "'"; return null; }
+                    var numbers = new float[4];
+                    string[] names = { "base", "amplitude", "frequency", "scale" };
+                    for (int i = 0; i < names.Length; i++)
+                    {
+                        var value = wave[names[i]];
+                        if (value == null || (value.Type != JTokenType.Float && value.Type != JTokenType.Integer))
+                        { error = "field wave values must be finite numbers"; return null; }
+                        double number = value.Value<double>(); numbers[i] = (float)number;
+                        if (double.IsNaN(number) || double.IsInfinity(number) || float.IsInfinity(numbers[i]))
+                        { error = "field wave values must be finite numbers"; return null; }
+                    }
+                    m.FieldWaves.Add(new FieldWaveSpec { Name = property.Name, Base = numbers[0], Amplitude = numbers[1], Frequency = numbers[2], Scale = numbers[3] });
+                }
             }
 
             if (root["params"] != null && !(root["params"] is JArray))
@@ -297,11 +447,33 @@ namespace PEV.Model
                         spec.Options = new List<string>();
                         foreach (var o in opts) spec.Options.Add(o.ToString());
                     }
+                    if (spec.Type == "Choice")
+                    {
+                        if (m.SchemaVersion < 3 || !(p["options"] is JArray choices) || choices.Count < 1 || choices.Count > 64 ||
+                            choices.Any(o => o.Type != JTokenType.String ||
+                                !System.Text.RegularExpressions.Regex.IsMatch(o.ToString(), "^[A-Za-z_][A-Za-z0-9_]{0,63}$") || o.ToString() == "value__") ||
+                            choices.Select(o => o.ToString()).Distinct(StringComparer.Ordinal).Count() != choices.Count ||
+                            p["default"]?.Type != JTokenType.String || !spec.Options.Contains(p.Value<string>("default")))
+                        { error = "Choice requires schemaVersion 3, 1-64 unique identifier options and a matching default"; return null; }
+                    }
                     ReadOptionLabels(p, spec);
                     m.Params.Add(spec);
                 }
             }
             return m;
+        }
+
+        private static bool ReadResourceMap(JToken token, Dictionary<string, string> target, string[] roles)
+        {
+            if (!(token is JObject map) || map.Count != roles.Length) return false;
+            foreach (var role in roles)
+            {
+                if (map[role]?.Type != JTokenType.String) return false;
+                string path = map.Value<string>(role);
+                if (!PEV.Loading.EventLoader.IsPackageRelativePath(path)) return false;
+                target[role] = path;
+            }
+            return true;
         }
 
         /// <summary>

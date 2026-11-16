@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "id": "pev.noise-field-state",
   "version": "1.0.0",
   "apiVersion": 1,
@@ -13,7 +13,8 @@
   "params": [
     { "name": "tag", "type": "String", "default": "", "order": 0,
       "label": { "en": "Target Tag", "zh-CN": "目标标签" } },
-    { "name": "action", "type": "Enum:PEV.Scripting.NoiseFieldStateAction, PEV.Core", "default": "Active", "order": 1,
+    { "name": "action", "type": "Choice", "default": "Active", "order": 1,
+      "options": ["Disabled", "Ready", "Active", "WarnThenActive"],
       "label": { "en": "State", "zh-CN": "状态" },
       "optionLabels": {
         "Disabled": { "en": "Disabled", "zh-CN": "未激活" },

@@ -22,6 +22,7 @@ namespace PEV.Diagnostics
     // Like the stage harnesses, this is inert unless its opt-in file exists.
     public static class ReviewHarness
     {
+        private const string StateEventId = "pev.noise-field-state";
         private static string _results;
         private static bool _ran;
 
@@ -75,14 +76,39 @@ namespace PEV.Diagnostics
             CheckKeys();
             yield return CheckTextures();
             yield return CheckFields();
+            yield return ProbeGlobalSettingsGui();
             CheckEditorPlacement(editor);
             Row("DONE", "ok");
+        }
+
+        private sealed class SettingsGuiProbe : MonoBehaviour
+        {
+            internal bool Ran;
+            internal string Error;
+            private void OnGUI()
+            {
+                if (Ran) return;
+                try { PEV.Core.Plugin.DrawEventSettings(); }
+                catch (Exception e) { Error = e.ToString(); }
+                Ran = true;
+            }
+        }
+
+        private static IEnumerator ProbeGlobalSettingsGui()
+        {
+            var go = new GameObject("PEV.ReviewSettingsGui");
+            var probe = go.AddComponent<SettingsGuiProbe>();
+            float deadline = Time.realtimeSinceStartup + 3f;
+            while (!probe.Ran && Time.realtimeSinceStartup < deadline) yield return null;
+            Row("GLOBAL-umm-gui-draw", !probe.Ran ? "SKIP" : probe.Error == null ? "PASS" : "FAIL",
+                !probe.Ran ? "Unity did not invoke OnGUI in the hidden test process" : probe.Error);
+            UnityEngine.Object.Destroy(go);
         }
 
         private static void CheckEditorPlacement(scnEditor editor)
         {
             if (editor == null || editor.levelData == null || editor.levelData.decorations == null) return;
-            if (EventRegistry.TryGetById("pev.noise-field", out var field) && field.SchemaVersion == 2)
+            if (EventRegistry.TryGetById("pev.noise-field", out var field) && field.SchemaVersion >= 2)
             {
                 Check("FIELD-editor-place-default-color", () =>
                 {
@@ -102,7 +128,7 @@ namespace PEV.Diagnostics
                     }
                 });
             }
-            if (EventRegistry.TryGetById(NoiseFieldStateSchedule.EventId, out var state))
+            if (EventRegistry.TryGetById(StateEventId, out var state))
             {
                 Check("FIELD-editor-place-state-event", () =>
                 {
@@ -115,7 +141,8 @@ namespace PEV.Diagnostics
                         added = editor.events.FirstOrDefault(row => !old.Contains(row));
                         if (added == null || !LevelStorage.TryGetData(added, out var data) || data.Id != state.Id) return false;
                         added["tag"] = "review-field";
-                        added["action"] = NoiseFieldStateAction.WarnThenActive;
+                        var actionInfo = added.info.propertiesInfo["action"];
+                        added["action"] = Enum.Parse(actionInfo.enumType, "WarnThenActive");
                         added["warningDuration"] = 0.75f;
                         Check("FIELD-editor-state-panel", () =>
                         {
@@ -143,13 +170,17 @@ namespace PEV.Diagnostics
                                 panel.properties.TryGetValue("action", out var action) && action?.control != null &&
                                 panel.properties.TryGetValue("warningDuration", out var duration) && duration?.control != null;
                         });
-                        var schedule = new NoiseFieldStateSchedule();
-                        schedule.Add(added, data);
-                        var floors = ADOBase.lm.listFloors;
-                        if (!schedule.Resolve(floors)) return false;
-                        double time = floors[added.floor].entryTime;
-                        return schedule.At("review-field", time) == NoiseFieldPhase.Ready &&
-                            schedule.At("review-field", time + 0.75) == NoiseFieldPhase.Active;
+                        var instance = new EventInstance { LevelEvent = added, Data = data, Manifest = state,
+                            EntryTime = 10, EntryTimeResolved = true, EventOrder = 5 };
+                        try
+                        {
+                            if (!instance.Begin()) return false;
+                            instance.Tick(10, true);
+                            bool ready = GameBridge.FieldPhases.At("review-field") == NoiseFieldPhase.Ready;
+                            instance.Tick(10.75, true);
+                            return ready && GameBridge.FieldPhases.At("review-field") == NoiseFieldPhase.Active;
+                        }
+                        finally { instance.End(); }
                     }
                     finally
                     {
@@ -176,7 +207,7 @@ namespace PEV.Diagnostics
                 return JToken.DeepEquals(d.Raw["shape"], copy.Raw["shape"]) && d.GetString("n") == "9223372036854775807";
             });
             Check("MANIFEST-invalid-fields", () => EventManifest.Parse("{\"id\":\"test\",\"schemaVersion\":{}}", "", out _) == null);
-            Check("MANIFEST-api-version", () => EventManifest.Parse("{\"id\":\"test\",\"apiVersion\":2}", "", out _) == null);
+            Check("MANIFEST-api-version", () => EventManifest.Parse("{\"id\":\"test\",\"apiVersion\":3}", "", out _) == null);
             Check("MANIFEST-shader-bundle", () =>
             {
                 var valid = EventManifest.Parse("{\"id\":\"test\",\"schemaVersion\":2,\"shaderBundle\":\"assets/field.bundle\"}", "", out _);
@@ -194,16 +225,106 @@ namespace PEV.Diagnostics
                 row["depth"] = -3;
                 return DecorationBridge.TryReadEvent(row, out var front) && front.UnityLayer == 7 && front.SortingOrder == 3;
             });
-            Check("FIELD-sampling-default", () => new PEV.Core.NoiseFieldSettings().RealtimeSceneSampling);
-            Check("FIELD-sampling-setting-roundtrip", () =>
+            Check("GLOBAL-settings-roundtrip", () =>
             {
-                var serializer = new System.Xml.Serialization.XmlSerializer(typeof(PEV.Core.NoiseFieldSettings));
-                using (var stream = new MemoryStream())
+                const string json = "{\"id\":\"example.a\",\"schemaVersion\":3,\"apiVersion\":2,\"globalSettings\":[{\"name\":\"enabled\",\"type\":\"Bool\",\"default\":true,\"label\":{\"zh-CN\":\"开关\"}}]}";
+                var a = EventManifest.Parse(json, "", out _);
+                var b = EventManifest.Parse(json.Replace("example.a", "example.b"), "", out _);
+                if (a == null || b == null || a.GlobalSettings[0].Label("ChineseSimplified") != "开关") return false;
+                string path = Path.GetTempFileName();
+                try
                 {
-                    serializer.Serialize(stream, new PEV.Core.NoiseFieldSettings { RealtimeSceneSampling = false });
-                    stream.Position = 0;
-                    return serializer.Deserialize(stream) is PEV.Core.NoiseFieldSettings loaded && !loaded.RealtimeSceneSampling;
+                    File.WriteAllText(path, "{\"uninstalled\":{\"keep\":true}}");
+                    var store = new PEV.Core.EventGlobalSettings();
+                    store.Load(path);
+                    if (!store.Get(a, a.GlobalSettings[0]) || !store.Get(b, b.GlobalSettings[0])) return false;
+                    store.Set(a, a.GlobalSettings[0], false);
+                    store.Save(path);
+                    var loaded = new PEV.Core.EventGlobalSettings();
+                    loaded.Load(path);
+                    return !loaded.Get(a, a.GlobalSettings[0]) && loaded.Get(b, b.GlobalSettings[0]) &&
+                        JObject.Parse(File.ReadAllText(path))["uninstalled"]["keep"].Value<bool>() &&
+                        (bool)loaded.Snapshot(a)["enabled"] == false;
                 }
+                finally { File.Delete(path); }
+            });
+            Check("GLOBAL-settings-invalid-declarations", () =>
+                EventManifest.Parse("{\"id\":\"x\",\"globalSettings\":[]}", "", out _) == null &&
+                EventManifest.Parse("{\"id\":\"x\",\"schemaVersion\":3,\"apiVersion\":2,\"globalSettings\":[{\"name\":\"__proto__\",\"type\":\"Bool\",\"default\":true}]}", "", out _) == null);
+            Check("GLOBAL-primitive-binding", () =>
+            {
+                const string json = "{\"id\":\"another.author\",\"schemaVersion\":3,\"apiVersion\":2,\"hostPrimitive\":\"fx.field\",\"globalSettings\":[{\"name\":\"authorChoice\",\"type\":\"Bool\",\"default\":true,\"binding\":\"fx.field.captureScene\"}]}";
+                var manifest = EventManifest.Parse(json, "", out _);
+                var store = new PEV.Core.EventGlobalSettings();
+                if (manifest == null || !store.GetBoundBool(manifest, "fx.field.captureScene", false)) return false;
+                store.Set(manifest, manifest.GlobalSettings[0], false);
+                return !store.GetBoundBool(manifest, "fx.field.captureScene", true) &&
+                    store.GetBoundBool(manifest, "not.declared", true);
+            });
+            Check("FIELD-event-uniform-declarations", () =>
+            {
+                const string valid = "{\"id\":\"example.shader\",\"schemaVersion\":3,\"hostPrimitive\":\"fx.field\",\"fieldWaves\":{\"_Pulse\":{\"base\":0.63,\"amplitude\":0.37,\"frequency\":43,\"scale\":2}},\"fieldUniforms\":{\"_Intensity\":0.5,\"_Tint\":[1,0,0.25,1]}}";
+                var manifest = EventManifest.Parse(valid, "", out _);
+                return manifest != null && manifest.FieldUniforms.Count == 2 && manifest.FieldWaves.Count == 1 &&
+                    Mathf.Abs(manifest.FieldWaves[0].At(0) - 1.63f) < 0.00001f &&
+                    manifest.FieldUniforms[0].Values[0] == 0.5f && manifest.FieldUniforms[1].Values[2] == 0.25f &&
+                    EventManifest.Parse(valid.Replace("_Intensity", "uView"), "", out _) == null &&
+                    EventManifest.Parse(valid.Replace("[1,0,0.25,1]", "[1,2]"), "", out _) == null;
+            });
+            Check("FIELD-event-uniform-material", () =>
+            {
+                var manifest = EventManifest.Parse("{\"id\":\"example\",\"schemaVersion\":3,\"hostPrimitive\":\"fx.field\",\"fieldUniforms\":{\"_Color\":[0.25,0.5,0.75,1]}}", "", out _);
+                var shader = Shader.Find("Hidden/BlendModes/VisualDeco/Grab");
+                if (manifest == null || shader == null) return false;
+                var material = new Material(shader);
+                try
+                {
+                    NoiseFieldGpuLayer.ApplyUniforms(material, manifest.FieldUniforms);
+                    var value = material.GetVector("_Color");
+                    return value == new Vector4(0.25f, 0.5f, 0.75f, 1f);
+                }
+                finally { UnityEngine.Object.Destroy(material); }
+            });
+            Check("FIELD-event-asset-roles", () =>
+            {
+                if (!EventRegistry.TryGetById("pev.noise-field", out var manifest) || manifest.SchemaVersion < 3) return true;
+                if (!manifest.FieldTextures.ContainsKey("displacement") || !manifest.FieldShaders.ContainsKey("compute") ||
+                    manifest.FieldShaders.Count != 11 || manifest.FieldTextures.Count != 4) return false;
+                var json = JObject.Parse(System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, "event.json")));
+                json["fieldTextures"]["touch"] = "../outside";
+                return EventManifest.Parse(json.ToString(), "", out _) == null;
+            });
+            Check("GLOBAL-settings-corrupt-file-preserved", () =>
+            {
+                string path = Path.GetTempFileName();
+                try
+                {
+                    File.WriteAllText(path, "{broken");
+                    var store = new PEV.Core.EventGlobalSettings();
+                    try { store.Load(path); return false; } catch { }
+                    try { store.Save(path); return false; } catch { }
+                    return File.ReadAllText(path) == "{broken";
+                }
+                finally { File.Delete(path); }
+            });
+            Check("ENUM-dynamic-runtime", () =>
+            {
+                var name = new AssemblyName("PEV.ReviewEnum." + Guid.NewGuid().ToString("N"));
+                var assembly = AppDomain.CurrentDomain.DefineDynamicAssembly(name, System.Reflection.Emit.AssemblyBuilderAccess.Run);
+                var module = assembly.DefineDynamicModule(name.Name);
+                var builder = module.DefineEnum("Review.Choice", TypeAttributes.Public, typeof(int));
+                builder.DefineLiteral("First", 0); builder.DefineLiteral("Second", 1);
+                var type = builder.CreateType();
+                return Type.GetType(type.AssemblyQualifiedName) == type && Enum.Parse(type, "Second").ToString() == "Second";
+            });
+            Check("CHOICE-legacy-missing-enum", () =>
+            {
+                const string json = "{\"id\":\"example.legacy\",\"params\":[{\"name\":\"mode\",\"type\":\"Enum:Missing.Type, Missing.Assembly\",\"default\":\"On\",\"optionLabels\":{\"Off\":{\"en\":\"Off\"},\"On\":{\"en\":\"On\"}}}]}";
+                var manifest = EventManifest.Parse(json, "", out _);
+                if (manifest == null) return false;
+                ChoiceEnumFactory.Prepare(manifest, manifest.Params[0]);
+                var resolved = Type.GetType(manifest.Params[0].EffectiveType.Substring(5));
+                return resolved != null && Enum.Parse(resolved, "On").ToString() == "On";
             });
             Check("FIELD-manifest-old-data", () =>
             {
@@ -216,23 +337,23 @@ namespace PEV.Diagnostics
                 return copy != null && copy.Raw["noiseFrameCount"].Value<int>() == 73 &&
                     Math.Abs(copy.Raw["edgeDistance"].Value<double>() - 0.42) < 0.00001 &&
                     JToken.DeepEquals(original, copy.Raw["futureData"]) &&
-                    (manifest.SchemaVersion != 2 || (data.TryGet("invert", out var invert) && invert is bool b && !b));
+                    (manifest.SchemaVersion < 2 || (data.TryGet("invert", out var invert) && invert is bool b && !b));
             });
             Check("FIELD-manifest-invert-panel", () =>
                 EventRegistry.TryGetById("pev.noise-field", out var manifest) &&
-                (manifest.SchemaVersion != 2 || DecorationParams.IsInjected("invert")));
+                (manifest.SchemaVersion < 2 || DecorationParams.IsInjected("invert")));
             Check("FIELD-new-native-color", () =>
             {
-                var draft = EventManifest.Parse("{\"id\":\"pev.noise-field\",\"schemaVersion\":2,\"shaderBundle\":\"assets/noise.bundle\"}", "", out _);
-                var old = EventManifest.Parse("{\"id\":\"pev.noise-field\",\"schemaVersion\":1}", "", out _);
+                var draft = EventManifest.Parse("{\"id\":\"example.decoration\",\"schemaVersion\":3,\"decoration\":true,\"decorationDefaults\":{\"color\":\"ff5454\"}}", "", out _);
+                var old = EventManifest.Parse("{\"id\":\"example.decoration\",\"schemaVersion\":1}", "", out _);
                 var row = new LevelEvent(1, LevelEventType.AddDecoration);
                 row["color"] = "ffffff";
-                DecorationPlacement.SeedNoiseFieldDefaultColor(row, old);
+                DecorationPlacement.ApplyDecorationDefaults(row, old);
                 if (row.GetString("color") != "ffffff") return false;
-                DecorationPlacement.SeedNoiseFieldDefaultColor(row, draft);
+                DecorationPlacement.ApplyDecorationDefaults(row, draft);
                 return row.GetString("color") == "ff5454";
             });
-            if (EventRegistry.TryGetById(NoiseFieldStateSchedule.EventId, out var stateManifest))
+            if (EventRegistry.TryGetById(StateEventId, out var stateManifest))
             {
                 Check("FIELD-state-package-registration", () =>
                 {
@@ -246,32 +367,54 @@ namespace PEV.Diagnostics
                 {
                     var param = stateManifest.Params.Single(p => p.Name == "action");
                     var option = param.OptionLabels.Single(o => o.Key == "WarnThenActive");
-                    string key = "enum." + param.Type.Substring("Enum:".Length).Trim() + ".WarnThenActive";
+                    string key = "enum." + param.EffectiveType.Substring("Enum:".Length).Trim() + ".WarnThenActive";
                     var zh = SA.GoogleDoc.Localization.Client.GetFullSectionLocalization(SystemLanguage.ChineseSimplified);
                     var en = SA.GoogleDoc.Localization.Client.GetFullSectionLocalization(SystemLanguage.English);
                     return zh != null && en != null && zh.TryGetValue(key, out var zhValue) &&
                         en.TryGetValue(key, out var enValue) && zhValue == option.Value["ChineseSimplified"] &&
                         enValue == option.Value["English"];
                 });
+                Check("CHOICE-storage-and-isolation", () =>
+                {
+                    var type = (LevelEventType)PEV.Util.StableId.FromEventId(stateManifest.Id);
+                    if (!EventRegistry.TryGetInfo(type, out var info) || !info.propertiesInfo.TryGetValue("action", out var prop)) return false;
+                    var value = ParamCoercion.Coerce(prop, "WarnThenActive");
+                    if (value == null || value.GetType() != prop.enumType ||
+                        StorageValue.Canonical(prop, value).Value<string>() != "WarnThenActive") return false;
+                    const string json = "{\"id\":\"example.choice\",\"schemaVersion\":3,\"params\":[{\"name\":\"action\",\"type\":\"Choice\",\"default\":\"Active\",\"options\":[\"Disabled\",\"Ready\",\"Active\",\"WarnThenActive\"],\"optionLabels\":{\"WarnThenActive\":{\"en\":\"Different label\"}}}]}";
+                    var other = EventManifest.Parse(json, "", out _);
+                    if (other == null) return false;
+                    ChoiceEnumFactory.Prepare(other, other.Params[0]);
+                    EnumLabels.Register(other.Params[0]);
+                    string otherType = other.Params[0].EffectiveType.Substring("Enum:".Length).Trim();
+                    var en = SA.GoogleDoc.Localization.Client.GetFullSectionLocalization(SystemLanguage.English);
+                    return Type.GetType(otherType) != prop.enumType &&
+                        en.TryGetValue("enum." + otherType + ".WarnThenActive", out var label) && label == "Different label";
+                });
+                Check("FIELD-state-script-order-and-cleanup", () =>
+                {
+                    string script = EventScriptCache.Get(stateManifest);
+                    if (script == null) return false;
+                    var first = ScriptHost.Create(script, "review/state-a", out _);
+                    var second = ScriptHost.Create(script, "review/state-b", out _);
+                    try
+                    {
+                        var a = new EventContext { EventTime = 1, EventOrder = 0 };
+                        var b = new EventContext { EventTime = 2, EventOrder = 1 };
+                        if (first == null || second == null ||
+                            !first.Initialize(a, new Dictionary<string, object> { ["tag"] = "red blue", ["action"] = "Disabled" }, out _) ||
+                            !second.Initialize(b, new Dictionary<string, object> { ["tag"] = "blue", ["action"] = "WarnThenActive", ["warningDuration"] = 0.5 }, out _)) return false;
+                        first.Update(1, a.ToStateJson()); second.Update(0, b.ToStateJson());
+                        if (GameBridge.FieldPhases.At("red") != NoiseFieldPhase.Disabled ||
+                            GameBridge.FieldPhases.At("blue") != NoiseFieldPhase.Ready) return false;
+                        second.Update(0.5, b.ToStateJson()); first.Update(1.5, a.ToStateJson());
+                        if (GameBridge.FieldPhases.At("blue") != NoiseFieldPhase.Active) return false;
+                        second.Dispose();
+                        return GameBridge.FieldPhases.At("blue") == NoiseFieldPhase.Disabled;
+                    }
+                    finally { first?.Dispose(); second?.Dispose(); }
+                });
             }
-            Check("FIELD-state-timeline", () =>
-            {
-                var t = new NoiseFieldStateTimeline();
-                t.Add(8, NoiseFieldStateAction.Disabled);
-                t.Add(1, NoiseFieldStateAction.WarnThenActive, 0.5);
-                t.Add(4, NoiseFieldStateAction.WarnThenActive, 2);
-                t.Add(5, NoiseFieldStateAction.Disabled);
-                t.Add(5, NoiseFieldStateAction.Ready);
-                return t.At(0) == NoiseFieldPhase.Active &&
-                       t.At(1) == NoiseFieldPhase.Ready &&
-                       t.At(1.499) == NoiseFieldPhase.Ready &&
-                       t.At(1.5) == NoiseFieldPhase.Active &&
-                       t.At(4.9) == NoiseFieldPhase.Ready &&
-                       t.At(5) == NoiseFieldPhase.Ready &&
-                       t.At(6) == NoiseFieldPhase.Ready &&
-                       t.At(9) == NoiseFieldPhase.Disabled &&
-                       t.At(1) == NoiseFieldPhase.Ready;
-            });
             Check("FIELD-touch-history", () =>
             {
                 var h = new NoiseFieldTouchHistory();
@@ -292,37 +435,15 @@ namespace PEV.Diagnostics
             });
             Check("FIELD-state-tags", () =>
             {
-                var tracks = new NoiseFieldStateTracks();
-                tracks.Add("red blue", 1, NoiseFieldStateAction.Disabled, 0.5);
-                tracks.Add("blue", 2, NoiseFieldStateAction.WarnThenActive, 0.5);
-                tracks.Add("red", 2, NoiseFieldStateAction.Ready, 0.5);
-                return tracks.At("green", 3) == NoiseFieldPhase.Active &&
-                       tracks.At("blue", 1.5) == NoiseFieldPhase.Disabled &&
-                       tracks.At("blue", 2.5) == NoiseFieldPhase.Active &&
-                       tracks.At("red blue", 2.5) == NoiseFieldPhase.Ready &&
-                       tracks.At("blue", 1.5) == NoiseFieldPhase.Disabled;
-            });
-            Check("FIELD-state-schedule", () =>
-            {
-                var floors = ADOBase.lm != null ? ADOBase.lm.listFloors : null;
-                if (floors == null || floors.Count == 0 || floors[0] == null) return false;
-                double time = floors[0].entryTime;
-                if (double.IsNaN(time) || double.IsInfinity(time)) return false;
-                var first = new EventInstanceData { Id = NoiseFieldStateSchedule.EventId };
-                first.Set("tag", "red blue"); first.Set("action", "Disabled");
-                var second = new EventInstanceData { Id = NoiseFieldStateSchedule.EventId };
-                second.Set("tag", "blue"); second.Set("action", "WarnThenActive"); second.Set("warningDuration", 0.5);
-                var schedule = new NoiseFieldStateSchedule();
-                schedule.Add(new LevelEvent(-1, LevelEventType.EditorComment), first);
-                schedule.Add(new LevelEvent(0, LevelEventType.EditorComment), first);
-                schedule.Add(new LevelEvent(0, LevelEventType.EditorComment), second);
-                if (!schedule.Resolve(floors)) return false;
-                bool ok = schedule.At("red", time) == NoiseFieldPhase.Disabled &&
-                          schedule.At("blue", time) == NoiseFieldPhase.Ready &&
-                          schedule.At("blue", time + 0.5) == NoiseFieldPhase.Active &&
-                          schedule.At("blue", time - 1) == NoiseFieldPhase.Active;
-                schedule.Reset();
-                return ok && schedule.Resolve(floors) && schedule.At("red", time) == NoiseFieldPhase.Disabled;
+                var overrides = new FieldPhaseOverrides();
+                overrides.Set("a", "red blue", NoiseFieldPhase.Disabled, 1, 0);
+                overrides.Set("b", "blue", NoiseFieldPhase.Active, 2, 1);
+                overrides.Set("c", "red", NoiseFieldPhase.Ready, 2, 2);
+                bool ok = overrides.At("green") == NoiseFieldPhase.Active &&
+                    overrides.At("blue") == NoiseFieldPhase.Active &&
+                    overrides.At("red blue") == NoiseFieldPhase.Ready;
+                overrides.Remove("c"); overrides.Remove("b");
+                return ok && overrides.At("blue") == NoiseFieldPhase.Disabled;
             });
             Check("FIELD-touch-geometry", () =>
             {
@@ -353,9 +474,10 @@ namespace PEV.Diagnostics
             Check("FIELD-touch-shader-uniforms", () =>
             {
                 var p = NoiseFieldGpuLayer.TouchPosition(new Vector2(0.5f, 0.25f), 1600, 900);
+                var wave = new FieldWaveSpec { Base = 0.63f, Amplitude = 0.37f, Frequency = 43f, Scale = 2f };
                 return Mathf.Abs(p.x - 8f / 9f) < 0.00001f && Mathf.Abs(p.y - 0.25f) < 0.00001f &&
-                       Mathf.Abs(NoiseFieldGpuLayer.TouchShine(0f) - 1.63f) < 0.00001f &&
-                       Mathf.Abs(NoiseFieldGpuLayer.TouchShine(Mathf.PI / 86f) - 2f) < 0.00001f;
+                       Mathf.Abs(wave.At(0f) - 1.63f) < 0.00001f &&
+                       Mathf.Abs(wave.At(Mathf.PI / 86f) - 2f) < 0.00001f;
             });
             Check("FIELD-viewport-projection", () =>
             {
@@ -449,13 +571,14 @@ namespace PEV.Diagnostics
                     byte[] png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAGElEQVR4nGNkZGL+z8zMzMDCxsbGAGIAAA+dAS/kUtAIAAAAAElFTkSuQmCC");
                     File.WriteAllBytes(Path.Combine(assets, "BlockNoise1.png"), png);
                     var manifest = new EventManifest { SourcePath = root };
-                    var texture = ReferenceNoiseTextures.Load(manifest, "BlockNoise1.png", out var error);
+                    manifest.FieldTextures["displacement"] = "assets/BlockNoise1.png";
+                    var texture = ReferenceNoiseTextures.Load(manifest, "displacement", out var error);
                     if (texture == null || error != null || texture.wrapMode != TextureWrapMode.Mirror ||
                         texture.filterMode != FilterMode.Point) return false;
                     var pixels = texture.GetPixels32();
                     return pixels.Length == 4 && pixels[0].r == 7 && pixels[1].r == 10 &&
                            pixels[2].r == 1 && pixels[3].r == 4 &&
-                           ReferenceNoiseTextures.Load(manifest, "BlockNoise1.png", out _) == texture &&
+                           ReferenceNoiseTextures.Load(manifest, "displacement", out _) == texture &&
                            ReferenceNoiseTextures.Load(manifest, "../outside", out _) == null;
                 }
                 finally { ReferenceNoiseTextures.Clear(); Directory.Delete(root, true); }
@@ -503,6 +626,26 @@ namespace PEV.Diagnostics
                        level.decorations[0].GetFloat("opacity") == 0 &&
                        level.decorations[0].Get<Vector2>("scale") == new Vector2(200, 200) &&
                        !string.IsNullOrEmpty(level.decorations[0].GetString("tag"));
+            });
+            Check("MIGRATE-generic-no-field-defaults", () =>
+            {
+                if (!DecorationParams.TryGetNativeInfo(out var nativeInfo)) return false;
+                var level = new LevelData();
+                var source = new LevelEvent(1, LevelEventType.EditorComment);
+                var data = new EventInstanceData { Id = "example.non-field" };
+                data.Set("size", new[] { 8, 6 });
+                data.Materialize(null);
+                var manifest = new EventManifest { Id = data.Id, DecorationBacked = true, SchemaVersion = 3 };
+                var baseline = new LevelEvent(1, LevelEventType.AddDecoration, nativeInfo);
+                var method = typeof(LevelStorage).GetMethod("MigrateToDecoration", BindingFlags.NonPublic | BindingFlags.Static);
+                try
+                {
+                    bool migrated = (bool)method.Invoke(null, new object[] { level, source, data, manifest, new DecodeSummary() });
+                    var row = level.decorations.Single();
+                    return migrated && row.GetString("color") == baseline.GetString("color") &&
+                        row.Get<Vector2>("scale") == baseline.Get<Vector2>("scale");
+                }
+                finally { foreach (var row in level.decorations) LevelStorage.Detach(row); }
             });
             Check("MIGRATE-failure-keeps-comment", () =>
             {
@@ -587,6 +730,20 @@ namespace PEV.Diagnostics
                     host.Update(3, "{\"t\":3,\"bpm\":180}");
                     host.Update(4, "{\"t\":4,\"bpm\":180}");
                     return !host.Faulted && host.UpdateCalls == 2;
+                }
+            });
+            Check("SCRIPT-global-settings-refresh", () =>
+            {
+                const string source = "function create(ctx){if(!ctx.settings.enabled || !Object.isFrozen(ctx.settings))throw Error('initial');" +
+                    "return {update:function(){if(ctx.settings.enabled || !Object.isFrozen(ctx.settings))throw Error('updated');}};}";
+                var context = new EventContext { Settings = new Dictionary<string, object> { ["enabled"] = true } };
+                using (var host = ScriptHost.Create(source, "review/settings", out _))
+                {
+                    if (host == null || !host.Initialize(context, new Dictionary<string, object>(), out _)) return false;
+                    context.Settings["enabled"] = false;
+                    host.Update(1, context.ToStateJson());
+                    return !host.Faulted && host.UpdateCalls == 1 &&
+                        !new EventContext().ToStateJson().Contains("\"settings\"");
                 }
             });
             Check("SCRIPT-dispose-this", () =>

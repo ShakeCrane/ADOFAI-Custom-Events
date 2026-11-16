@@ -15,13 +15,11 @@ namespace PEV.Scripting
         internal static Vector4 TouchPosition(Vector2 uv, int width, int height) =>
             new Vector4(uv.x * ((float)width / height), uv.y, 0f, 0f);
 
-        internal static float TouchShine(float time) =>
-            (0.63f + 0.37f * (Mathf.Sin(time * 43f) * 0.5f + 0.5f)) * 2f;
-
         private readonly GameObject _root;
         private readonly SortingGroup _sorting;
         private readonly SpriteRenderer _disabled, _active;
         private readonly Material[] _materials;
+        private readonly System.Collections.Generic.IReadOnlyList<FieldWaveSpec> _waves;
         private NoiseFieldActivationGate _activation, _disabledActivation, _activeActivation;
 
         internal NoiseFieldGpuLayer(EventManifest manifest, int sortingLayer, int sortingOrder, int unityLayer)
@@ -30,16 +28,17 @@ namespace PEV.Scripting
             GameObject root = null;
             try
             {
-                string[] names = { "PEVNoise_100_disabled", "PEVNoise_000_capture", "PEVNoise_010_capture",
-                                   "PEVNoise_000_nocapture", "PEVNoise_010_nocapture",
-                                   "PEVNoise_101_disabled", "PEVNoise_001_capture", "PEVNoise_011_capture",
-                                   "PEVNoise_001_nocapture", "PEVNoise_011_nocapture" };
+                string[] names = { "disabled", "activeCapture", "hoverCapture", "activeNoCapture", "hoverNoCapture",
+                                   "disabledColored", "activeCaptureColored", "hoverCaptureColored",
+                                   "activeNoCaptureColored", "hoverNoCaptureColored" };
                 for (int i = 0; i < names.Length; i++)
                 {
-                    string path = "assets/generated/" + names[i] + ".shader";
+                    if (!manifest.FieldShaders.TryGetValue(names[i], out var path))
+                        throw new InvalidOperationException("Field shader role is not declared: " + names[i]);
                     Shader shader = ShaderBundleCache.Load(manifest, path, out string error);
                     if (shader == null) throw new InvalidOperationException(error);
                     materials[i] = new Material(shader) { name = "PEV." + names[i] };
+                    ApplyUniforms(materials[i], manifest.FieldUniforms);
                 }
                 root = new GameObject("PEV.NoiseGpuLayer");
                 root.layer = unityLayer;
@@ -51,12 +50,23 @@ namespace PEV.Scripting
                 _active = CreateRenderer(root.transform, "Active", unityLayer, 1);
                 _root = root;
                 _materials = materials;
+                _waves = manifest.FieldWaves;
             }
             catch
             {
                 if (root != null) UnityEngine.Object.Destroy(root);
                 foreach (var material in materials) if (material != null) UnityEngine.Object.Destroy(material);
                 throw;
+            }
+        }
+
+        internal static void ApplyUniforms(Material material, System.Collections.Generic.IReadOnlyList<FieldUniformSpec> uniforms)
+        {
+            foreach (var uniform in uniforms)
+            {
+                var values = uniform.Values;
+                if (values.Length == 1) material.SetFloat(uniform.Name, values[0]);
+                else material.SetVector(uniform.Name, new Vector4(values[0], values[1], values[2], values[3]));
             }
         }
 
@@ -122,7 +132,7 @@ namespace PEV.Scripting
         // before the next Draw. Transparent vertex color suppresses their visible output.
         internal void Hide() { _disabled.color = Color.clear; _active.color = Color.clear; }
 
-        private static void Configure(Material m, Camera camera, NoiseFieldGpuMasks masks, Texture2D displacement,
+        private void Configure(Material m, Camera camera, NoiseFieldGpuMasks masks, Texture2D displacement,
             Texture2D spark, Texture2D noise, float aspect, float time, Color fallback, Vector4[] positions, int count)
         {
             float width = camera.pixelWidth, height = camera.pixelHeight;
@@ -139,32 +149,7 @@ namespace PEV.Scripting
             m.SetColor("_PEVBackground", fallback);
             m.SetInt("_TouchPosCount", count);
             if (count > 0) m.SetVectorArray("_TouchPos", positions);
-            m.SetFloat("_EdgeOpacity", 0.8f); m.SetFloat("_FillStrength", 0.667f);
-            m.SetFloat("_FillOpacity", 0.667f); m.SetFloat("_GlowIntensity", 0.8f);
-            m.SetFloat("_SparkMapOpacity", 5.69f); m.SetFloat("_SparkHueShiftAmount", 0.2f);
-            m.SetFloat("_SparkDisplaceIntensity", 2.39f); m.SetFloat("_DisplaceBlendIntensity", 0.411f);
-            m.SetFloat("_DisplaceSpeed", 1.5f); m.SetFloat("_DisplaceStrength", 0.15f);
-            m.SetFloat("_TouchPosShine", TouchShine(time)); m.SetFloat("_TouchPosRadius", 0.5f);
-            m.SetFloat("_TouchPosSDFSmoothness", 0.47f); m.SetFloat("_TouchPosSDFFalloff", 0.41f);
-            m.SetFloat("_BackgroundPixelScale", 6f); m.SetFloat("uDisabledFillOpacity", 0.4f);
-            m.SetFloat("uDisabledSparkOpacity", 3.5f); m.SetFloat("uDisabledSparkIntensity", 2.29f);
-            m.SetFloat("uDisabledSpeed", 0.3f); m.SetFloat("_ShineSpeed", 37.9f);
-            m.SetFloat("_ShineBrightness", 0.12f); m.SetFloat("_TouchDisplaceSpeed", 2.9f);
-            m.SetFloat("_TouchDisplaceStrength", 0.08f); m.SetFloat("_NoiseEvoSpeed", 0.03f);
-            m.SetFloat("_NoiseDirChangeSpeed", 60f); m.SetFloat("_NoiseDisplaceStrength", 1f);
-            m.SetFloat("_NoiseRadius", 0.48f); m.SetFloat("_NoiseSmoothness", 1f);
-            m.SetFloat("_SDFCellSize", 0.11f); m.SetFloat("_SDFSmoothness", 0.63f);
-            m.SetFloat("_SDFFalloff", 0.34f); m.SetFloat("_SDFMoveSpeed", 9.3f);
-            m.SetFloat("_TouchBackgroundPixelScale", 8f); m.SetFloat("uReadyExtra", 0f);
-            m.SetVector("_EdgeColor", new Vector4(1f, 0.33018857f, 0.33018857f, 1f));
-            m.SetVector("_FillColor", new Vector4(0.7132075f, 0.23549296f, 0.23549296f, 1f));
-            m.SetVector("_GlowColor", new Vector4(1f, 0.17924517f, 0.17924517f, 1f));
-            m.SetVector("_DisplaceDirection", new Vector4(1f, 1f, 0f, 0f));
-            m.SetVector("uDisabledFillColor", new Vector4(0.497f, 0.13766898f, 0.13766898f, 1f));
-            m.SetVector("_ShineColor", Vector4.one); m.SetVector("_TouchDisplaceDirection", new Vector4(1f, 1f, 0f, 0f));
-            m.SetVector("_NoiseTint", new Vector4(1f, 0f, 0f, 1f)); m.SetVector("_TouchGlowColor", new Vector4(1f, 0f, 0f, 1f));
-            m.SetVector("_SparkTint", new Vector4(1f, 0.28490567f, 0.28490567f, 0f));
-            m.SetVector("uDisabledSparkTint", new Vector4(0.31132078f, 0.077830195f, 0.077830195f, 0f));
+            foreach (var wave in _waves) m.SetFloat(wave.Name, wave.At(time));
         }
 
         public void Dispose()

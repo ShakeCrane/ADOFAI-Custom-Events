@@ -47,12 +47,14 @@ namespace PEV.Scripting
         internal NoiseFieldGpuCoordinator(EventManifest manifest)
         {
             _manifest = manifest ?? throw new ArgumentNullException(nameof(manifest));
-            _compute = ShaderBundleCache.LoadCompute(manifest, "assets/noisefieldcoverage.compute", out string error);
+            if (!manifest.FieldShaders.TryGetValue("compute", out var computePath))
+                throw new InvalidOperationException("Field compute shader role is not declared");
+            _compute = ShaderBundleCache.LoadCompute(manifest, computePath, out string error);
             if (_compute == null) throw new InvalidOperationException(error);
-            _displacement = RequireTexture(manifest, "BlockNoise1.png");
-            _spark = RequireTexture(manifest, "PointNoise.png");
-            _noise = RequireTexture(manifest, "FD_Noise_00000.png");
-            _touch = RequireTexture(manifest, "TouchHover.png");
+            _displacement = RequireTexture(manifest, "displacement");
+            _spark = RequireTexture(manifest, "spark");
+            _noise = RequireTexture(manifest, "noise");
+            _touch = RequireTexture(manifest, "touch");
         }
 
         private static Texture2D RequireTexture(EventManifest manifest, string name)

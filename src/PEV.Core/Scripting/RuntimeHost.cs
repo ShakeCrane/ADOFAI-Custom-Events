@@ -29,7 +29,6 @@ namespace PEV.Scripting
         private const double RewindThreshold = 0.05;
 
         private readonly List<EventInstance> _instances = new List<EventInstance>();
-        private NoiseFieldStateSchedule _fieldStates = new NoiseFieldStateSchedule();
         private NoiseFieldGpuDriver _gpuDriver = new NoiseFieldGpuDriver();
         private bool _live;
 
@@ -132,13 +131,6 @@ namespace PEV.Scripting
 
                 if (!EventRegistry.TryGetById(data.Id, out var manifest)) continue;
 
-                if (data.Id == NoiseFieldStateSchedule.EventId)
-                {
-                    _fieldStates.Add(ev, data);
-                    built++;
-                    continue;
-                }
-
                 Arm(ev, data, manifest, floors, describeFields);
                 built++;
             }
@@ -166,7 +158,8 @@ namespace PEV.Scripting
                 Data = data,
                 Manifest = manifest,
                 EntryTime = entry,
-                EntryTimeResolved = false
+                EntryTimeResolved = false,
+                EventOrder = _instances.Count
             };
 
             // A decoration row is a decoration: bind the instance to it so every frame reads
@@ -195,7 +188,7 @@ namespace PEV.Scripting
             bool playing = _live && (ADOBase.editor == null || ADOBase.editor.playMode);
             double time = _lastSongTime;
             // The driver is disabled unless explicitly opted into the unverified draft.
-            _gpuDriver.Tick(playing, time, Plugin.Settings?.RealtimeSceneSampling ?? true);
+            _gpuDriver.Tick(playing, time);
         }
 
         private void Update()
@@ -211,7 +204,7 @@ namespace PEV.Scripting
             // still mirrors an editor drag or a MoveDecorations tween.
             try { NoiseFieldRenderer.Refresh(); } catch { }
 
-            if (!_live || (_instances.Count == 0 && !_fieldStates.Any)) return;
+            if (!_live || _instances.Count == 0) return;
 
             double songTime;
             try
@@ -233,7 +226,6 @@ namespace PEV.Scripting
 
             if (rewound)
             {
-                _fieldStates.Reset();
                 int reset = 0;
                 foreach (var inst in _instances)
                 {
@@ -249,10 +241,6 @@ namespace PEV.Scripting
             {
                 _lastSongTime = songTime;
             }
-
-            if (_fieldStates.Any && (advancing || rewound) &&
-                _fieldStates.Resolve(ADOBase.lm != null ? ADOBase.lm.listFloors : null))
-                NoiseFieldRenderer.EvaluateGpuPhases(_fieldStates, songTime);
 
             for (int i = 0; i < _instances.Count; i++)
             {
@@ -274,6 +262,7 @@ namespace PEV.Scripting
                     inst.Phase = InstancePhase.Faulted;
                 }
             }
+            NoiseFieldRenderer.EvaluateGpuPhases(GameBridge.FieldPhases);
         }
 
         public void Teardown()
@@ -285,7 +274,6 @@ namespace PEV.Scripting
                 try { inst.End(); } catch { }
             }
             _instances.Clear();
-            _fieldStates = new NoiseFieldStateSchedule();
             _live = false;
             _lastSongTime = double.NegativeInfinity;
 

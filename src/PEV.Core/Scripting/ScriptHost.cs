@@ -78,6 +78,8 @@ var __pevReady = true;
         /// renderer can resolve relativeTo=Tile without the script repeating it.
         /// </summary>
         private int _floorSeq = -1;
+        private double _eventTime;
+        private int _eventOrder;
 
         public static ScriptHost Create(string source, string debugName, out string error)
         {
@@ -141,6 +143,8 @@ var __pevReady = true;
                 // and no script has to invent globally unique keys.
                 args["__instance"] = _debugName ?? "";
                 args["__floor"] = _floorSeq;
+                args["__eventTime"] = _eventTime;
+                args["__eventOrder"] = _eventOrder;
 
                 bool ok = GameBridge.TryPlayNative(name, args, out string error);
                 return JsonConvert.SerializeObject(new Dictionary<string, object>
@@ -223,11 +227,13 @@ var __pevReady = true;
                 // Must be set before create() runs: a script may call fx.field on its very
                 // first line, and the host stamps this value into that call.
                 _floorSeq = context != null ? context.FloorSeq : -1;
+                _eventTime = context != null ? context.EventTime : 0;
+                _eventOrder = context != null ? context.EventOrder : 0;
 
                 _engine.SetValue("__ctx", ctxJson);
                 _engine.SetValue("__params", paramsJson);
 
-                _context = _engine.Evaluate("JSON.parse(__ctx)");
+                _context = _engine.Evaluate("(function(c){if(c.settings)Object.freeze(c.settings);return c;})(JSON.parse(__ctx))");
                 var createFn = _engine.Evaluate(
                     "(function(ctx){ return (typeof create === 'function') ? create(ctx, JSON.parse(__params)) : null; })");
                 var result = _engine.Invoke(createFn, _context);
@@ -267,7 +273,7 @@ var __pevReady = true;
                 // overload parameters, and update() received undefined instead of t.
                 var call = _engine.Evaluate(
                     "(function(fn, self, ctx, t){ var state = JSON.parse(__state); " +
-                    "Object.keys(state).forEach(function(k){ctx[k] = state[k];}); return fn.call(self, t); })");
+                    "if(state.settings)Object.freeze(state.settings); Object.keys(state).forEach(function(k){ctx[k] = state[k];}); return fn.call(self, t); })");
                 _engine.Invoke(call, _updateFn, _instance, _context, t);
                 UpdateCalls++;
             }

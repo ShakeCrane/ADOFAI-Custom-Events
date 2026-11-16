@@ -1,6 +1,6 @@
 # Programmable Events — 事件开发指南
 
-> 适用于 PEV.Core 0.1.0 · 游戏版本 r150（ADOFAI 3.4+）
+> 本文包含当前开发版 Core 的 schema 3 / API 2；旧版 Core 不支持这些新增字段。校准游戏版本 r150（ADOFAI 3.4+）。
 > 读者：事件作者，以及代为编写事件的 AI Agent。
 
 ---
@@ -56,19 +56,47 @@ CameraWarp.event
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| `schemaVersion` | 是 | manifest 格式版本，支持 `1` 和 `2`；普通脚本包使用 `1` |
+| `schemaVersion` | 是 | manifest 格式版本，支持 `1`、`2` 和 `3`；普通脚本包可继续使用 `1` |
 | `id` | 是 | **身份**，与文件名无关。建议 `作者.事件名` |
 | `version` | 是 | 事件定义版本，语义化版本 |
-| `apiVersion` | 否 | 脚本 API 版本，当前为 `1` |
+| `apiVersion` | 否 | 脚本 API 版本，支持 `1` 和 `2`；全局设置需要 `2` |
 | `entry` | 是 | 脚本入口，通常是 `main.js` |
 | `icon` | 否 | 图标路径。**缺失时编辑器会借用一个内置图标** |
 | `category` | 否 | 见下文，默认 `VisualFx` |
 | `name` / `description` | 否 | 字符串，或 `{ "en": "...", "zh-CN": "..." }` |
 | `params` | 否 | 参数声明数组 |
 | `decoration` | 否 | 为 `true` 时使用原生 AddDecoration 载体，可被装饰的 tag 和移动事件控制 |
-| `shaderBundle` | 否 | schema 2 的包内资源路径；供 Core 内置原语加载，脚本不能自行加载 shader |
+| `shaderBundle` | 否 | schema 2 及以上的包内资源路径；供 Core 内置原语加载，脚本不能自行加载 shader |
+| `globalSettings` | 否 | schema 3、API 2 的事件级全局设置声明；由 Core 通用绘制到 UMM 面板 |
+| `decorationDefaults` | 否 | schema 3 的原生装饰新建默认值，目前只支持六位十六进制 `color` |
 
 `shaderBundle` 必须是包内相对路径；打包器会检查文件存在。旧版 Core 不认识 schema 2，使用它的包需要更新 Core。声明该字段不会赋予脚本额外的文件、材质或 shader 访问权限。
+
+### 事件级全局设置
+
+需要全局开关的事件在自己的 `event.json` 声明，而不是修改 Core 的 UMM 界面：
+
+```json
+{
+  "schemaVersion": 3,
+  "apiVersion": 2,
+  "id": "example.my-event",
+  "version": "1.0.0",
+  "entry": "main.js",
+  "globalSettings": [
+    { "name": "enabled", "type": "Bool", "default": true,
+      "label": { "en": "Enable effect", "zh-CN": "启用效果" } }
+  ]
+}
+```
+
+Core 按已加载事件自动生成面板，按事件 ID 和设置名隔离数据。值保存在 Core 模组目录的 `event-settings.json`，不写入谱面；事件卸载后不显示，其保存值会保留，重新安装后恢复。损坏的设置文件不会被自动覆盖。目前只支持布尔开关；名称不能重复或使用 `__proto__`、`constructor`、`prototype`。
+
+API 2 的脚本通过 `ctx.settings.enabled` 读取本包的当前值。`ctx.settings` 是冻结的普通 JavaScript 数据快照；开关变更后，下一次 `update` 会收到新快照，脚本应在 `update` 内读取，而不是永久缓存初始值。脚本不能借此修改持久化设置或读取其他包的设置。API 1 和旧包保持原有行为。
+
+`hostPrimitive`、`fieldUniforms`、`fieldWaves`、`fieldTextures`、`fieldShaders` 和 `globalSettings[].binding` 是目前实验性字段原语的内部接线，并非通用脚本 API；噪域草稿用它把包内声明的采样开关、视觉默认值、波形参数和资源角色绑定到 `fx.field` 原语。`fieldUniforms` 只接受有限数值或四维数值，不能覆盖相机、纹理等 Core 管理的保留字段；贴图路径从事件包读取，shader 路径指向事件包内 bundle 的资源。它不允许脚本自行加载 shader，也不能用作其他任意绑定。实验渲染器目前只支持一个字段 shader 资源提供者，多个提供者会回退旧渲染；这不是已完成的通用多事件渲染方案。
+
+`decorationDefaults` 只在创建新装饰行时使用，不覆盖已有谱面的原生属性。历史字段迁移与面板兼容限制见 [Core 边界审计](CORE-BOUNDARY-AUDIT.md)。
 
 ### `category` 的合法值
 
@@ -95,6 +123,21 @@ CameraWarp.event
 | `FloatPair` | 两个数 | `[a, b]` |
 | `Tile` | 格选择 | `[floor, relativeTo]` |
 | `Enum:<类型名>` | 下拉框 | `string`（成员名） |
+| `Choice` | 包声明选项的下拉框（schema 3） | `string`（选项名） |
+
+`Choice` 不要求事件作者修改 Core 来添加 CLR 枚举。例如：
+
+```json
+{ "name": "mode", "type": "Choice", "default": "Normal",
+  "options": ["Normal", "Strong"],
+  "optionLabels": {
+    "Normal": { "en": "Normal", "zh-CN": "普通" },
+    "Strong": { "en": "Strong", "zh-CN": "强烈" }
+  }
+}
+```
+
+选项必须是 1–64 个互不重复的标识符（字母或下划线开头，后续为字母、数字或下划线；每个最多 64 字符，不能是 `value__`），默认值必须是其中之一。选项名作为谱面中的稳定值保存，翻译只影响显示。Core 为原生面板生成仅包含这些值的枚举，包与包之间的类型和翻译互相隔离；这不向脚本开放反射或动态代码能力。
 
 ### 枚举的两种写法
 

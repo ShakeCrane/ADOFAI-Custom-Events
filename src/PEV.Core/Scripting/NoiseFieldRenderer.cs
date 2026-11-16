@@ -316,10 +316,10 @@ namespace PEV.Scripting
             foreach (var entry in Live.Values) destination.Add(entry);
         }
 
-        internal static void EvaluateGpuPhases(NoiseFieldStateSchedule schedule, double time)
+        internal static void EvaluateGpuPhases(FieldPhaseOverrides overrides)
         {
-            if (schedule == null) return;
-            foreach (var entry in Live.Values) entry.GpuPhase = schedule.At(entry.Tag, time);
+            if (overrides == null) return;
+            foreach (var entry in Live.Values) entry.GpuPhase = overrides.At(entry.Tag);
         }
 
         /// <summary>
@@ -478,7 +478,8 @@ namespace PEV.Scripting
         /// <summary>Manifests whose instances render through the field primitive.</summary>
         public static bool IsFieldEvent(PEV.Model.EventManifest m)
         {
-            return m != null && (m.Id == "pev.noise-field" || m.Params.Exists(p => p.Name == "noiseEvolveSpeed"));
+            return m != null && (m.HostPrimitive == "fx.field" ||
+                (m.SchemaVersion < 3 && m.Params.Exists(p => p.Name == "noiseEvolveSpeed")));
         }
 
         /// <summary>

@@ -163,7 +163,7 @@ namespace PEV.Editor
             // it, the injected parameter group shows itself by matching it, and the effect
             // renderer only mirrors rows that carry it.
             row["decorationImage"] = DecorationCarrier.ImageMarker;
-            SeedNoiseFieldDefaultColor(row, manifest);
+            ApplyDecorationDefaults(row, manifest);
 
             // A real tag, not the empty string.
             //
@@ -203,13 +203,11 @@ namespace PEV.Editor
             Plugin.Log($"placed '{manifest.Id}' at floor {row.floor} uid={data.Uid}");
         }
 
-        // Only a newly placed reference GPU field gets the reference red default.
-        // Existing rows keep their authored native color, including explicit white.
-        internal static void SeedNoiseFieldDefaultColor(LevelEvent row, PEV.Model.EventManifest manifest)
+        // Defaults apply only when placing a new row; existing native values remain intact.
+        internal static void ApplyDecorationDefaults(LevelEvent row, PEV.Model.EventManifest manifest)
         {
-            if (row != null && manifest != null && manifest.Id == "pev.noise-field" &&
-                manifest.SchemaVersion >= 2 && !string.IsNullOrEmpty(manifest.ShaderBundlePath))
-                row["color"] = "ff5454";
+            if (row != null && !string.IsNullOrEmpty(manifest?.DecorationDefaultColor))
+                row["color"] = manifest.DecorationDefaultColor;
         }
 
         /// <summary>

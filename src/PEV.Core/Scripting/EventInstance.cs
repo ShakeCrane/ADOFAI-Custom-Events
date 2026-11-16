@@ -35,6 +35,8 @@ namespace PEV.Scripting
         public string Key => $"{Manifest?.Id}#{Data?.Uid}";
 
         public EventContext Context;
+        internal int EventOrder;
+        private int _settingsRevision = -1;
 
         /// <summary>
         /// Resolves the tile's entry time from the live floor list.
@@ -84,8 +86,14 @@ namespace PEV.Scripting
                 Bpm = ReadBpm(),
                 EventTime = EntryTime,
                 FloorSeq = LevelEvent.floor,
+                EventOrder = EventOrder,
                 Params = ReadLiveParams()
             };
+            if (Manifest.ApiVersion >= 2)
+            {
+                Context.Settings = Plugin.EventSettings.Snapshot(Manifest);
+                _settingsRevision = Plugin.EventSettings.Revision;
+            }
 
             if (!Host.Initialize(Context, Context.Params, out string initError))
             {
@@ -151,6 +159,11 @@ namespace PEV.Scripting
             Context.Beat = t * BpmRatio;
             Context.IsPlaying = true;
             Context.IsPaused = false;
+            if (Manifest.ApiVersion >= 2 && _settingsRevision != Plugin.EventSettings.Revision)
+            {
+                Context.Settings = Plugin.EventSettings.Snapshot(Manifest);
+                _settingsRevision = Plugin.EventSettings.Revision;
+            }
 
             Host.Update(t, Context.ToStateJson());
             if (Host.Faulted)
