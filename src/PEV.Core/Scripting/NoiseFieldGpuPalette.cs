@@ -7,7 +7,8 @@ namespace PEV.Scripting
     /// <summary>Draft per-group palette upload and warp; all Unity calls are main-thread-only.</summary>
     internal sealed class NoiseFieldGpuPalette : IDisposable
     {
-        private readonly NoiseFieldColorWorker _worker = new NoiseFieldColorWorker();
+        private NoiseFieldColorWorker _worker;
+        private readonly PEV.Model.EventManifest _provider;
         private readonly int _defaultRgb;
         private Texture2D _rawActive, _disabled;
         private RenderTexture _active;
@@ -17,6 +18,7 @@ namespace PEV.Scripting
 
         internal NoiseFieldGpuPalette(PEV.Model.EventManifest provider)
         {
+            _provider = provider ?? throw new ArgumentNullException(nameof(provider));
             _defaultRgb = int.TryParse(provider?.DecorationDefaultColor, System.Globalization.NumberStyles.HexNumber,
                 System.Globalization.CultureInfo.InvariantCulture, out int rgb) ? rgb : 0xffffff;
         }
@@ -24,6 +26,16 @@ namespace PEV.Scripting
         internal bool Update(NoiseFieldGpuMasks masks, Texture2D noise, float aspect,
             NoiseFieldColorOwnership.Zone[] zones)
         {
+            if (_worker == null)
+            {
+                if (!_provider.VectorPrograms.TryGetValue("palette", out var path))
+                    throw new InvalidOperationException("field package does not declare a palette vector program; update the event package");
+                byte[] bytes = PEV.Loading.EventLoader.ReadResource(_provider.SourcePath, path, 262144);
+                if (bytes == null || bytes.Length == 0 || bytes.Length > 262144)
+                    throw new InvalidOperationException("field package palette vector program is missing or too large");
+                string source = new System.Text.UTF8Encoding(false, true).GetString(bytes);
+                _worker = new NoiseFieldColorWorker(source);
+            }
             int width = masks.Width, height = masks.Height;
             bool updated = _worker.Update(width, height, aspect, zones, _defaultRgb);
             if (_worker.LastError != null) throw new InvalidOperationException("Palette worker failed", _worker.LastError);
@@ -94,6 +106,6 @@ namespace PEV.Scripting
             _rawActive = null; _disabled = null; _active = null;
         }
 
-        public void Dispose() { _worker.Dispose(); ReleaseTextures(); }
+        public void Dispose() { _worker?.Dispose(); _worker = null; ReleaseTextures(); }
     }
 }

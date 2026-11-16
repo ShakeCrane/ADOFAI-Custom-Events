@@ -1,129 +1,75 @@
 using System;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Linq;
+using Newtonsoft.Json;
 
 namespace PEV.Scripting
 {
     /// <summary>
-    /// One in-flight immutable palette snapshot per group. A changed request replaces
-    /// the desired snapshot rather than queuing work for every animation frame.
-    /// Results contain no Unity objects; callers upload them on the main thread.
+    /// Transitional adapter from field geometry to the generic sandboxed vector worker.
+    /// The palette algorithm and its constants are supplied by the event package.
     /// </summary>
     internal sealed class NoiseFieldColorWorker : IDisposable
     {
-        private static readonly SemaphoreSlim Slots = new SemaphoreSlim(Math.Max(1, Environment.ProcessorCount / 2));
-        private readonly NoiseFieldColorOwnership.Workspace _workspace = new NoiseFieldColorOwnership.Workspace();
-        private readonly CancellationTokenSource _cancellation = new CancellationTokenSource();
-
-        private sealed class Request
+        private struct Snapshot
         {
-            internal int Width, Height;
-            internal int DefaultRgb;
-            internal float Aspect;
             internal NoiseFieldColorOwnership.Zone[] Zones;
+            internal int DefaultRgb;
         }
-
-        private sealed class Completed
-        {
-            internal Request Request;
-            internal NoiseFieldColorOwnership.Result Result;
-        }
-
-        private Request _desired, _failed;
-        private Task<Completed> _pending;
-        private bool _disposed;
-        // Consume synchronously after Update. Older result arrays are reused by later jobs.
+        private readonly VectorWorker<Snapshot> _worker;
+        private byte[][] _lastBuffers;
         internal NoiseFieldColorOwnership.Result Latest { get; private set; }
-        internal int LatestWidth { get; private set; }
-        internal int LatestHeight { get; private set; }
-        internal float LatestAspect { get; private set; }
-        internal Exception LastError { get; private set; }
+        internal int LatestWidth => _worker.LatestWidth;
+        internal int LatestHeight => _worker.LatestHeight;
+        internal float LatestAspect => _worker.LatestAspect;
+        internal Exception LastError => _worker.LastError;
 
-        // Called from the owning thread, including while paused so a worker can complete.
-        // Returns true only when the caller should upload a new result.
+        internal NoiseFieldColorWorker(string program)
+        {
+            _worker = new VectorWorker<Snapshot>(program,
+                s => new Snapshot { Zones = (NoiseFieldColorOwnership.Zone[])s.Zones.Clone(), DefaultRgb = s.DefaultRgb },
+                Same, Serialize);
+        }
+
         internal bool Update(int width, int height, float aspect, NoiseFieldColorOwnership.Zone[] zones, int defaultRgb)
         {
-            if (_disposed) throw new ObjectDisposedException(nameof(NoiseFieldColorWorker));
             if (zones == null) throw new ArgumentNullException(nameof(zones));
-            if (!Matches(_desired, width, height, aspect, zones, defaultRgb))
+            bool updated = _worker.Update(width, height, aspect, new Snapshot { Zones = zones, DefaultRgb = defaultRgb });
+            var buffers = _worker.Latest;
+            if (buffers != null && !ReferenceEquals(buffers, _lastBuffers))
             {
-                _desired = new Request { Width = width, Height = height, Aspect = aspect, DefaultRgb = defaultRgb,
-                    Zones = (NoiseFieldColorOwnership.Zone[])zones.Clone() };
-                _failed = null;
-                LastError = null;
-            }
-            bool updated = false;
-            if (_pending != null && _pending.IsCompleted)
-            {
-                try
-                {
-                    var done = _pending.GetAwaiter().GetResult();
-                    // Never upload a previous viewport size; the old snapshot may still be
-                    // shown while geometry animates at the same resolution.
-                    // Even a superseded result becomes Latest so the next worker uses
-                    // the other output slot; callers only upload matching dimensions.
-                    Latest = done.Result;
-                    LatestWidth = done.Request.Width;
-                    LatestHeight = done.Request.Height;
-                    LatestAspect = done.Request.Aspect;
-                    updated = done.Request.Width == width && done.Request.Height == height && done.Request.Aspect == aspect;
-                    _finished = done.Request;
-                    _failed = null;
-                }
-                catch (Exception e) { LastError = e; _failed = _running; }
-                _pending = null;
-            }
-            if (_pending == null && !ReferenceEquals(_desired, _finished) && !ReferenceEquals(_desired, _failed))
-            {
-                var request = _desired;
-                var cancellation = _cancellation.Token;
-                _running = request;
-                _pending = Task.Run(async () =>
-                {
-                    await Slots.WaitAsync(cancellation).ConfigureAwait(false);
-                    try
-                    {
-                        cancellation.ThrowIfCancellationRequested();
-                        return new Completed { Request = request,
-                            Result = NoiseFieldColorOwnership.Build(request.Width, request.Height, request.Aspect, request.Zones, _workspace, request.DefaultRgb) };
-                    }
-                    finally { Slots.Release(); }
-                });
+                int expected = checked(_worker.LatestWidth * _worker.LatestHeight * 4);
+                if (buffers.Length != 2 || buffers[0] == null || buffers[1] == null ||
+                    buffers[0].Length != expected || buffers[1].Length != expected)
+                    throw new InvalidOperationException("vector program returned invalid field buffers");
+                _lastBuffers = buffers;
+                Latest = new NoiseFieldColorOwnership.Result { Active = buffers[0], Disabled = buffers[1] };
             }
             return updated;
         }
 
-        private Request _running;
-        private Request _finished;
-
-        private static bool Matches(Request request, int width, int height, float aspect,
-            NoiseFieldColorOwnership.Zone[] zones, int defaultRgb)
+        private static bool Same(Snapshot a, Snapshot b)
         {
-            if (request == null || request.Width != width || request.Height != height ||
-                request.Aspect != aspect || request.DefaultRgb != defaultRgb || request.Zones.Length != zones.Length) return false;
-            for (int i = 0; i < zones.Length; i++)
+            if (a.DefaultRgb != b.DefaultRgb || a.Zones.Length != b.Zones.Length) return false;
+            for (int i = 0; i < a.Zones.Length; i++)
             {
-                var a = request.Zones[i]; var b = zones[i];
-                if (a.CenterX != b.CenterX || a.CenterY != b.CenterY || a.HalfX != b.HalfX || a.HalfY != b.HalfY ||
-                    a.Angle != b.Angle || a.YScale != b.YScale || a.Opacity != b.Opacity || a.Red != b.Red ||
-                    a.Green != b.Green || a.Blue != b.Blue || a.Active != b.Active || a.Inverted != b.Inverted) return false;
+                var x = a.Zones[i]; var y = b.Zones[i];
+                if (x.CenterX != y.CenterX || x.CenterY != y.CenterY || x.HalfX != y.HalfX || x.HalfY != y.HalfY ||
+                    x.Angle != y.Angle || x.YScale != y.YScale || x.Opacity != y.Opacity || x.Red != y.Red ||
+                    x.Green != y.Green || x.Blue != y.Blue || x.Active != y.Active || x.Inverted != y.Inverted) return false;
             }
             return true;
         }
 
-        public void Dispose()
+        private static string Serialize(int width, int height, float aspect, Snapshot data)
         {
-            if (_disposed) return;
-            _disposed = true;
-            _cancellation.Cancel();
-            _desired = _running = _finished = _failed = null;
-            Latest = null;
-            // In-flight work owns its inputs and does not touch this object or Unity.
-            if (_pending != null)
-                _pending.ContinueWith(t => { var ignored = t.Exception; _cancellation.Dispose(); },
-                    TaskContinuationOptions.ExecuteSynchronously);
-            else _cancellation.Dispose();
-            _pending = null;
+            var zones = data.Zones.Select(z => new {
+                centerX = z.CenterX, centerY = z.CenterY, halfX = z.HalfX, halfY = z.HalfY,
+                angle = z.Angle, yScale = z.YScale, opacity = z.Opacity,
+                red = z.Red, green = z.Green, blue = z.Blue, active = z.Active, inverted = z.Inverted
+            }).ToArray();
+            return JsonConvert.SerializeObject(new { width, height, aspect, defaultRgb = data.DefaultRgb, zones });
         }
+
+        public void Dispose() { _worker.Dispose(); Latest = null; _lastBuffers = null; }
     }
 }

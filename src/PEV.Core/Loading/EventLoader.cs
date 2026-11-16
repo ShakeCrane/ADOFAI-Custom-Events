@@ -116,27 +116,42 @@ namespace PEV.Loading
                    !relative.Split('/').Any(p => p == "..");
         }
 
-        public static byte[] ReadResource(string packagePath, string relative)
+        public static byte[] ReadResource(string packagePath, string relative) =>
+            ReadResource(packagePath, relative, int.MaxValue);
+
+        /// <summary>Read at most maxBytes, including while decompressing a ZIP entry.</summary>
+        public static byte[] ReadResource(string packagePath, string relative, int maxBytes)
         {
-            if (!IsPackageRelativePath(relative)) return null;
+            if (!IsPackageRelativePath(relative) || maxBytes < 0) return null;
             // Both package forms use the same relative, slash-separated namespace.
             relative = relative.Replace('\\', '/');
             if (Directory.Exists(packagePath))
             {
                 string p = Path.Combine(packagePath, relative);
-                return File.Exists(p) ? File.ReadAllBytes(p) : null;
+                if (!File.Exists(p) || new FileInfo(p).Length > maxBytes) return null;
+                using (var stream = File.OpenRead(p)) return ReadBounded(stream, maxBytes);
             }
             using (var archive = ZipFile.OpenRead(packagePath))
             {
                 var entry = archive.Entries.FirstOrDefault(e =>
                     e.FullName.Equals(relative, StringComparison.OrdinalIgnoreCase));
-                if (entry == null) return null;
-                using (var stream = entry.Open())
-                using (var ms = new MemoryStream())
+                if (entry == null || entry.Length > maxBytes) return null;
+                using (var stream = entry.Open()) return ReadBounded(stream, maxBytes);
+            }
+        }
+
+        private static byte[] ReadBounded(Stream stream, int maxBytes)
+        {
+            using (var output = new MemoryStream())
+            {
+                var buffer = new byte[81920];
+                int total = 0, read;
+                while ((read = stream.Read(buffer, 0, buffer.Length)) != 0)
                 {
-                    stream.CopyTo(ms);
-                    return ms.ToArray();
+                    if (read > maxBytes - total) return null;
+                    output.Write(buffer, 0, read); total += read;
                 }
+                return output.ToArray();
             }
         }
     }

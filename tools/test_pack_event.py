@@ -186,6 +186,14 @@ class PackageValidationTests(unittest.TestCase):
         (nested / "state.json").write_text(json.dumps(dict(child, schemaVersion=4, includedEvents=["nested.json"])), encoding="utf-8")
         self.assertTrue(validate(self.root, parent))
 
+    def test_vector_programs_are_package_relative_and_versioned(self):
+        parent = dict(self.manifest, schemaVersion=4, vectorPrograms={"render": "main.js"})
+        self.assertEqual([], validate(self.root, parent))
+        for programs in ({}, {"__proto__": "main.js"}, {"render": "../outside"},
+                         {"render": "missing.js"}, {"bad name": "main.js"}, []):
+            self.assertTrue(validate(self.root, dict(parent, vectorPrograms=programs)))
+        self.assertTrue(validate(self.root, dict(parent, schemaVersion=3)))
+
     def test_noise_draft_staging_is_self_contained_and_never_overwrites(self):
         bundle = self.root / "draft.bundle"
         bundle.write_bytes(b"test fixture, not a Unity bundle")

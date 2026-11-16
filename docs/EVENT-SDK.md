@@ -71,10 +71,13 @@ CameraWarp.event
 | `decorationDefaults` | 否 | schema 3 的原生装饰新建默认值，支持六位十六进制 `color` 与非空 `tag` |
 | `decorationMigration` | 否 | schema 3 的旧事件数据到原生装饰属性的声明式迁移映射 |
 | `includedEvents` | 否 | schema 4 的包内其他事件 manifest 路径数组，最多 16 个；所有路径相对于事件包根目录 |
+| `vectorPrograms` | 否 | schema 4 的包内后台运算程序路径；目前是内部能力，接口尚未冻结 |
 
 `shaderBundle` 必须是包内相对路径；打包器会检查文件存在。旧版 Core 不认识 schema 2，使用它的包需要更新 Core。声明该字段不会赋予脚本额外的文件、材质或 shader 访问权限。
 
 `includedEvents` 适合一个 `.event` 包提供多个相关的编辑器入口。例如 `"includedEvents": ["included/state.json"]` 会连同主事件一起注册状态事件；被包含 manifest 的 `entry` 和图标路径也相对于同一包根目录。包内事件必须有不同的 ID，不支持嵌套包含；一个被包含 manifest 无效时，整个包不注册。卸载这个包会同时移除这些定义，谱面中保存的数据继续遵循缺失事件规则。这个功能需要 schema 4 Core；旧版包格式保持不变。
+
+`vectorPrograms` 将程序名映射到包内 JavaScript 文件。它们在独立后台 Jint 沙箱执行，只能通过受限的通用批量运算接口处理输入，无法访问 CLR、Unity 对象或文件网络；运行有时间、内存、工作量和并发限制。当前噪域使用其中的 `palette` 程序；该内部绑定和接口尚未作为第三方稳定契约发布。
 
 ### 事件级全局设置
 

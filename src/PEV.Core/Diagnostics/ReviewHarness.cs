@@ -7,6 +7,7 @@ using System.Linq;
 using System.Reflection;
 using ADOFAI;
 using HarmonyLib;
+using Jint;
 using Newtonsoft.Json.Linq;
 using PEV.Editor;
 using PEV.Loading;
@@ -76,11 +77,216 @@ namespace PEV.Diagnostics
             CheckKeys();
             yield return CheckTextures();
             yield return CheckFields();
+            string vectorProbe = Environment.GetEnvironmentVariable("PEV_TEST_VECTOR_SCRIPT");
+            if (!string.IsNullOrEmpty(vectorProbe))
+            {
+                CheckGenericVectorProbe(vectorProbe);
+                yield return CheckVectorWorker();
+                yield return CheckPackagedVectorWorker();
+            }
             if (Environment.GetEnvironmentVariable("PEV_TEST_REAL_FIELD_BUNDLE") == "1")
                 yield return CheckRealFieldBundle();
             yield return ProbeGlobalSettingsGui();
             CheckEditorPlacement(editor);
             Row("DONE", "ok");
+        }
+
+        private static IEnumerator CheckPackagedVectorWorker()
+        {
+            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest) ||
+                !manifest.VectorPrograms.TryGetValue("palette", out var path))
+            { Row("VECTOR-package-worker", "FAIL", "package vector program is missing"); yield break; }
+            byte[] bytes=EventLoader.ReadResource(manifest.SourcePath,path);
+            if(bytes==null){Row("VECTOR-package-worker","FAIL","package vector script not found");yield break;}
+            string source=System.Text.Encoding.UTF8.GetString(bytes);
+            var zones=new[] {
+                new NoiseFieldColorOwnership.Zone {CenterX=-.2f,CenterY=.05f,HalfX=.45f,HalfY=.27f,Active=true,YScale=1,Opacity=1,Angle=.23f,Red=0,Green=1,Blue=0},
+                new NoiseFieldColorOwnership.Zone {CenterX=.3f,CenterY=-.1f,HalfX=.35f,HalfY=.18f,Active=true,Inverted=true,YScale=1,Opacity=1,Blue=1},
+                new NoiseFieldColorOwnership.Zone {CenterX=.05f,CenterY=.1f,HalfX=.28f,HalfY=.22f,Active=false,YScale=1,Opacity=.35f,Red=1,Green=1,Blue=1}
+            };
+            var input=zones.Select(z=>new {centerX=z.CenterX,centerY=z.CenterY,halfX=z.HalfX,halfY=z.HalfY,
+                inverted=z.Inverted,active=z.Active,yScale=z.YScale,opacity=z.Opacity,angle=z.Angle,
+                red=z.Red,green=z.Green,blue=z.Blue}).ToArray();
+            const int width=64,height=36;const float aspect=16f/9f;
+            string payload=Newtonsoft.Json.JsonConvert.SerializeObject(new {width,height,aspect,defaultRgb=0xff5454,zones=input});
+            var expected=NoiseFieldColorOwnership.Build(width,height,aspect,zones,0xff5454);
+            using(var worker=new VectorWorker<string>(source,x=>x,(a,b)=>a==b,(w,h,a,x)=>x))
+            {
+                worker.Update(width,height,aspect,payload);
+                float deadline=Time.realtimeSinceStartup+10f;
+                while(worker.Latest==null && worker.LastError==null && Time.realtimeSinceStartup<deadline)
+                { worker.Update(width,height,aspect,payload); yield return null; }
+                var result=worker.Latest;
+                Row("VECTOR-package-worker", result!=null && result.Length==2 && result[0].SequenceEqual(expected.Active) &&
+                    result[1].SequenceEqual(expected.Disabled) ? "PASS" : "FAIL", worker.LastError?.ToString());
+            }
+        }
+
+        private static IEnumerator CheckVectorWorker()
+        {
+            const string source = @"function computeVector(input) {
+if (typeof System !== 'undefined' || typeof Uint8Array !== 'undefined') throw Error('sandbox escape');
+function run(x) { return Number(__compute(JSON.stringify(x))); }
+var a=run({op:'raster',blend:'set',shapes:[{x:0,y:0,hx:2,hy:2,scale:1,angle:0,value:1,owner:0}]});
+var b=run({op:'raster',blend:'add',shapes:[]});
+var v=run({op:'evaluate',inputs:[a],program:[['c',0]]});
+var s=run({op:'differenceSeeds',a:a,b:b,value:v});
+return [run({op:'map',seeds:s,colors:[input.color],fallback:0})];
+}";
+            using (var worker = new VectorWorker<string>(source, x => x, (a,b) => a == b, (w,h,a,x) => x))
+            {
+                const string payload = "{\"color\":[0.25,0.5,0.75]}";
+                worker.Update(16,8,2f,payload);
+                float deadline = Time.realtimeSinceStartup + 10f;
+                while (worker.Latest == null && worker.LastError == null && Time.realtimeSinceStartup < deadline)
+                { worker.Update(16,8,2f,payload); yield return null; }
+                var data=worker.Latest;
+                Row("VECTOR-worker-sandbox", data != null && data.Length == 1 && data[0].Length == 16*8*4 &&
+                    data[0][0] == 64 && data[0][1] == 128 && data[0][2] == 191 ? "PASS" : "FAIL",
+                    worker.LastError?.ToString());
+            }
+            using (var worker = new VectorWorker<string>("function computeVector(){return eval('1');}", x => x, (a,b) => a == b, (w,h,a,x) => x))
+            {
+                worker.Update(1,1,1f,"{}");
+                float deadline=Time.realtimeSinceStartup+10f;
+                while(worker.LastError==null && worker.Latest==null && Time.realtimeSinceStartup<deadline)
+                { worker.Update(1,1,1f,"{}"); yield return null; }
+                Row("VECTOR-worker-no-eval", worker.LastError!=null && worker.Latest==null ? "PASS" : "FAIL");
+            }
+            using (var worker = new VectorWorker<string>("function computeVector(){while(true){} }", x => x, (a,b) => a == b, (w,h,a,x) => x))
+            {
+                worker.Update(1,1,1f,"{}");
+                float deadline=Time.realtimeSinceStartup+10f;
+                while(worker.LastError==null && worker.Latest==null && Time.realtimeSinceStartup<deadline)
+                { worker.Update(1,1,1f,"{}"); yield return null; }
+                Row("VECTOR-worker-runaway-limited", worker.LastError!=null && worker.Latest==null ? "PASS" : "FAIL");
+            }
+            Check("VECTOR-expression-rejects-invalid", () =>
+            {
+                foreach (string json in new[] { "[[\"add\"]]", "[[\"in\",1]]", "[[\"get\",0]]", "[[\"unknown\"]]", "[[\"c\",1],[\"c\",2]]" })
+                {
+                    try { VectorExpression.Compile(JToken.Parse(json),1); return false; }
+                    catch (ArgumentException) { }
+                }
+                return true;
+            });
+            Check("VECTOR-expression-cancellation", () =>
+            {
+                var program=VectorExpression.Compile(JToken.Parse("[[\"in\",0]]"),1);
+                var input=new byte[8192]; var output=new byte[input.Length]; int calls=0;
+                try { program(new[] { input },output,input.Length,()=>{ if(++calls==2) throw new OperationCanceledException(); }); return false; }
+                catch(OperationCanceledException) { return calls==2; }
+            });
+            Check("VECTOR-cancellation-and-handles", () =>
+            {
+                var vector=new VectorCompute(1,1,1f);
+                vector.Begin(System.Threading.CancellationToken.None);
+                int handle=int.Parse(vector.Apply("{\"op\":\"raster\",\"blend\":\"add\",\"shapes\":[]}"));
+                vector.Begin(System.Threading.CancellationToken.None);
+                try { vector.Apply("{\"op\":\"evaluate\",\"inputs\":["+handle+"],\"program\":[[\"c\",0]]}"); return false; }
+                catch (ArgumentException) { }
+                var canceled=new System.Threading.CancellationTokenSource(); canceled.Cancel();
+                try { vector.Begin(canceled.Token); return false; }
+                catch (OperationCanceledException) { return true; }
+                finally { canceled.Dispose(); }
+            });
+            Check("VECTOR-limits", () =>
+            {
+                try { new VectorCompute(4096,4096,1f); return false; }
+                catch (ArgumentOutOfRangeException) { }
+                var vector=new VectorCompute(1,1,1f);vector.Begin(System.Threading.CancellationToken.None);
+                try { vector.Apply("{\"op\":\"unknown\"}"); return false; }
+                catch (ArgumentException) { }
+                try { vector.Apply("{\"op\":\"raster\",\"blend\":\"set\",\"shapes\":[],\"op\":\"raster\"}"); return false; }
+                catch (Newtonsoft.Json.JsonReaderException) { }
+                var large=new VectorCompute(1024,1024,1f);large.Begin(System.Threading.CancellationToken.None);
+                string tooMuch="{\"op\":\"raster\",\"blend\":\"add\",\"shapes\":["+
+                    string.Join(",",Enumerable.Repeat("{}",64))+"]}";
+                try { large.Apply(tooMuch); return false; }
+                catch (InvalidOperationException) { }
+                return true;
+            });
+        }
+
+        private static void CheckGenericVectorProbe(string scriptPath)
+        {
+            Check("VECTOR-prototype-reference", () =>
+            {
+                var zones = new[] {
+                    new NoiseFieldColorOwnership.Zone { CenterX=-.2f,CenterY=.05f,HalfX=.45f,HalfY=.27f,Inverted=false,Active=true,YScale=1,Opacity=1,Angle=.23f,Red=0,Green=1,Blue=0 },
+                    new NoiseFieldColorOwnership.Zone { CenterX=.3f,CenterY=-.1f,HalfX=.35f,HalfY=.18f,Inverted=true,Active=true,YScale=1,Opacity=1,Angle=0,Red=0,Green=0,Blue=1 },
+                    new NoiseFieldColorOwnership.Zone { CenterX=.05f,CenterY=.1f,HalfX=.28f,HalfY=.22f,Inverted=false,Active=false,YScale=1,Opacity=.35f,Angle=0,Red=1,Green=1,Blue=1 },
+                    new NoiseFieldColorOwnership.Zone { CenterX=-.3f,CenterY=-.12f,HalfX=.24f,HalfY=.20f,Inverted=true,Active=false,YScale=1,Opacity=.65f,Angle=0,Red=.2f,Green=.4f,Blue=.9f },
+                    new NoiseFieldColorOwnership.Zone { CenterX=.05f,CenterY=-.05f,HalfX=.21f,HalfY=.13f,Inverted=false,Active=false,YScale=1,Opacity=1,Angle=0,Red=.9f,Green=.2f,Blue=.7f },
+                    new NoiseFieldColorOwnership.Zone { CenterX=.15f,CenterY=.08f,HalfX=.17f,HalfY=.14f,Inverted=true,Active=false,YScale=1,Opacity=.4f,Angle=0,Red=.3f,Green=.9f,Blue=.2f }
+                };
+                var inputs = zones.Select(z => new { centerX=z.CenterX,centerY=z.CenterY,halfX=z.HalfX,halfY=z.HalfY,
+                    inverted=z.Inverted,active=z.Active,yScale=z.YScale,opacity=z.Opacity,angle=z.Angle,
+                    red=z.Red,green=z.Green,blue=z.Blue }).ToArray();
+                var engine = new Jint.Engine(o => {
+                    o.Interop.Enabled=false; o.Interop.AllowWrite=false; o.Host.StringCompilationAllowed=false;
+                    o.TimeoutInterval(TimeSpan.FromSeconds(5)); o.MaxStatements(200000); o.LimitRecursion(64);
+                    o.Strict(); o.Constraints.StackOverflowGuard=true;
+                });
+                engine.Execute(File.ReadAllText(scriptPath));
+                foreach (var size in new[] { new[] {64,36}, new[] {62,34}, new[] {400,224} })
+                {
+                    int w=size[0], h=size[1]; float aspect=16f/9f;
+                    var service=new VectorCompute(w,h,aspect);
+                    engine.SetValue("__compute",new Func<string,string>(service.Apply));
+                    engine.SetValue("__input", Newtonsoft.Json.JsonConvert.SerializeObject(new {width=w,height=h,aspect,defaultRgb=0xff5454,zones=inputs}));
+                    service.Begin(System.Threading.CancellationToken.None);
+                    var ids=(object[])engine.Evaluate("computeVector(JSON.parse(__input))").ToObject();
+                    var actualA=service.Result(Convert.ToInt32(ids[0])); var actualB=service.Result(Convert.ToInt32(ids[1]));
+                    var reference=NoiseFieldColorOwnership.Build(w,h,aspect,zones,0xff5454);
+                    if (!actualA.SequenceEqual(reference.Active) || !actualB.SequenceEqual(reference.Disabled))
+                    { Row("VECTOR-prototype-difference", "INFO", $"{w}x{h}"); return false; }
+                    if (w == 400)
+                    {
+                        for(int i=0;i<2;i++){service.Begin(System.Threading.CancellationToken.None);engine.Evaluate("computeVector(JSON.parse(__input))");}
+                        var watch=System.Diagnostics.Stopwatch.StartNew();
+                        const int iterations=10;
+                        for(int i=0;i<iterations;i++){service.Begin(System.Threading.CancellationToken.None);engine.Evaluate("computeVector(JSON.parse(__input))");}
+                        watch.Stop();
+                        Row("VECTOR-prototype-mono-time", "INFO", $"{watch.Elapsed.TotalMilliseconds/iterations:F2} ms/job, 400x224, six areas");
+                        var nativeWorkspace=new NoiseFieldColorOwnership.Workspace();
+                        for(int i=0;i<2;i++)NoiseFieldColorOwnership.Build(w,h,aspect,zones,nativeWorkspace,0xff5454);
+                        watch.Restart();
+                        for(int i=0;i<iterations;i++)NoiseFieldColorOwnership.Build(w,h,aspect,zones,nativeWorkspace,0xff5454);
+                        watch.Stop();
+                        Row("VECTOR-native-mono-time", "INFO", $"{watch.Elapsed.TotalMilliseconds/iterations:F2} ms/job, same input");
+                    }
+                }
+                var random=new System.Random(684231);
+                var randomized=new VectorCompute(41,27,1.6f);
+                engine.SetValue("__compute",new Func<string,string>(randomized.Apply));
+                for(int test=0;test<80;test++)
+                {
+                    var sample=new NoiseFieldColorOwnership.Zone[random.Next(0,9)];
+                    for(int i=0;i<sample.Length;i++)
+                    {
+                        float opacity = new[] {0f,.1f,.35f,.5f,1f}[random.Next(5)];
+                        sample[i]=new NoiseFieldColorOwnership.Zone {
+                            CenterX=(float)(random.NextDouble()*2.6-1.3),CenterY=(float)(random.NextDouble()*1.8-.9),
+                            HalfX=(float)(random.NextDouble()*.8),HalfY=(float)(random.NextDouble()*.6),
+                            YScale=(float)(random.NextDouble()*1.8+.1),Angle=(float)(random.NextDouble()*6.2-3.1),
+                            Opacity=opacity,Active=random.Next(2)==0,Inverted=random.Next(2)==0,
+                            Red=(float)random.NextDouble(),Green=(float)random.NextDouble(),Blue=(float)random.NextDouble() };
+                    }
+                    var values=sample.Select(z=>new {centerX=z.CenterX,centerY=z.CenterY,halfX=z.HalfX,halfY=z.HalfY,
+                        inverted=z.Inverted,active=z.Active,yScale=z.YScale,opacity=z.Opacity,angle=z.Angle,
+                        red=z.Red,green=z.Green,blue=z.Blue}).ToArray();
+                    engine.SetValue("__input",Newtonsoft.Json.JsonConvert.SerializeObject(new {width=41,height=27,aspect=1.6f,defaultRgb=0x12ab34,zones=values}));
+                    randomized.Begin(System.Threading.CancellationToken.None);
+                    var ids=(object[])engine.Evaluate("computeVector(JSON.parse(__input))").ToObject();
+                    var expected=NoiseFieldColorOwnership.Build(41,27,1.6f,sample,0x12ab34);
+                    if(!randomized.Result(Convert.ToInt32(ids[0])).SequenceEqual(expected.Active) ||
+                       !randomized.Result(Convert.ToInt32(ids[1])).SequenceEqual(expected.Disabled))
+                    { Row("VECTOR-prototype-difference", "INFO", "random case " + test); return false; }
+                }
+                Row("VECTOR-prototype-random", "PASS", "80 deterministic cases including zero opacity and empty regions");
+                return true;
+            });
         }
 
         private static IEnumerator CheckRealFieldBundle()
@@ -264,6 +470,20 @@ namespace PEV.Diagnostics
                 bool sameBlend = Math.Abs((nr.r - nb.r) - (nb.b - nr.b)) <= 2 && Math.Abs(nr.g - nb.g) <= 2;
                 Row("GPU-real-no-capture-background", sameBlend ? "PASS" : "FAIL",
                     $"red {noCaptureRed[0]}; blue {noCaptureBlue[0]}");
+                entry.FillColor=Color.green;
+                Color32[] colored=null;
+                float coloredDeadline=Time.realtimeSinceStartup+10f;
+                while(Time.realtimeSinceStartup<coloredDeadline)
+                {
+                    coordinator.Render(entries,camera,1f,true,Color.black);
+                    yield return null;
+                    colored=capture();
+                    if(colored[0].g>after[0].g+5 && colored[0].r<after[0].r-5)break;
+                }
+                Row("GPU-real-packaged-palette", colored!=null && colored[0].g>after[0].g+5 &&
+                    colored[0].r<after[0].r-5 ? "PASS" : "FAIL", $"red {after[0]}; green {colored?[0]}");
+                entry.FillColor=new Color32(255,84,84,255);
+                for(int i=0;i<8;i++){coordinator.Render(entries,camera,1f,true,Color.black);yield return null;}
                 entry.GpuPhase = NoiseFieldPhase.Disabled;
                 for (int i = 0; i < 8; i++) { coordinator.Render(entries, camera, 1f, true, Color.black); yield return null; }
                 var disabled = capture();
@@ -789,7 +1009,11 @@ namespace PEV.Diagnostics
                     return EventLoader.ReadResource(root, "../outside") == null &&
                            EventLoader.ReadResource(root, Path.Combine(root, "main.js")) == null &&
                            EventLoader.ReadResource(root, "main.js").Length == 4 &&
-                           EventLoader.ReadResource(zip, "main.js").Length == 4;
+                           EventLoader.ReadResource(zip, "main.js").Length == 4 &&
+                           EventLoader.ReadResource(root, "main.js", 3) == null &&
+                           EventLoader.ReadResource(zip, "main.js", 3) == null &&
+                           EventLoader.ReadResource(root, "main.js", 4).Length == 4 &&
+                           EventLoader.ReadResource(zip, "main.js", 4).Length == 4;
                 }
                 finally { Directory.Delete(root, true); }
             });
@@ -1220,7 +1444,15 @@ namespace PEV.Diagnostics
             Check("FIELD-unity-layer-isolation", () => NoiseFieldRenderer.LayerCount == 2);
             NoiseFieldRenderer.DestroyAll();
 
-            using (var worker = new NoiseFieldColorWorker())
+            string paletteSource = null;
+            if (EventRegistry.TryGetById("pev.noise-field", out var paletteManifest) &&
+                paletteManifest.VectorPrograms.TryGetValue("palette", out var palettePath))
+            {
+                byte[] script = EventLoader.ReadResource(paletteManifest.SourcePath, palettePath);
+                if (script != null) paletteSource = System.Text.Encoding.UTF8.GetString(script);
+            }
+            if (paletteSource == null) Row("FIELD-color-worker-runtime", "SKIP", "package has no vector program");
+            else using (var worker = new NoiseFieldColorWorker(paletteSource))
             {
                 var zones = new[] { new NoiseFieldColorOwnership.Zone {
                     CenterX = 0, CenterY = 0, HalfX = 0.5f, HalfY = 0.5f, YScale = 1f,

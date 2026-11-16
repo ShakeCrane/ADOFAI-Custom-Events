@@ -6,8 +6,8 @@
     <ImplicitUsings>disable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../src/PEV.Core/Scripting/NoiseFieldColorOwnership.cs" Link="NoiseFieldColorOwnership.cs" />
-    <Compile Include="../../src/PEV.Core/Scripting/NoiseFieldColorWorker.cs" Link="NoiseFieldColorWorker.cs" />
+    <Compile Include="../../src/PEV.Core/Scripting/NoiseFieldColorTypes.cs" Link="NoiseFieldColorTypes.cs" />
+    <Compile Include="../../src/PEV.Core/Diagnostics/NoiseFieldColorReference.cs" Link="NoiseFieldColorReference.cs" />
     <Compile Include="../../src/PEV.Core/Scripting/NoiseFieldGroupStaging.cs" Link="NoiseFieldGroupStaging.cs" />
   </ItemGroup>
 </Project>

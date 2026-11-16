@@ -9,29 +9,8 @@ namespace PEV.Scripting
     /// snapshot, never on Unity's main thread. The active palette still needs the same
     /// per-frame source-pixel warp as the coverage mask before it is consumed.
     /// </summary>
-    internal static class NoiseFieldColorOwnership
+    internal static partial class NoiseFieldColorOwnership
     {
-        internal struct Zone
-        {
-            internal float CenterX { get; set; }
-            internal float CenterY { get; set; }
-            internal float HalfX { get; set; }
-            internal float HalfY { get; set; }
-            internal float Angle { get; set; }
-            internal float YScale { get; set; }
-            internal float Opacity { get; set; }
-            internal float Red { get; set; }
-            internal float Green { get; set; }
-            internal float Blue { get; set; }
-            internal bool Active { get; set; }
-            internal bool Inverted { get; set; }
-        }
-
-        internal sealed class Result
-        {
-            internal byte[] Active, Disabled;
-        }
-
         // Owned by one worker. Scratch arrays and two alternating output pairs are
         // reused so a moving field does not allocate several MiB every frame.
         internal sealed class Workspace

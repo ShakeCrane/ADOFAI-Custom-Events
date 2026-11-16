@@ -169,6 +169,7 @@ namespace PEV.Model
         public int SchemaVersion = 1;
         // Additional event definitions in the same package, relative to its root.
         public readonly List<string> IncludedEvents = new List<string>();
+        public readonly Dictionary<string, string> VectorPrograms = new Dictionary<string, string>(StringComparer.Ordinal);
         public string Id;
         public string Version = "1.0.0";
         public int ApiVersion = 1;
@@ -312,6 +313,19 @@ namespace PEV.Model
                         string.Equals(path, "event.json", StringComparison.OrdinalIgnoreCase) || !paths.Add(path))
                     { error = "includedEvents contains an invalid or duplicate package-relative path"; return null; }
                     m.IncludedEvents.Add(path);
+                }
+            }
+            if (root["vectorPrograms"] != null)
+            {
+                if (m.SchemaVersion < 4 || !(root["vectorPrograms"] is JObject programs) || programs.Count < 1 || programs.Count > 16)
+                { error = "vectorPrograms requires schemaVersion 4 and 1-16 package-relative scripts"; return null; }
+                foreach (var entry in programs.Properties())
+                {
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(entry.Name, "^[A-Za-z_][A-Za-z0-9_]{0,63}$") ||
+                        entry.Name == "__proto__" || entry.Name == "constructor" || entry.Name == "prototype" ||
+                        entry.Value.Type != JTokenType.String || !PEV.Loading.EventLoader.IsPackageRelativePath(entry.Value.Value<string>()))
+                    { error = "invalid vector program declaration"; return null; }
+                    m.VectorPrograms.Add(entry.Name, entry.Value.Value<string>().Replace('\\', '/'));
                 }
             }
             if (root["shaderBundle"] != null &&
