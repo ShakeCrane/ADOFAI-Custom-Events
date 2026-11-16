@@ -117,6 +117,32 @@ namespace PEV.Diagnostics
                         added["tag"] = "review-field";
                         added["action"] = NoiseFieldStateAction.WarnThenActive;
                         added["warningDuration"] = 0.75f;
+                        Check("FIELD-editor-state-panel", () =>
+                        {
+                            editor.levelEventsPanel.ShowPanel(added.eventType, 0);
+                            var panel = editor.levelEventsPanel.panelsList.FirstOrDefault(p => p.levelEventType == added.eventType);
+                            if (panel == null) return false;
+                            if (panel.properties.TryGetValue("action", out var choice) && choice?.control != null)
+                            {
+                                Row("FIELD-editor-state-control", "INFO", choice.control.GetType().FullName);
+                                Check("FIELD-editor-state-control-change", () =>
+                                {
+                                    if (!(choice.control is ADOFAI.LevelEditor.Controls.PropertyControl_Toggle toggle)) return false;
+                                    if (!panel.properties.TryGetValue("warningDuration", out var durationProperty) ||
+                                        durationProperty?.control?.propertyInfo == null) return false;
+                                    var info = durationProperty.control.propertyInfo;
+                                    toggle.SelectVar("Disabled");
+                                    bool disabled = added.Get<object>("action")?.ToString() == "Disabled" &&
+                                        !info.CheckIfShown(added, info.groupName);
+                                    toggle.SelectVar("WarnThenActive");
+                                    return disabled && added.Get<object>("action")?.ToString() == "WarnThenActive" &&
+                                        info.CheckIfShown(added, info.groupName);
+                                });
+                            }
+                            return panel.properties.TryGetValue("tag", out var tag) && tag?.control != null &&
+                                panel.properties.TryGetValue("action", out var action) && action?.control != null &&
+                                panel.properties.TryGetValue("warningDuration", out var duration) && duration?.control != null;
+                        });
                         var schedule = new NoiseFieldStateSchedule();
                         schedule.Add(added, data);
                         var floors = ADOBase.lm.listFloors;
