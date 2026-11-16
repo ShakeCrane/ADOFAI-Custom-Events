@@ -281,9 +281,9 @@ namespace PEV.Diagnostics
         /// <summary>
         /// Saves a screenshot next to the results file.
         ///
-        /// ScreenCapture lives in UnityEngine.ScreenCaptureModule, which targets
-        /// netstandard2.1 and cannot be referenced from a net48 assembly. Call it through
-        /// reflection rather than dragging in that dependency.
+        /// Through the camera into a RenderTexture, not ScreenCapture: the latter produced
+        /// byte-identical white images on every capture of the previous run, and a blank
+        /// image cannot tell "the effect is missing" apart from "the capture is broken".
         /// </summary>
         private static IEnumerator CaptureFrame(string tag)
         {
@@ -293,24 +293,8 @@ namespace PEV.Diagnostics
             if (string.IsNullOrEmpty(dir)) yield break;
 
             string path = Path.Combine(dir, $"p4-{tag}.png");
-            bool issued = false;
-
-            // C# forbids yield inside a try that has a catch, so the call and the wait
-            // are separated.
-            try
-            {
-                var type = Type.GetType("UnityEngine.ScreenCapture, UnityEngine.ScreenCaptureModule");
-                var method = type?.GetMethod("CaptureScreenshot", new[] { typeof(string) });
-                if (method == null) { Row("CAPTURE", "UNAVAILABLE", tag); yield break; }
-
-                method.Invoke(null, new object[] { path });
-                Row("CAPTURE", tag, path);
-                issued = true;
-            }
-            catch (Exception e) { Row("CAPTURE", "EXCEPTION", tag + ": " + e.Message); }
-
-            // Give the capture a moment to reach disk before the run continues.
-            if (issued) yield return new WaitForSeconds(0.4f);
+            var shot = FrameCapture.Capture(Scripting.GameCamera.Current, path);
+            Row("CAPTURE", shot.Ok ? "PASS" : "FAIL", $"{tag}: {shot.Detail} <- {path}");
         }
     }
 }

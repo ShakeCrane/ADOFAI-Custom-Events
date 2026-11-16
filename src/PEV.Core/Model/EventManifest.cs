@@ -141,6 +141,8 @@ namespace PEV.Model
         public int ApiVersion = 1;
         public string Entry = "main.js";
         public string IconPath;
+        /// <summary>Optional package-local Unity shader bundle (schema 2).</summary>
+        public string ShaderBundlePath;
         public string Category = "VisualFx";
         public string DisplayName = "";
         public string Description = "";
@@ -216,6 +218,12 @@ namespace PEV.Model
             m.ApiVersion = root.Value<int?>("apiVersion") ?? 1;
             m.Entry = root.Value<string>("entry") ?? "main.js";
             m.IconPath = root.Value<string>("icon");
+            if (root["shaderBundle"] != null && root["shaderBundle"].Type != JTokenType.String)
+            {
+                error = "shaderBundle must be a package-relative path string";
+                return null;
+            }
+            m.ShaderBundlePath = root.Value<string>("shaderBundle");
             m.Category = root.Value<string>("category") ?? "VisualFx";
             m.DecorationBacked = root.Value<bool?>("decoration") ?? false;
             m.Description = LocalizedValue(root["description"]) ?? "";
@@ -233,9 +241,15 @@ namespace PEV.Model
                 error = "manifest is missing required field 'id'";
                 return null;
             }
-            if (m.SchemaVersion != 1 || m.ApiVersion != 1)
+            if ((m.SchemaVersion != 1 && m.SchemaVersion != 2) || m.ApiVersion != 1)
             {
-                error = $"unsupported schemaVersion {m.SchemaVersion} or apiVersion {m.ApiVersion} (supported: 1)";
+                error = $"unsupported schemaVersion {m.SchemaVersion} or apiVersion {m.ApiVersion} (supported schemas: 1, 2; API: 1)";
+                return null;
+            }
+            if (root["shaderBundle"] != null &&
+                (m.SchemaVersion != 2 || !PEV.Loading.EventLoader.IsPackageRelativePath(m.ShaderBundlePath)))
+            {
+                error = "shaderBundle requires schemaVersion 2 and a package-relative path";
                 return null;
             }
 

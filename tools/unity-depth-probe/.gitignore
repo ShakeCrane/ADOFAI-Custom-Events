@@ -1,0 +1,9 @@
+/Library/
+/Logs/
+/Temp/
+/UserSettings/
+/Obj/
+/MemoryCaptures/
+/Assets/**/*.meta
+/Assets/*.meta
+/Packages/packages-lock.json

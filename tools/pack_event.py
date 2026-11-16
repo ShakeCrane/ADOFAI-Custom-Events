@@ -52,8 +52,9 @@ def validate(root, manifest):
 
     for field in ("schemaVersion", "apiVersion"):
         value = manifest.get(field, 1)
-        if type(value) is not int or value != 1:
-            problems.append(f"unsupported {field}: {value!r} (supported: 1)")
+        supported = (1, 2) if field == "schemaVersion" else (1,)
+        if type(value) is not int or value not in supported:
+            problems.append(f"unsupported {field}: {value!r} (supported: {supported})")
 
     for field in ("id", "version", "entry"):
         value = manifest.get(field)
@@ -74,6 +75,14 @@ def validate(root, manifest):
 
     check_resource("entry")
     check_resource("icon")
+    if "shaderBundle" in manifest:
+        if manifest.get("schemaVersion") != 2:
+            problems.append("shaderBundle requires schemaVersion 2")
+        bundle = manifest["shaderBundle"]
+        if not isinstance(bundle, str) or not bundle.strip():
+            problems.append("shaderBundle must be a package-relative path string")
+        else:
+            check_resource("shaderBundle")
 
     category = manifest.get("category", "VisualFx")
     if not isinstance(category, str) or category not in VALID_CATEGORIES:

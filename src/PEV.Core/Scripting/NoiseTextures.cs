@@ -109,7 +109,7 @@ namespace PEV.Scripting
         // (RGBA), no palette, no tRNS. Anything else returns null rather than rendering noise
         // that looks like a decoding bug.
 
-        private static Color32[] DecodePng(byte[] data, out int width, out int height)
+        internal static Color32[] DecodePng(byte[] data, out int width, out int height)
         {
             width = height = 0;
             if (data == null || data.Length < 8) return null;

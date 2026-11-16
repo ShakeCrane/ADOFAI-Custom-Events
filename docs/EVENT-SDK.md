@@ -56,7 +56,7 @@ CameraWarp.event
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| `schemaVersion` | 是 | manifest 格式版本，当前为 `1` |
+| `schemaVersion` | 是 | manifest 格式版本，支持 `1` 和 `2`；普通脚本包使用 `1` |
 | `id` | 是 | **身份**，与文件名无关。建议 `作者.事件名` |
 | `version` | 是 | 事件定义版本，语义化版本 |
 | `apiVersion` | 否 | 脚本 API 版本，当前为 `1` |
@@ -65,6 +65,10 @@ CameraWarp.event
 | `category` | 否 | 见下文，默认 `VisualFx` |
 | `name` / `description` | 否 | 字符串，或 `{ "en": "...", "zh-CN": "..." }` |
 | `params` | 否 | 参数声明数组 |
+| `decoration` | 否 | 为 `true` 时使用原生 AddDecoration 载体，可被装饰的 tag 和移动事件控制 |
+| `shaderBundle` | 否 | schema 2 的包内资源路径；供 Core 内置原语加载，脚本不能自行加载 shader |
+
+`shaderBundle` 必须是包内相对路径；打包器会检查文件存在。旧版 Core 不认识 schema 2，使用它的包需要更新 Core。声明该字段不会赋予脚本额外的文件、材质或 shader 访问权限。
 
 ### `category` 的合法值
 

@@ -8,6 +8,7 @@ using System.Reflection;
 using ADOFAI;
 using HarmonyLib;
 using Newtonsoft.Json.Linq;
+using PEV.Editor;
 using PEV.Loading;
 using PEV.Model;
 using PEV.Registry;
@@ -37,8 +38,8 @@ namespace PEV.Diagnostics
             catch (Exception e) { Row(name, "FAIL " + e); }
         }
 
-        private static void Row(string name, string result) =>
-            File.AppendAllText(_results, name + "\t" + result + Environment.NewLine);
+        private static void Row(string name, string result, string note = null) =>
+            File.AppendAllText(_results, name + "\t" + result + (note == null ? "" : "\t" + note) + Environment.NewLine);
 
         [HarmonyPatch(typeof(scnLevelSelect), "Start")]
         public static class AutoOpen
@@ -74,7 +75,67 @@ namespace PEV.Diagnostics
             CheckKeys();
             yield return CheckTextures();
             yield return CheckFields();
+            CheckEditorPlacement(editor);
             Row("DONE", "ok");
+        }
+
+        private static void CheckEditorPlacement(scnEditor editor)
+        {
+            if (editor == null || editor.levelData == null || editor.levelData.decorations == null) return;
+            if (EventRegistry.TryGetById("pev.noise-field", out var field) && field.SchemaVersion == 2)
+            {
+                Check("FIELD-editor-place-default-color", () =>
+                {
+                    var old = new HashSet<LevelEvent>(editor.levelData.decorations);
+                    LevelEvent added = null;
+                    try
+                    {
+                        EditorTestHelpers.SelectFloor(editor, 1);
+                        editor.AddEventAtSelected((LevelEventType)PEV.Util.StableId.FromEventId(field.Id));
+                        added = editor.levelData.decorations.FirstOrDefault(row => !old.Contains(row));
+                        return added != null && added.GetString("color") == "ff5454" &&
+                            LevelStorage.TryGetData(added, out var data) && data.Id == field.Id;
+                    }
+                    finally
+                    {
+                        if (added != null) { LevelStorage.Detach(added); editor.levelData.decorations.Remove(added); }
+                    }
+                });
+            }
+            if (EventRegistry.TryGetById(NoiseFieldStateSchedule.EventId, out var state))
+            {
+                Check("FIELD-editor-place-state-event", () =>
+                {
+                    var old = new HashSet<LevelEvent>(editor.events);
+                    LevelEvent added = null;
+                    try
+                    {
+                        EditorTestHelpers.SelectFloor(editor, 1);
+                        editor.AddEventAtSelected((LevelEventType)PEV.Util.StableId.FromEventId(state.Id));
+                        added = editor.events.FirstOrDefault(row => !old.Contains(row));
+                        if (added == null || !LevelStorage.TryGetData(added, out var data) || data.Id != state.Id) return false;
+                        added["tag"] = "review-field";
+                        added["action"] = NoiseFieldStateAction.WarnThenActive;
+                        added["warningDuration"] = 0.75f;
+                        var schedule = new NoiseFieldStateSchedule();
+                        schedule.Add(added, data);
+                        var floors = ADOBase.lm.listFloors;
+                        if (!schedule.Resolve(floors)) return false;
+                        double time = floors[added.floor].entryTime;
+                        return schedule.At("review-field", time) == NoiseFieldPhase.Ready &&
+                            schedule.At("review-field", time + 0.75) == NoiseFieldPhase.Active;
+                    }
+                    finally
+                    {
+                        if (added != null)
+                        {
+                            LevelStorage.Detach(added);
+                            editor.events.Remove(added);
+                            editor.levelData.levelEvents.Remove(added);
+                        }
+                    }
+                });
+            }
         }
 
         private static void CheckPayloads()
@@ -90,7 +151,250 @@ namespace PEV.Diagnostics
             });
             Check("MANIFEST-invalid-fields", () => EventManifest.Parse("{\"id\":\"test\",\"schemaVersion\":{}}", "", out _) == null);
             Check("MANIFEST-api-version", () => EventManifest.Parse("{\"id\":\"test\",\"apiVersion\":2}", "", out _) == null);
+            Check("MANIFEST-shader-bundle", () =>
+            {
+                var valid = EventManifest.Parse("{\"id\":\"test\",\"schemaVersion\":2,\"shaderBundle\":\"assets/field.bundle\"}", "", out _);
+                return valid != null && valid.ShaderBundlePath == "assets/field.bundle" &&
+                       EventManifest.Parse("{\"id\":\"test\",\"shaderBundle\":\"assets/field.bundle\"}", "", out _) == null &&
+                       EventManifest.Parse("{\"id\":\"test\",\"schemaVersion\":2,\"shaderBundle\":\"../field.bundle\"}", "", out _) == null &&
+                       EventManifest.Parse("{\"id\":\"test\",\"schemaVersion\":2,\"shaderBundle\":{}}", "", out _) == null;
+            });
             Check("MANIFEST-duplicate-param", () => EventManifest.Parse("{\"id\":\"test\",\"params\":[{\"name\":\"a\",\"type\":\"Float\"},{\"name\":\"a\",\"type\":\"Int\"}]}", "", out _) == null);
+            Check("FIELD-row-sorting-layer", () =>
+            {
+                var row = new LevelEvent(1, LevelEventType.AddDecoration);
+                row["depth"] = 7;
+                if (!DecorationBridge.TryReadEvent(row, out var bg) || bg.UnityLayer != 9 || bg.SortingOrder != -7) return false;
+                row["depth"] = -3;
+                return DecorationBridge.TryReadEvent(row, out var front) && front.UnityLayer == 7 && front.SortingOrder == 3;
+            });
+            Check("FIELD-sampling-default", () => new PEV.Core.NoiseFieldSettings().RealtimeSceneSampling);
+            Check("FIELD-sampling-setting-roundtrip", () =>
+            {
+                var serializer = new System.Xml.Serialization.XmlSerializer(typeof(PEV.Core.NoiseFieldSettings));
+                using (var stream = new MemoryStream())
+                {
+                    serializer.Serialize(stream, new PEV.Core.NoiseFieldSettings { RealtimeSceneSampling = false });
+                    stream.Position = 0;
+                    return serializer.Deserialize(stream) is PEV.Core.NoiseFieldSettings loaded && !loaded.RealtimeSceneSampling;
+                }
+            });
+            Check("FIELD-manifest-old-data", () =>
+            {
+                if (!EventRegistry.TryGetById("pev.noise-field", out var manifest)) return false;
+                var data = EventInstanceData.Parse("@PEV1 {\"id\":\"pev.noise-field\",\"v\":\"1.0.0\",\"p\":{\"noiseFrameCount\":73,\"edgeDistance\":0.42,\"futureData\":{\"keep\":true}}}", out _);
+                if (data == null) return false;
+                var original = data.Raw["futureData"].DeepClone();
+                data.Materialize(manifest.Params);
+                var copy = EventInstanceData.Parse(data.ToComment(), out _);
+                return copy != null && copy.Raw["noiseFrameCount"].Value<int>() == 73 &&
+                    Math.Abs(copy.Raw["edgeDistance"].Value<double>() - 0.42) < 0.00001 &&
+                    JToken.DeepEquals(original, copy.Raw["futureData"]) &&
+                    (manifest.SchemaVersion != 2 || (data.TryGet("invert", out var invert) && invert is bool b && !b));
+            });
+            Check("FIELD-manifest-invert-panel", () =>
+                EventRegistry.TryGetById("pev.noise-field", out var manifest) &&
+                (manifest.SchemaVersion != 2 || DecorationParams.IsInjected("invert")));
+            Check("FIELD-new-native-color", () =>
+            {
+                var draft = EventManifest.Parse("{\"id\":\"pev.noise-field\",\"schemaVersion\":2,\"shaderBundle\":\"assets/noise.bundle\"}", "", out _);
+                var old = EventManifest.Parse("{\"id\":\"pev.noise-field\",\"schemaVersion\":1}", "", out _);
+                var row = new LevelEvent(1, LevelEventType.AddDecoration);
+                row["color"] = "ffffff";
+                DecorationPlacement.SeedNoiseFieldDefaultColor(row, old);
+                if (row.GetString("color") != "ffffff") return false;
+                DecorationPlacement.SeedNoiseFieldDefaultColor(row, draft);
+                return row.GetString("color") == "ff5454";
+            });
+            if (EventRegistry.TryGetById(NoiseFieldStateSchedule.EventId, out var stateManifest))
+            {
+                Check("FIELD-state-package-registration", () =>
+                {
+                    var type = (LevelEventType)PEV.Util.StableId.FromEventId(stateManifest.Id);
+                    return stateManifest.Params.Exists(p => p.Name == "tag") &&
+                        stateManifest.Params.Exists(p => p.Name == "action") &&
+                        stateManifest.Params.Exists(p => p.Name == "warningDuration") &&
+                        EventRegistry.TryGetInfo(type, out var info) && info.propertiesInfo.ContainsKey("action");
+                });
+                Check("FIELD-state-enum-localization", () =>
+                {
+                    var param = stateManifest.Params.Single(p => p.Name == "action");
+                    var option = param.OptionLabels.Single(o => o.Key == "WarnThenActive");
+                    string key = "enum." + param.Type.Substring("Enum:".Length).Trim() + ".WarnThenActive";
+                    var zh = SA.GoogleDoc.Localization.Client.GetFullSectionLocalization(SystemLanguage.ChineseSimplified);
+                    var en = SA.GoogleDoc.Localization.Client.GetFullSectionLocalization(SystemLanguage.English);
+                    return zh != null && en != null && zh.TryGetValue(key, out var zhValue) &&
+                        en.TryGetValue(key, out var enValue) && zhValue == option.Value["ChineseSimplified"] &&
+                        enValue == option.Value["English"];
+                });
+            }
+            Check("FIELD-state-timeline", () =>
+            {
+                var t = new NoiseFieldStateTimeline();
+                t.Add(8, NoiseFieldStateAction.Disabled);
+                t.Add(1, NoiseFieldStateAction.WarnThenActive, 0.5);
+                t.Add(4, NoiseFieldStateAction.WarnThenActive, 2);
+                t.Add(5, NoiseFieldStateAction.Disabled);
+                t.Add(5, NoiseFieldStateAction.Ready);
+                return t.At(0) == NoiseFieldPhase.Active &&
+                       t.At(1) == NoiseFieldPhase.Ready &&
+                       t.At(1.499) == NoiseFieldPhase.Ready &&
+                       t.At(1.5) == NoiseFieldPhase.Active &&
+                       t.At(4.9) == NoiseFieldPhase.Ready &&
+                       t.At(5) == NoiseFieldPhase.Ready &&
+                       t.At(6) == NoiseFieldPhase.Ready &&
+                       t.At(9) == NoiseFieldPhase.Disabled &&
+                       t.At(1) == NoiseFieldPhase.Ready;
+            });
+            Check("FIELD-touch-history", () =>
+            {
+                var h = new NoiseFieldTouchHistory();
+                var a = new NoiseFieldTouchHistory.Contact { Id = 42, Position = new Vector2(0.2f, 0.3f) };
+                var b = new NoiseFieldTouchHistory.Contact { Id = 7, Position = new Vector2(0.8f, 0.7f) };
+                h.Update(new[] { a, b }, 1f);
+                if (h.GetSlot(0).Scale != 0 || h.GetSlot(1).Scale != 0) return false;
+                h.Update(new[] { b, a }, 1.05f);
+                if (h.GetSlot(0).Id != 42 || h.GetSlot(1).Id != 7 ||
+                    Mathf.Abs(h.GetSlot(0).Scale - 0.5f) > 0.001f) return false;
+                h.Update(new[] { b }, 1.05f);
+                h.Update(new[] { b }, 1.10f);
+                if (h.GetSlot(0).Held || Mathf.Abs(h.GetSlot(0).Scale - 0.25f) > 0.001f) return false;
+                h.Update(new[] { a, b }, 1.10f);
+                if (!h.GetSlot(0).Held || h.GetSlot(0).Scale != 0) return false;
+                h.Update(new[] { b }, 0.5f);
+                return h.GetSlot(0).Held && h.GetSlot(0).Id == 7 && h.GetSlot(0).Scale == 0 && !h.GetSlot(1).Held;
+            });
+            Check("FIELD-state-tags", () =>
+            {
+                var tracks = new NoiseFieldStateTracks();
+                tracks.Add("red blue", 1, NoiseFieldStateAction.Disabled, 0.5);
+                tracks.Add("blue", 2, NoiseFieldStateAction.WarnThenActive, 0.5);
+                tracks.Add("red", 2, NoiseFieldStateAction.Ready, 0.5);
+                return tracks.At("green", 3) == NoiseFieldPhase.Active &&
+                       tracks.At("blue", 1.5) == NoiseFieldPhase.Disabled &&
+                       tracks.At("blue", 2.5) == NoiseFieldPhase.Active &&
+                       tracks.At("red blue", 2.5) == NoiseFieldPhase.Ready &&
+                       tracks.At("blue", 1.5) == NoiseFieldPhase.Disabled;
+            });
+            Check("FIELD-state-schedule", () =>
+            {
+                var floors = ADOBase.lm != null ? ADOBase.lm.listFloors : null;
+                if (floors == null || floors.Count == 0 || floors[0] == null) return false;
+                double time = floors[0].entryTime;
+                if (double.IsNaN(time) || double.IsInfinity(time)) return false;
+                var first = new EventInstanceData { Id = NoiseFieldStateSchedule.EventId };
+                first.Set("tag", "red blue"); first.Set("action", "Disabled");
+                var second = new EventInstanceData { Id = NoiseFieldStateSchedule.EventId };
+                second.Set("tag", "blue"); second.Set("action", "WarnThenActive"); second.Set("warningDuration", 0.5);
+                var schedule = new NoiseFieldStateSchedule();
+                schedule.Add(new LevelEvent(-1, LevelEventType.EditorComment), first);
+                schedule.Add(new LevelEvent(0, LevelEventType.EditorComment), first);
+                schedule.Add(new LevelEvent(0, LevelEventType.EditorComment), second);
+                if (!schedule.Resolve(floors)) return false;
+                bool ok = schedule.At("red", time) == NoiseFieldPhase.Disabled &&
+                          schedule.At("blue", time) == NoiseFieldPhase.Ready &&
+                          schedule.At("blue", time + 0.5) == NoiseFieldPhase.Active &&
+                          schedule.At("blue", time - 1) == NoiseFieldPhase.Active;
+                schedule.Reset();
+                return ok && schedule.Resolve(floors) && schedule.At("red", time) == NoiseFieldPhase.Disabled;
+            });
+            Check("FIELD-touch-geometry", () =>
+            {
+                var normal = new NoiseFieldTouchGeometry.Area
+                {
+                    Center = Vector2.zero, Size = new Vector2(4f, 2f), RotationDegrees = 90f,
+                    Active = true, Visible = true
+                };
+                var hole = new NoiseFieldTouchGeometry.Area
+                {
+                    Center = Vector2.zero, Size = Vector2.one, Inverted = true, Active = true, Visible = true
+                };
+                return NoiseFieldTouchGeometry.Contains(new[] { normal }, new Vector2(0, 1.5f)) &&
+                       !NoiseFieldTouchGeometry.Contains(new[] { normal }, new Vector2(1.5f, 0)) &&
+                       !NoiseFieldTouchGeometry.Contains(new[] { normal, hole }, Vector2.zero) &&
+                       NoiseFieldTouchGeometry.Contains(new[] { normal, hole, hole }, Vector2.zero) &&
+                       !NoiseFieldTouchGeometry.Contains(new[] { normal }, new Vector2(0, 1.95f), 0.1f) &&
+                       !NoiseFieldTouchGeometry.Contains(new[] { new NoiseFieldTouchGeometry.Area { Active = true, Visible = true } }, Vector2.zero);
+            });
+            Check("FIELD-gpu-area-layout", () => System.Runtime.InteropServices.Marshal.SizeOf(typeof(NoiseFieldGpuMasks.Area)) == 32 &&
+                System.Runtime.InteropServices.Marshal.SizeOf(typeof(NoiseFieldGpuMasks.Touch)) == 16);
+            Check("FIELD-renderer-activation-gate", () =>
+            {
+                var gate = new NoiseFieldActivationGate();
+                return !gate.Observe(true, 10) && !gate.Observe(true, 10) && gate.Observe(true, 11) &&
+                    gate.Observe(false, 11) && !gate.Observe(true, 11) && gate.Observe(true, 12);
+            });
+            Check("FIELD-touch-shader-uniforms", () =>
+            {
+                var p = NoiseFieldGpuLayer.TouchPosition(new Vector2(0.5f, 0.25f), 1600, 900);
+                return Mathf.Abs(p.x - 8f / 9f) < 0.00001f && Mathf.Abs(p.y - 0.25f) < 0.00001f &&
+                       Mathf.Abs(NoiseFieldGpuLayer.TouchShine(0f) - 1.63f) < 0.00001f &&
+                       Mathf.Abs(NoiseFieldGpuLayer.TouchShine(Mathf.PI / 86f) - 2f) < 0.00001f;
+            });
+            Check("FIELD-viewport-projection", () =>
+            {
+                var go = new GameObject("PEV.ReviewProjection");
+                try
+                {
+                    var cam = go.AddComponent<Camera>();
+                    cam.orthographic = true;
+                    cam.orthographicSize = 5f;
+                    cam.aspect = 16f / 9f;
+                    go.transform.position = new Vector3(0, 0, -10);
+                    var frame = new Placement.Frame { Center = Vector3.zero, Size = new Vector2(4, 2), Rotation = 0 };
+                    if (!NoiseFieldProjection.TryProject(cam, frame, cam.aspect, out var result)) return false;
+                    float expected = 1f / (5f * cam.aspect);
+                    if (result.Center.sqrMagnitude > 0.000001f || Mathf.Abs(result.HalfSize.x - 2 * expected) > 0.00001f ||
+                        Mathf.Abs(result.HalfSize.y - expected) > 0.00001f || Mathf.Abs(result.AngleRadians) > 0.00001f) return false;
+                    frame.Rotation = 45;
+                    if (!NoiseFieldProjection.TryProject(cam, frame, cam.aspect, out result) ||
+                        Mathf.Abs(result.AngleRadians - Mathf.PI / 4) > 0.0001f) return false;
+                    frame.Center = go.transform.position;
+                    if (!NoiseFieldProjection.TryProject(cam, frame, cam.aspect, out result)) return false;
+                    cam.orthographic = false;
+                    return !NoiseFieldProjection.TryProject(cam, frame, cam.aspect, out _);
+                }
+                finally { UnityEngine.Object.Destroy(go); }
+            });
+            Check("FIELD-gpu-plan-groups", () =>
+            {
+                var go = new GameObject("PEV.ReviewGpuPlan");
+                try
+                {
+                    var camera = go.AddComponent<Camera>();
+                    camera.orthographic = true; camera.orthographicSize = 5; camera.aspect = 16f / 9f;
+                    go.transform.position = new Vector3(0, 0, -10);
+                    var a = new NoiseFieldRenderer.Entry { GpuSequence = 2, Visible = true, Renderable = true,
+                        Opacity = 1, World = new Placement.Frame { Size = new Vector2(2, 2) },
+                        SortingOrder = 1, UnityLayer = 7, GpuPhase = NoiseFieldPhase.Active,
+                        FillColor = Color.blue, EdgeColor = Color.red };
+                    var b = new NoiseFieldRenderer.Entry { GpuSequence = 1, Visible = true, Renderable = true,
+                        Opacity = 0.5f, World = new Placement.Frame { Size = new Vector2(2, 2) },
+                        SortingOrder = 1, UnityLayer = 7, GpuPhase = NoiseFieldPhase.Ready, GpuInverted = true };
+                    var c = new NoiseFieldRenderer.Entry { GpuSequence = 3, Visible = true, Renderable = true,
+                        Opacity = 1, World = new Placement.Frame { Size = new Vector2(2, 2) },
+                        SortingOrder = 1, UnityLayer = 9, GpuPhase = NoiseFieldPhase.Disabled,
+                        Shape = NoiseFieldShape.Circle };
+                    var plan = new NoiseFieldGpuPlan();
+                    plan.Build(new[] { a, b, c }, camera, camera.aspect);
+                    if (plan.Groups.Count != 2) return false;
+                    var key = new NoiseFieldGpuPlan.Key { SortingOrder = 1, UnityLayer = 7 };
+                    if (!plan.Groups.TryGetValue(key, out var group) || group.Areas.Count != 2 ||
+                        group.Areas[0].Flags != 6 || group.Areas[1].Flags != 1 || !group.HasActive || !group.HasDisabled ||
+                        group.Colors[1].Red != 0f || group.Colors[1].Blue != 1f || !group.Colored) return false;
+                    plan.Build(new[] { a }, camera, camera.aspect);
+                    return plan.Groups.Count == 1 && plan.Groups[key].Areas.Count == 1;
+                }
+                finally { UnityEngine.Object.Destroy(go); }
+            });
+            Check("FIELD-gpu-formats", () =>
+                SystemInfo.supportsComputeShaders &&
+                SystemInfo.IsFormatSupported(UnityEngine.Experimental.Rendering.GraphicsFormat.R32G32B32A32_UInt,
+                    UnityEngine.Experimental.Rendering.FormatUsage.LoadStore) &&
+                SystemInfo.IsFormatSupported(UnityEngine.Experimental.Rendering.GraphicsFormat.R32_UInt,
+                    UnityEngine.Experimental.Rendering.FormatUsage.LoadStore) &&
+                SystemInfo.IsFormatSupported(UnityEngine.Experimental.Rendering.GraphicsFormat.R8G8B8A8_UNorm,
+                    UnityEngine.Experimental.Rendering.FormatUsage.LoadStore));
             Check("RESOURCE-package-boundary", () =>
             {
                 string root = Path.Combine(Path.GetTempPath(), "pev-review-" + Guid.NewGuid().ToString("N"));
@@ -107,6 +411,28 @@ namespace PEV.Diagnostics
                            EventLoader.ReadResource(zip, "main.js").Length == 4;
                 }
                 finally { Directory.Delete(root, true); }
+            });
+            Check("FIELD-reference-texture", () =>
+            {
+                string root = Path.Combine(Path.GetTempPath(), "pev-texture-" + Guid.NewGuid().ToString("N"));
+                string assets = Path.Combine(root, "assets");
+                Directory.CreateDirectory(assets);
+                try
+                {
+                    // Independent PNG fixture: top row red bytes 1,4; bottom row 7,10.
+                    byte[] png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAGElEQVR4nGNkZGL+z8zMzMDCxsbGAGIAAA+dAS/kUtAIAAAAAElFTkSuQmCC");
+                    File.WriteAllBytes(Path.Combine(assets, "BlockNoise1.png"), png);
+                    var manifest = new EventManifest { SourcePath = root };
+                    var texture = ReferenceNoiseTextures.Load(manifest, "BlockNoise1.png", out var error);
+                    if (texture == null || error != null || texture.wrapMode != TextureWrapMode.Mirror ||
+                        texture.filterMode != FilterMode.Point) return false;
+                    var pixels = texture.GetPixels32();
+                    return pixels.Length == 4 && pixels[0].r == 7 && pixels[1].r == 10 &&
+                           pixels[2].r == 1 && pixels[3].r == 4 &&
+                           ReferenceNoiseTextures.Load(manifest, "BlockNoise1.png", out _) == texture &&
+                           ReferenceNoiseTextures.Load(manifest, "../outside", out _) == null;
+                }
+                finally { ReferenceNoiseTextures.Clear(); Directory.Delete(root, true); }
             });
         }
 
@@ -321,6 +647,11 @@ namespace PEV.Diagnostics
             args["depth"] = 124;
             NoiseFieldRenderer.Set("field", args, out _);
             Check("FIELD-depth-change", () => NoiseFieldRenderer.LayerCount == 1);
+            NoiseFieldRenderer.SetGpuRendering(true);
+            NoiseFieldRenderer.Set("field", args, out _);
+            Check("FIELD-gpu-takeover-suspends-bake", () => NoiseFieldRenderer.LayerCount == 0 && NoiseFieldRenderer.LiveCount == 1);
+            NoiseFieldRenderer.SetGpuRendering(false);
+            Check("FIELD-gpu-failure-restores-legacy", () => NoiseFieldRenderer.LayerCount == 1 && NoiseFieldRenderer.LiveCount == 1);
 
             float deadline = Time.realtimeSinceStartup + 20f;
             while (NoiseFieldRenderer.AllEntries()[0].GameObject == null && Time.realtimeSinceStartup < deadline)
@@ -364,6 +695,193 @@ namespace PEV.Diagnostics
             NoiseFieldRenderer.DestroyAll();
             yield return null;
             Check("FIELD-cleanup", () => NoiseTextureFactory.CachedFrameSets == 0 && NoiseFieldRenderer.LiveCount == 0);
+
+            args["visible"] = true;
+            args["position"] = new[] { 0f, 0f };
+            args["__instance"] = "review/layer-a";
+            NoiseFieldRenderer.Set("field", args, out _);
+            args["__instance"] = "review/layer-b";
+            NoiseFieldRenderer.Set("field", args, out _);
+            var layerA = NoiseFieldRenderer.AllEntries().Single(e => e.Scope == "review/layer-a");
+            layerA.UnityLayer = layerA.UnityLayer == 7 ? 9 : 7;
+            NoiseFieldRenderer.Set("field", args, out _); // rebuild with one differing culling layer
+            Check("FIELD-unity-layer-isolation", () => NoiseFieldRenderer.LayerCount == 2);
+            NoiseFieldRenderer.DestroyAll();
+
+            using (var worker = new NoiseFieldColorWorker())
+            {
+                var zones = new[] { new NoiseFieldColorOwnership.Zone {
+                    CenterX = 0, CenterY = 0, HalfX = 0.5f, HalfY = 0.5f, YScale = 1f,
+                    Opacity = 1f, Active = true, Red = 0f, Green = 1f, Blue = 0f } };
+                worker.Update(16, 8, 2f, zones);
+                float workerDeadline = Time.realtimeSinceStartup + 5f;
+                while (worker.Latest == null && worker.LastError == null && Time.realtimeSinceStartup < workerDeadline)
+                {
+                    worker.Update(16, 8, 2f, zones);
+                    yield return null;
+                }
+                Check("FIELD-color-worker-runtime", () => worker.LastError == null && worker.Latest != null &&
+                    worker.Latest.Active[0] == 0 && worker.Latest.Active[1] == 255 && worker.Latest.Active[2] == 0);
+            }
+            Check("FIELD-color-texture-upload", () =>
+            {
+                var rgba = new byte[] { 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255 };
+                var texture = NoiseFieldGpuPalette.MakeTexture(2, 2, "PEV.ReviewPalette", rgba);
+                try
+                {
+                    var pixels = texture.GetPixels32();
+                    return pixels.Length == 4 && pixels[0].r == 255 && pixels[1].g == 255 &&
+                           pixels[2].b == 255 && pixels[3].r == 255 && pixels[3].g == 255 && pixels[3].b == 255 &&
+                           texture.filterMode == FilterMode.Point && texture.wrapMode == TextureWrapMode.Clamp;
+                }
+                finally { UnityEngine.Object.Destroy(texture); }
+            });
+            yield return ProbeNativeGrabOrderingSafe();
+
+            var row = new LevelEvent(1, LevelEventType.AddDecoration);
+            row["visible"] = false;
+            var stored = new EventInstanceData { Id = "pev.noise-field" };
+            stored.Set("fillOpacity", 0.23f);
+            stored.Set("noiseFrameCount", 7);
+            stored.Set("noiseBrightness", 1.7f);
+            // Adopt normally places the saved values on the live AddDecoration row.
+            row["fillOpacity"] = 0.23f;
+            row["noiseFrameCount"] = 7;
+            row["noiseBrightness"] = 1.7f;
+            NoiseFieldRenderer.Describe("review/description", "noisefield", row, stored);
+            Check("FIELD-description-params", () =>
+            {
+                var field = NoiseFieldRenderer.AllEntries().Single();
+                return Mathf.Abs(field.FillOpacity - 0.23f) < 0.001f && field.FrameCount == 7 &&
+                       Mathf.Abs(field.Brightness - 1.7f) < 0.001f && !field.Visible;
+            });
+            NoiseFieldRenderer.Set("noisefield", new Dictionary<string, object>
+                { ["__instance"] = "review/description", ["invert"] = true }, out _);
+            NoiseFieldRenderer.Destroy("noisefield", new Dictionary<string, object> { ["__instance"] = "review/description" }, out _);
+            Check("FIELD-description-reset-params", () =>
+                Mathf.Abs(NoiseFieldRenderer.AllEntries().Single().FillOpacity - 0.23f) < 0.001f &&
+                !NoiseFieldRenderer.AllEntries().Single().GpuInverted);
+            NoiseFieldRenderer.DestroyAll();
+            NoiseFieldRenderer.UnbindAll();
+        }
+
+        private static IEnumerator ProbeNativeGrabOrderingSafe()
+        {
+            var probe = ProbeNativeGrabOrdering();
+            while (true)
+            {
+                bool next;
+                try { next = probe.MoveNext(); }
+                catch (Exception e) { Row("FIELD-built-in-grab-sorting", "CHECK", e.Message); yield break; }
+                if (!next) yield break;
+                yield return probe.Current;
+            }
+        }
+
+        private static IEnumerator ProbeNativeGrabOrdering()
+        {
+            var shader = Shader.Find("Hidden/BlendModes/VisualDeco/Grab");
+            if (shader == null || !shader.isSupported) { Row("FIELD-built-in-grab-sorting", "SKIP unavailable shader"); yield break; }
+            var objects = new List<GameObject>();
+            RenderTexture target = null;
+            Texture2D read = null;
+            Material material = null;
+            Material secondMaterial = null;
+            var prior = RenderTexture.active;
+            try
+            {
+                var cameraGo = new GameObject("PEV.ReviewGrabCamera"); objects.Add(cameraGo);
+                var camera = cameraGo.AddComponent<Camera>(); camera.enabled = false; camera.orthographic = true;
+                camera.orthographicSize = 1; camera.aspect = 1; camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = Color.black; camera.cullingMask = unchecked((int)0x80000000u);
+                cameraGo.transform.position = new Vector3(0, 0, -10);
+                target = new RenderTexture(64, 64, 0, RenderTextureFormat.ARGB32) { antiAliasing = 1 };
+                if (!target.Create()) throw new InvalidOperationException("Cannot create grab probe target");
+                camera.targetTexture = target;
+                read = new Texture2D(64, 64, TextureFormat.RGBA32, false, true);
+                Func<string, Color, int, float, float, SpriteRenderer> sprite = (name, color, order, x, size) =>
+                {
+                    var go = new GameObject(name); objects.Add(go); go.layer = 31;
+                    go.transform.position = new Vector3(x, 0, 0); go.transform.localScale = new Vector3(size, size, 1);
+                    var renderer = go.AddComponent<SpriteRenderer>(); renderer.sprite = SolidSprite.White;
+                    renderer.color = color; renderer.sortingOrder = order; return renderer;
+                };
+                var background = sprite("PEV.ReviewGrabBack", Color.red, 0, 0, 2);
+                sprite("PEV.ReviewGrabFront", Color.green, 10, .5f, 1);
+                var fieldRoot = new GameObject("PEV.ReviewGrabGroup"); objects.Add(fieldRoot); fieldRoot.layer = 31;
+                var field = sprite("PEV.ReviewGrabField", Color.white, 0, 0, 2);
+                field.transform.SetParent(fieldRoot.transform, true);
+                var sorting = fieldRoot.AddComponent<UnityEngine.Rendering.SortingGroup>();
+                sorting.sortingOrder = 5;
+                material = new Material(shader); material.SetColor("_Color", new Color(.2f, .5f, 1f, 1f));
+                material.SetFloat("_Opacity", 1f); material.SetVector("_Tile", new Vector4(1, 1, 0, 0));
+                // This game shader selects its sampling operation through a keyword;
+                // without one it falls back to a solid-color path and proves no capture.
+                material.EnableKeyword("BLENDMODES_MODE_MULTIPLY");
+                field.sharedMaterial = material;
+                var secondRoot = new GameObject("PEV.ReviewGrabSecondGroup"); objects.Add(secondRoot); secondRoot.layer = 31;
+                var second = sprite("PEV.ReviewGrabSecond", Color.white, 0, 0, 2);
+                second.transform.SetParent(secondRoot.transform, true);
+                var secondSorting = secondRoot.AddComponent<UnityEngine.Rendering.SortingGroup>();
+                secondSorting.sortingOrder = 7;
+                secondMaterial = new Material(shader); secondMaterial.SetColor("_Color", new Color(.5f, 1f, 1f, 1f));
+                secondMaterial.SetFloat("_Opacity", 1f); secondMaterial.SetVector("_Tile", new Vector4(1, 1, 0, 0));
+                secondMaterial.EnableKeyword("BLENDMODES_MODE_MULTIPLY"); second.sharedMaterial = secondMaterial;
+                secondRoot.SetActive(false);
+                Func<Color32[]> capture = () =>
+                {
+                    try
+                    {
+                        camera.Render(); RenderTexture.active = target;
+                        read.ReadPixels(new Rect(0, 0, 64, 64), 0, 0); read.Apply(false, false);
+                        var pixels = read.GetPixels32(); return new[] { pixels[32 * 64 + 16], pixels[32 * 64 + 48] };
+                    }
+                    finally { RenderTexture.active = prior; }
+                };
+                fieldRoot.SetActive(false); var before = capture();
+                fieldRoot.SetActive(true); var after = capture();
+                bool backgroundChanged = !before[0].Equals(after[0]);
+                bool foregroundPreserved = before[1].Equals(after[1]);
+                Row("FIELD-built-in-grab-sorting", backgroundChanged && foregroundPreserved ? "PASS" : "CHECK",
+                    $"back {before[0]}->{after[0]}, front {before[1]}->{after[1]}; built-in shader only");
+                background.color = Color.blue;
+                var alternate = capture();
+                Row("FIELD-built-in-grab-sampling", !after[0].Equals(alternate[0]) ? "PASS" : "CHECK",
+                    $"back changed red to blue; rendered {after[0]}->{alternate[0]}; this does not test the draft shader");
+                background.color = Color.red;
+                second.color = Color.clear;
+                secondRoot.SetActive(true);
+                yield return null; // allow Unity to update renderer/culling registration
+                second.color = Color.white;
+                var twice = capture();
+                bool secondSeesFirst = Math.Abs(twice[0].r - after[0].r * .5f) <= 2 && twice[1].Equals(after[1]);
+                fieldRoot.SetActive(false);
+                yield return null;
+                var secondOnly = capture();
+                Row("FIELD-built-in-grab-two-layers", secondSeesFirst ? "PASS" : "CHECK",
+                    $"first {after[0]}, both {twice[0]}, second alone {secondOnly[0]}, foreground {twice[1]}; built-in shader only");
+                if (!secondSeesFirst)
+                {
+                    Row("FIELD-built-in-grab-diagnostic", "INFO",
+                        $"second active={second.gameObject.activeInHierarchy} enabled={second.enabled} bounds={second.bounds} " +
+                        $"layer={second.gameObject.layer} sort={secondSorting.sortingOrder} tint={second.sharedMaterial.GetColor("_Color")} " +
+                        $"keyword={second.sharedMaterial.IsKeywordEnabled("BLENDMODES_MODE_MULTIPLY")}");
+                    second.sharedMaterial = background.sharedMaterial;
+                    second.color = Color.blue;
+                    yield return null;
+                    var solidOnly = capture();
+                    Row("FIELD-built-in-grab-solid-control", "INFO", $"second blue solid control={solidOnly[0]}");
+                }
+            }
+            finally
+            {
+                RenderTexture.active = prior;
+                if (target != null) { target.Release(); UnityEngine.Object.Destroy(target); }
+                if (read != null) UnityEngine.Object.Destroy(read);
+                if (material != null) UnityEngine.Object.Destroy(material);
+                if (secondMaterial != null) UnityEngine.Object.Destroy(secondMaterial);
+                foreach (var go in objects) if (go != null) UnityEngine.Object.Destroy(go);
+            }
         }
     }
 }

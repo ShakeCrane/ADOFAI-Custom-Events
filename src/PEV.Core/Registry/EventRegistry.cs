@@ -90,7 +90,7 @@ namespace PEV.Registry
                     continue;
                 }
 
-                LevelEventInfo info = BuildInfo(m, type);
+                LevelEventInfo info = BuildInfo(m, type, log);
                 string key = ((int)type).ToString();
 
                 GCS.levelEventsInfo[key] = info;
@@ -104,7 +104,7 @@ namespace PEV.Registry
             log?.Invoke($"published {ByType.Count} event types to the editor");
         }
 
-        private static LevelEventInfo BuildInfo(EventManifest m, LevelEventType type)
+        private static LevelEventInfo BuildInfo(EventManifest m, LevelEventType type, Action<string> log)
         {
             // Grouped panels are what make a 25-parameter event navigable: the inspector
             // renders one tab per groupName, exactly as native events do. Only switch it on
@@ -140,6 +140,11 @@ namespace PEV.Registry
                     // second copy here would build a parallel panel nobody can open. Leaving
                     // them out is also what keeps the type from looking like a normal event.
                     if (m.DecorationBacked) continue;
+
+                    // Normal events use the same real-enum dropdown path as decorations.
+                    // Their localized options must also be installed in the game's table.
+                    try { EnumLabels.Register(spec, log); }
+                    catch (Exception e) { log?.Invoke($"enum labels for '{spec.Name}' failed: {e.Message}"); }
 
                     info.propertiesInfo[spec.Name] = new PropertyInfo(spec.ToPropertyDict(), info);
                 }

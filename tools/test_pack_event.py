@@ -5,6 +5,7 @@ import zipfile
 from pathlib import Path
 
 from pack_event import pack, validate
+from stage_noise_draft import stage, stage_state
 
 
 class PackageValidationTests(unittest.TestCase):
@@ -25,7 +26,7 @@ class PackageValidationTests(unittest.TestCase):
 
     def test_invalid_fields_are_reported(self):
         for field, values in {
-            "schemaVersion": (None, "1", True, 0, 2, []),
+            "schemaVersion": (None, "1", True, 0, 3, []),
             "apiVersion": (None, "1", True, 0, 2, {}),
             "id": (None, "", "  ", 3),
             "version": (None, "", 3),
@@ -45,6 +46,15 @@ class PackageValidationTests(unittest.TestCase):
 
     def test_missing_resource(self):
         self.assertTrue(validate(self.root, dict(self.manifest, entry="absent.js")))
+
+    def test_shader_bundle_version_and_package_boundary(self):
+        (self.root / "field.bundle").write_bytes(b"fixture")
+        valid = dict(self.manifest, schemaVersion=2, shaderBundle="field.bundle")
+        self.assertEqual([], validate(self.root, valid))
+        for path in (None, "", "../field.bundle", "/field.bundle", "C:\\field.bundle", "missing.bundle"):
+            with self.subTest(path=path):
+                self.assertTrue(validate(self.root, dict(valid, shaderBundle=path)))
+        self.assertTrue(validate(self.root, dict(valid, schemaVersion=1)))
 
     def test_only_exact_property_types_are_valid(self):
         for type_name in ("Enum", "Enum:", "Enum: ", "Float:bad", "Number", [], None):
@@ -71,6 +81,40 @@ class PackageValidationTests(unittest.TestCase):
         pack(self.root, output)
         with zipfile.ZipFile(output) as archive:
             self.assertEqual(["main.js"], archive.namelist())
+
+    def test_noise_draft_staging_is_self_contained_and_never_overwrites(self):
+        bundle = self.root / "draft.bundle"
+        bundle.write_bytes(b"test fixture, not a Unity bundle")
+        output = self.root / "draft.event"
+        stage(bundle, output)
+        with zipfile.ZipFile(output) as archive:
+            names = set(archive.namelist())
+            self.assertTrue({"event.json", "main.js", "icon.png", "assets/noise-field.bundle",
+                             "assets/BlockNoise1.png", "assets/PointNoise.png", "assets/FD_Noise_00000.png",
+                             "assets/TouchHover.png", "assets/README.md"}.issubset(names))
+            self.assertIn(b"invert: !!params.invert", archive.read("main.js"))
+            self.assertEqual(bundle.read_bytes(), archive.read("assets/noise-field.bundle"))
+        old = output.read_bytes()
+        with self.assertRaises(FileExistsError):
+            stage(bundle, output)
+        self.assertEqual(old, output.read_bytes())
+
+    def test_noise_draft_rejects_missing_or_empty_bundle(self):
+        bundle = self.root / "empty.bundle"
+        bundle.write_bytes(b"")
+        with self.assertRaises(ValueError):
+            stage(bundle, self.root / "draft.event")
+        self.assertFalse((self.root / "draft.event").exists())
+
+    def test_noise_state_staging_never_overwrites(self):
+        output = self.root / "state.event"
+        stage_state(output)
+        with zipfile.ZipFile(output) as archive:
+            self.assertEqual({"event.json", "main.js"}, set(archive.namelist()))
+        before = output.read_bytes()
+        with self.assertRaises(FileExistsError):
+            stage_state(output)
+        self.assertEqual(before, output.read_bytes())
 
 
 if __name__ == "__main__":

@@ -498,12 +498,133 @@ namespace PEV.Diagnostics
 
             editor.Play();
 
+            // Registration timing. A decoration row exists the moment the level loads, so its
+            // field must be addressable by tag then too — not when the song clock reaches the
+            // row's tile. Floors 4, 8 and 12 were picked so this is observable: floor 12's
+            // instance starts seconds after floor 4's, and before this change its field was
+            // absent from the tag table until that moment.
+            yield return null;
+            yield return null;
+
+            var described = NoiseFieldRenderer.AllEntries().FindAll(e => e.Described);
+            Row("REGISTER-init", described.Count == 3 ? "PASS" : "FAIL",
+                $"{described.Count} field(s) registered from decoration rows on the first play frame " +
+                $"(floors {string.Join(",", floors)}); floor {floors[floors.Count - 1]} has not started yet");
+            var earlyTag = NoiseFieldRenderer.ByTag("noise");
+            Row("REGISTER-tag", earlyTag.Count >= 2 ? "PASS" : "FAIL",
+                $"{earlyTag.Count} field(s) match tag 'noise' before every instance has started " +
+                $"({string.Join(", ", earlyTag.ConvertAll(e => e.Key))})");
+
+            // Validate the actual gameplay planet source in a running level, rather than
+            // relying only on synthetic touch contacts in the unit-level checks.
+            yield return new WaitForSeconds(0.2f);
+            var planets = new List<NoiseFieldTouchHistory.Contact>();
+            NoiseFieldPlanetInputs.Collect(GameCamera.Current, planets);
+            Row("PLANET-INPUT", planets.Count > 0 && planets.Select(p => p.Id).Distinct().Count() == planets.Count
+                    ? "PASS" : "FAIL",
+                $"{planets.Count} active planets collected with distinct stable ids");
+            var currentCamera = GameCamera.Current;
+            var cameras = Camera.allCameras;
+            Row("CAMERA-STACK", "INFO", string.Join("; ", cameras.Select(c =>
+                $"{c.name} current={c == currentCamera} depth={c.depth:F1} mask=0x{unchecked((uint)c.cullingMask):X8} ortho={c.orthographic} near={c.nearClipPlane:F2} far={c.farClipPlane:F2} position={c.transform.position}")));
+            if (planets.Count == 0)
+            {
+                var camera = GameCamera.Current;
+                var detail = new List<string>();
+                var players = ADOBase.playerManager != null ? ADOBase.playerManager.players : null;
+                if (players == null) detail.Add("player list unavailable");
+                else foreach (var player in players)
+                {
+                    if (player == null) { detail.Add("null player"); continue; }
+                    var list = player.planetarySystem != null ? player.planetarySystem.planetList : null;
+                    detail.Add($"player alive={player.alive} planets={list?.Count ?? -1}");
+                    if (list == null) continue;
+                    foreach (var planet in list)
+                    {
+                        if (planet == null) { detail.Add("null planet"); continue; }
+                        float z = camera != null ? camera.WorldToViewportPoint(planet.transform.position).z : float.NaN;
+                        detail.Add($"planet {planet.name} active={planet.isActiveAndEnabled} hierarchy={planet.gameObject.activeInHierarchy} dummy={planet.dummyPlanets} delete={planet.toDelete} z={z:F2}");
+                    }
+                }
+                detail.Add("scene scrPlanet=" + UnityEngine.Object.FindObjectsOfType<scrPlanet>().Length);
+                Row("PLANET-DIAG", "INFO", string.Join("; ", detail));
+            }
+
+            // Native depth. The engine maps depth to a sorting layer and order on the carrier;
+            // the field must render on those, or it draws in front of the track whatever its
+            // depth says.
+            int bgId = SortingLayer.NameToID("Bg");
+            var layerTable = new List<string>();
+            foreach (var l in SortingLayer.layers) layerTable.Add($"{l.name}#{l.id}");
+            Row("SORTING-LAYERS", bgId != 0 ? "PASS" : "CHECK",
+                "Bg=" + bgId + " Default=" + SortingLayer.NameToID("Default") +
+                " | all: " + string.Join(", ", layerTable));
+            bool sortingOk = true;
+            string sortingDetail = "";
+            foreach (var e in NoiseFieldRenderer.AllEntries())
+            {
+                int wantLayer = e.Depth >= 0 ? bgId : 0;
+                int wantOrder = -e.Depth;
+                int wantUnityLayer = e.Depth >= 0 ? 9 : 7;
+                if (e.SortingLayerID != wantLayer || e.SortingOrder != wantOrder || e.UnityLayer != wantUnityLayer)
+                {
+                    sortingOk = false;
+                    sortingDetail += $"{e.Key}: layer={e.SortingLayerID} order={e.SortingOrder} unity={e.UnityLayer} " +
+                                     $"want {wantLayer}/{wantOrder}/{wantUnityLayer}; ";
+                }
+            }
+            Row("SORTING-native", sortingOk ? "PASS" : "FAIL",
+                sortingOk
+                    ? "every field uses the sorting and Unity layers scrVisualDecoration.SetDepth assigns to the renderer"
+                    : sortingDetail);
+
+            // Zero scale is the engine's own way of not drawing a decoration. The field must
+            // follow it instead of substituting its default geometry.
+            var scaleRow = ours.FirstOrDefault(x => x.floor == floors[1]);
+            if (scaleRow != null && LevelStorage.TryGetData(scaleRow, out var scaleData))
+            {
+                ADOFAI.PropertyInfo scalePi = null;
+                try { scaleRow.info?.propertiesInfo.TryGetValue("scale", out scalePi); } catch { }
+                try { scaleRow["scale"] = ParamCoercion.Coerce(scalePi, new List<object> { 0f, 0f }); }
+                catch { }
+                try { editor.UpdateDecorationObject(scaleRow); } catch { }
+
+                yield return null;
+                yield return null;
+
+                var zeroEntry = NoiseFieldRenderer.AllEntries()
+                    .FirstOrDefault(e => e.Key.IndexOf(scaleData.Uid, StringComparison.Ordinal) >= 0);
+                Row("ZERO-scale", zeroEntry != null && !zeroEntry.Renderable && zeroEntry.GameObject == null
+                        ? "PASS" : "FAIL",
+                    zeroEntry == null
+                        ? "no entry for the row that was scaled to zero"
+                        : $"renderable={zeroEntry.Renderable} gameObject={(zeroEntry.GameObject == null ? "none" : "alive")} " +
+                          $"size=({zeroEntry.World.Size.x:F3},{zeroEntry.World.Size.y:F3})");
+
+                try { scaleRow["scale"] = ParamCoercion.Coerce(scalePi, new List<object> { 100f, 100f }); }
+                catch { }
+                try { editor.UpdateDecorationObject(scaleRow); } catch { }
+                yield return null;
+
+                var restored = NoiseFieldRenderer.AllEntries()
+                    .FirstOrDefault(e => e.Key.IndexOf(scaleData.Uid, StringComparison.Ordinal) >= 0);
+                Row("ZERO-scale-restore", restored != null && restored.Renderable ? "PASS" : "FAIL",
+                    restored == null
+                        ? "entry disappeared after the scale was restored"
+                        : $"renderable={restored.Renderable} size=({restored.World.Size.x:F2},{restored.World.Size.y:F2})");
+            }
+
             // Instances start when the song clock reaches their tile. Floor 12 begins a few
             // seconds after floor 4, so waiting for "any field exists" samples too early and
             // reports a partial picture. Wait for all three, with a ceiling so a genuinely
             // missing instance still surfaces as a logged count.
             for (int i = 0; i < 200 && NoiseFieldRenderer.LiveCount < 3; i++)
                 yield return new WaitForSeconds(0.05f);
+
+            float fieldDeadline = Time.realtimeSinceStartup + 20f;
+            while (NoiseFieldRenderer.AllEntries().Any(e => e.Visible && e.Renderable && e.GameObject == null) &&
+                   Time.realtimeSinceStartup < fieldDeadline)
+                yield return null;
 
             Row("LIVE-during-play", NoiseFieldRenderer.LiveCount.ToString(),
                 $"textureSets={NoiseFieldRenderer.TextureSets}");
@@ -564,7 +685,7 @@ namespace PEV.Diagnostics
             {
                 yield return new WaitForSeconds(0.15f);
                 var e = FirstEntry();
-                if (e == null) continue;
+                if (e == null || e.GameObject == null) continue;
                 if (firstFrame < 0) { firstFrame = e.FrameIndex; firstUvX = e.Uv.x; firstUvY = e.Uv.y; }
                 lastFrame = e.FrameIndex;
                 lastUvX = e.Uv.x;
@@ -694,6 +815,14 @@ namespace PEV.Diagnostics
                 try { img = r.GetString("decorationImage"); } catch { }
                 return !string.IsNullOrEmpty(img);
             });
+            bool syntheticNative = native == null;
+            if (syntheticNative)
+            {
+                // Do not report a vacuous PASS just because this test chart has no native
+                // decorations. Exercise the same predicate with an ordinary image row.
+                native = new LevelEvent(1, LevelEventType.AddDecoration);
+                native["decorationImage"] = "pn1-native-image.png";
+            }
 
             if (!DecorationParams.TryGetNativeInfo(out var info))
             {
@@ -727,7 +856,7 @@ namespace PEV.Diagnostics
                 $"(required {requiredOurs}; the rest are shape-conditional)");
             Row("PANEL-NATIVE", shownNative == 0 ? "PASS" : "FAIL",
                 $"{shownNative}/{probed} leaked onto a native decoration" +
-                (native == null ? " (no native decoration present to test against)" : ""));
+                (syntheticNative ? " (synthetic native row)" : ""));
 
             // Native properties must still be there: reusing them is what makes the field
             // movable and recolourable by the engine's own tools.
@@ -850,20 +979,9 @@ namespace PEV.Diagnostics
             if (string.IsNullOrEmpty(dir)) yield break;
 
             string path = Path.Combine(dir, $"pn1-{tag}.png");
-            bool issued = false;
-            try
-            {
-                var type = Type.GetType("UnityEngine.ScreenCapture, UnityEngine.ScreenCaptureModule");
-                var method = type?.GetMethod("CaptureScreenshot", new[] { typeof(string) });
-                if (method == null) { Row("CAPTURE", "UNAVAILABLE", tag); yield break; }
-
-                method.Invoke(null, new object[] { path });
-                Row("CAPTURE", tag, path);
-                issued = true;
-            }
-            catch (Exception e) { Row("CAPTURE", "EXCEPTION", tag + ": " + e.Message); }
-
-            if (issued) yield return new WaitForSeconds(0.4f);
+            var shot = FrameCapture.Capture(GameCamera.Current, path);
+            Row("CAPTURE", shot.Ok ? "PASS" : "FAIL", $"{tag}: {shot.Detail} <- {path}");
+            Row("CAPTURE-ENV", "INFO", shot.Environment);
         }
     }
 }

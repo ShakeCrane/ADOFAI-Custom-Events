@@ -69,6 +69,12 @@ namespace PEV.Editor
 
             _clock += Time.unscaledDeltaTime;
 
+            // Playback leaves its described entries behind when it stops, and this preview
+            // then re-registers the same rows under its own keys. Dropping the described
+            // copies is what keeps a stopped field from being drawn twice with different
+            // parameters. The call is a no-op once they are gone.
+            NoiseFieldRenderer.DropDescribed();
+
             var live = new HashSet<string>(StringComparer.Ordinal);
 
             // Decorations first: a decoration-backed event is a row in level.decorations, and
@@ -202,10 +208,7 @@ namespace PEV.Editor
         private void OnDestroy() => Clear();
 
         /// <summary>Only manifests whose script drives fx.field can be previewed here.</summary>
-        private static bool DeclaresField(PEV.Model.EventManifest m)
-        {
-            return m != null && (m.Id == "pev.noise-field" || m.Params.Exists(p => p.Name == "noiseEvolveSpeed"));
-        }
+        private static bool DeclaresField(PEV.Model.EventManifest m) => NoiseFieldRenderer.IsFieldEvent(m);
 
         /// <summary>Unity structs and enums do not survive JSON-style parsing; flatten once.</summary>
         private static object Normalize(object value)

@@ -27,13 +27,113 @@ namespace PEV.Scripting
         {
             public string Key;
             public string Scope;
+            internal long GpuSequence;
+            /// <summary>The key the script passes to fx.field, without the scope prefix.</summary>
+            public string ScriptKey;
             public string Tag;
             public int FloorSeq;
             public int Depth;
-            public int SortingOrder;
+
+            /// <summary>
+            /// True when the entry exists because a decoration row exists, not because a
+            /// script has started.
+            ///
+            /// A decoration is on the level from the moment it is placed; its field must be
+            /// addressable by tag from that moment too. Registering only when the instance
+            /// reaches its own tile is how the placement tile quietly became a delayed-appear
+            /// condition — a state event at time 0 could not find a field whose row sat on
+            /// floor 40. A described entry survives the script ending: the decoration was
+            /// never destroyed, so neither is its field.
+            /// </summary>
+            public bool Described;
+
+            /// <summary>
+            /// True once the script has taken the entry over.
+            ///
+            /// A described entry keeps following its decoration frame by frame until then.
+            /// Afterwards the script owns the parameters, and a refresh from the row would
+            /// overwrite them with defaults on the very frame the script set them.
+            /// </summary>
+            public bool ScriptActive;
+            internal Dictionary<string, object> DescriptionArgs;
+
+            /// <summary>
+            /// Last native state seen for a not-yet-active described entry, so a frame where
+            /// nothing moved costs a comparison instead of a recomposite.
+            /// </summary>
+            private Vector3 _lastCentre;
+            private Vector2 _lastSize;
+            private float _lastRotation;
+            private Color _lastColor;
+            private float _lastOpacity;
+            private bool _lastVisible;
+            private int _lastDepth;
+            private int _lastSortingLayer;
+            private int _lastSortingOrder;
+            private int _lastUnityLayer;
+            private bool _lastRenderable;
+            private string _lastTag;
+            private bool _hasSnapshot;
+
+            internal void TakeSnapshot(DecorationBridge.Live live)
+            {
+                _lastCentre = live.Frame.Center;
+                _lastSize = live.Frame.Size;
+                _lastRotation = live.Frame.Rotation;
+                _lastColor = live.Color;
+                _lastOpacity = live.Opacity;
+                _lastVisible = live.Visible;
+                _lastDepth = live.Depth;
+                _lastSortingLayer = live.SortingLayerID;
+                _lastSortingOrder = live.SortingOrder;
+                _lastUnityLayer = live.UnityLayer;
+                _lastRenderable = live.Renderable;
+                _lastTag = live.Tag;
+                _hasSnapshot = true;
+            }
+
+            /// <summary>True when the decoration moved or changed since the previous frame.</summary>
+            internal bool NativeChanged(DecorationBridge.Live live)
+            {
+                if (!_hasSnapshot) return true;
+                return _lastCentre != live.Frame.Center
+                       || _lastSize != live.Frame.Size
+                       || !Mathf.Approximately(_lastRotation, live.Frame.Rotation)
+                       || _lastColor != live.Color
+                       || !Mathf.Approximately(_lastOpacity, live.Opacity)
+                       || _lastVisible != live.Visible
+                       || _lastDepth != live.Depth
+                       || _lastSortingLayer != live.SortingLayerID
+                       || _lastSortingOrder != live.SortingOrder
+                       || _lastUnityLayer != live.UnityLayer
+                       || _lastRenderable != live.Renderable
+                       || !string.Equals(_lastTag, live.Tag, StringComparison.Ordinal);
+            }
 
             public float Opacity;
             public bool Visible;
+            internal NoiseFieldPhase GpuPhase = NoiseFieldPhase.Active;
+            internal bool GpuInverted;
+
+            /// <summary>
+            /// The sorting the carrier renders at, read from the decoration itself.
+            ///
+            /// depth is still what identifies a field in our bookkeeping, but it is not what
+            /// decides draw order — the engine already turned depth into a sorting layer and
+            /// an order on the renderer, and two fields can differ there at the same depth
+            /// (syncFloorDepth). Compositing by depth alone would draw those in front of each
+            /// other; compositing by these values reproduces whatever the engine would do.
+            /// </summary>
+            public int SortingLayerID;
+            public int SortingOrder;
+            public int UnityLayer;
+
+            /// <summary>
+            /// Whether the decoration has any area. A zero scale is the engine's own way of
+            /// not drawing something, so it must not fall back to a default size here.
+            /// </summary>
+            public bool Renderable = true;
+
             public int FrameIndex;
             public Vector2 Uv;
 
@@ -137,6 +237,7 @@ namespace PEV.Scripting
 
         private static readonly Dictionary<string, Entry> Live =
             new Dictionary<string, Entry>(StringComparer.Ordinal);
+        private static long _nextGpuSequence;
 
         /// <summary>
         /// Defaults for the author-facing edge controls, used when an event does not send
@@ -160,6 +261,26 @@ namespace PEV.Scripting
 
         public static int LiveCount => Live.Count;
         public static int LayerCount => Layers.Count;
+        private static bool _gpuRendering;
+
+        // Draft driver only: switch after GPU groups have produced a complete frame.
+        // On failure, rebuild the legacy path from the retained entries.
+        internal static void SetGpuRendering(bool enabled)
+        {
+            if (_gpuRendering == enabled) return;
+            _gpuRendering = enabled;
+            if (enabled)
+            {
+                ReleaseLegacyLayers();
+                foreach (var entry in Live.Values) entry.GameObject = null;
+            }
+            else
+            {
+                var depths = new HashSet<int>();
+                foreach (var entry in Live.Values) depths.Add(entry.Depth);
+                foreach (int depth in depths) RebuildDepth(depth);
+            }
+        }
         public static int TextureSets => NoiseTextureFactory.CachedFrameSets;
         public static string LayerReport()
         {
@@ -187,6 +308,20 @@ namespace PEV.Scripting
             return list;
         }
 
+        // The GPU plan orders entries by their sequence; avoid allocating and sorting a
+        // diagnostics snapshot every frame on its high-refresh rendering path.
+        internal static void CopyEntriesTo(List<Entry> destination)
+        {
+            destination.Clear();
+            foreach (var entry in Live.Values) destination.Add(entry);
+        }
+
+        internal static void EvaluateGpuPhases(NoiseFieldStateSchedule schedule, double time)
+        {
+            if (schedule == null) return;
+            foreach (var entry in Live.Values) entry.GpuPhase = schedule.At(entry.Tag, time);
+        }
+
         /// <summary>
         /// Writes every composited layer's current frame to a PNG.
         ///
@@ -210,7 +345,9 @@ namespace PEV.Scripting
                 var layer = kv.Value;
                 if (layer == null || layer.Frames == null || layer.Frames.Textures == null) continue;
 
-                string safe = kv.Key.Replace('/', '_').Replace('#', '-');
+                // ':' is legal in the cluster key but not in a Windows filename, and the group
+                // key carries the sorting layer id and order as "id:order".
+                string safe = kv.Key.Replace('/', '_').Replace('#', '-').Replace(':', '_');
 
                 // Every frame of the set, not just the one on screen. Whether the motion
                 // flows is a question about consecutive frames, and a single still cannot
@@ -254,7 +391,7 @@ namespace PEV.Scripting
 
             if (!Live.TryGetValue(id, out var entry))
             {
-                entry = new Entry { Key = id, Scope = scope };
+                entry = new Entry { Key = id, Scope = scope, ScriptKey = key, GpuSequence = _nextGpuSequence++ };
                 Live[id] = entry;
             }
 
@@ -262,6 +399,10 @@ namespace PEV.Scripting
             try
             {
                 Apply(entry, args);
+                // The script is now authoritative for this entry's parameters. Platform
+                // clears only on a successful apply, so a script that threw every frame keeps
+                // the frozen description instead of re-enabling the native refresh.
+                entry.ScriptActive = true;
             }
             catch (Exception e)
             {
@@ -276,11 +417,132 @@ namespace PEV.Scripting
             return RebuildDepth(entry.Depth);
         }
 
+        /// <summary>
+        /// Registers a decoration-backed field from its row, at level init.
+        ///
+        /// Nothing here needs the script: geometry, visibility, opacity, tag, depth and the
+        /// native sorting all live on the decoration, and the row's own fields carry them
+        /// before its scrDecoration exists. Until the script takes over, the field uses the
+        /// row's stored parameters instead of replacing authored values with defaults.
+        /// </summary>
+        public static void Describe(string scope, string key, ADOFAI.LevelEvent ev,
+            PEV.Storage.EventInstanceData data = null)
+        {
+            if (string.IsNullOrEmpty(scope) || ev == null) return;
+
+            string id = Scoped(scope, key);
+            if (!Live.TryGetValue(id, out var entry))
+            {
+                entry = new Entry { Key = id, Scope = scope, ScriptKey = key, GpuSequence = _nextGpuSequence++ };
+                Live[id] = entry;
+            }
+
+            entry.Described = true;
+            entry.DescriptionArgs = DescriptionParameters(ev, data);
+            Bind(scope, ev);
+
+            int oldDepth = entry.Depth;
+            try { Apply(entry, entry.DescriptionArgs); }
+            catch (Exception e) { PEV.Core.Plugin.Log("field describe failed: " + e.Message); return; }
+
+            if (oldDepth != entry.Depth) RebuildDepth(oldDepth);
+            RebuildDepth(entry.Depth);
+        }
+
+        /// <summary>Empty call arguments: every parameter takes its declared default.</summary>
+        private static readonly Dictionary<string, object> EmptyArgs =
+            new Dictionary<string, object>(StringComparer.Ordinal);
+
+        private static Dictionary<string, object> DescriptionParameters(ADOFAI.LevelEvent ev,
+            PEV.Storage.EventInstanceData data)
+        {
+            var args = new Dictionary<string, object>(StringComparer.Ordinal) { ["__floor"] = ev.floor };
+            if (data == null) return args;
+            foreach (var kv in data.Effective)
+            {
+                object value = kv.Value;
+                try { value = ev.Get<object>(kv.Key) ?? value; } catch { }
+                args[kv.Key] = value;
+            }
+            foreach (var alias in new[]
+            {
+                new[] { "noiseBrightness", "brightness" }, new[] { "noiseSaturation", "saturation" },
+                new[] { "noiseSampleRate", "sampleRate" }, new[] { "noiseEvolveSpeed", "evolveSpeed" },
+                new[] { "noiseScale", "tiling" }, new[] { "noiseFrameCount", "frameCount" },
+                new[] { "glitchRange", "glitch" }
+            })
+                if (args.TryGetValue(alias[0], out var value)) args[alias[1]] = value;
+            return args;
+        }
+
+        /// <summary>Manifests whose instances render through the field primitive.</summary>
+        public static bool IsFieldEvent(PEV.Model.EventManifest m)
+        {
+            return m != null && (m.Id == "pev.noise-field" || m.Params.Exists(p => p.Name == "noiseEvolveSpeed"));
+        }
+
+        /// <summary>
+        /// Drops what the script owned, keeps what the decoration owns.
+        ///
+        /// A described entry is the rendering of a row that still exists, so a script ending
+        /// — a rewind, a checkpoint jump, the end of playback — must not take the field with
+        /// it. The parameters go back to their stored values and the geometry stays on the
+        /// decoration, which is the same state the field was in before its first Set.
+        /// </summary>
+        private static void ResetToDescription(Entry entry)
+        {
+            entry.FrameIndex = 0;
+            entry.Uv = Vector2.zero;
+            entry.ScriptActive = false;
+            // Old charts predate the invert parameter. Do not retain a script-owned
+            // inversion when resetting an old row that has no stored value for it.
+            entry.GpuInverted = false;
+            try { Apply(entry, entry.DescriptionArgs ?? EmptyArgs); }
+            catch (Exception e) { PEV.Core.Plugin.Log("field reset failed: " + e.Message); }
+        }
+
+        /// <summary>
+        /// Follows the decoration for every described entry no script has taken over yet.
+        ///
+        /// A field registered at level init has no script until its tile is reached; without
+        /// this it would sit at the geometry read on the init frame while the author parses
+        /// the row, drags it in the editor, or a MoveDecorations tween plays on it. The check
+        /// is a field comparison, so a still decoration costs nothing and only a real change
+        /// recomposites.
+        /// </summary>
+        public static void Refresh()
+        {
+            if (Live.Count == 0) return;
+            var dirty = new HashSet<int>();
+            foreach (var kv in Live)
+            {
+                var entry = kv.Value;
+                if (!entry.Described || entry.ScriptActive) continue;
+                if (!TryReadDecoration(entry, null, out var live)) continue;
+                if (!entry.NativeChanged(live)) continue;
+
+                entry.TakeSnapshot(live);
+                int oldDepth = entry.Depth;
+                try { Apply(entry, entry.DescriptionArgs ?? EmptyArgs); }
+                catch (Exception e) { PEV.Core.Plugin.Log("field refresh failed: " + e.Message); continue; }
+                dirty.Add(oldDepth);
+                dirty.Add(entry.Depth);
+            }
+            foreach (var depth in dirty) RebuildDepth(depth);
+        }
+
         public static bool Destroy(string key, Dictionary<string, object> args, out string error)
         {
             error = null;
             string id = Scoped(ScopeOf(args), key);
             if (!Live.TryGetValue(id, out var entry)) return true;
+
+            if (entry.Described)
+            {
+                ResetToDescription(entry);
+                RebuildDepth(entry.Depth);
+                return true;
+            }
 
             Live.Remove(id);
             RebuildDepth(entry.Depth);
@@ -295,13 +557,71 @@ namespace PEV.Scripting
             var depths = new HashSet<int>();
             foreach (var key in keys)
             {
-                depths.Add(Live[key].Depth);
+                var entry = Live[key];
+                if (entry.Described)
+                {
+                    ResetToDescription(entry);
+                    depths.Add(entry.Depth);
+                    continue;
+                }
+                depths.Add(entry.Depth);
                 Live.Remove(key);
             }
             foreach (var depth in depths) RebuildDepth(depth);
         }
 
+        /// <summary>
+        /// Removes every entry that exists only because a row exists.
+        ///
+        /// Used when the editor preview takes over: while editing, the preview drives each
+        /// field from the row's live values, and a described copy of the same row would draw
+        /// a second field with defaults over the same rectangle. Playback does the opposite —
+        /// it drops the preview and keeps the described entries, because those are what the
+        /// runtime instances then take over.
+        /// </summary>
+        public static int DropDescribed()
+        {
+            var keys = new List<string>();
+            foreach (var kv in Live)
+                if (kv.Value.Described) keys.Add(kv.Key);
+            if (keys.Count == 0) return 0;
+
+            var depths = new HashSet<int>();
+            foreach (var key in keys)
+            {
+                depths.Add(Live[key].Depth);
+                Live.Remove(key);
+            }
+            foreach (var depth in depths) RebuildDepth(depth);
+            return keys.Count;
+        }
+
+        /// <summary>
+        /// True while the field should be registered from decoration rows.
+        ///
+        /// In the editor's idle state the preview owns the canvas and reads the row's current
+        /// values every frame; describing again there would duplicate it. Playback, and the
+        /// game outside the editor, must register from the level data itself.
+        /// </summary>
+        public static bool ShouldDescribeFromRows()
+        {
+            try
+            {
+                var editor = ADOBase.editor;
+                return editor == null || editor.playMode;
+            }
+            catch { return true; }
+        }
+
         public static void DestroyAll()
+        {
+            _gpuRendering = false;
+            ReleaseLegacyLayers();
+            Live.Clear();
+            NoiseTextureFactory.Clear();
+        }
+
+        private static void ReleaseLegacyLayers()
         {
             foreach (var kv in Layers)
             {
@@ -315,8 +635,6 @@ namespace PEV.Scripting
                 catch { }
             }
             Layers.Clear();
-            Live.Clear();
-            NoiseTextureFactory.Clear();
         }
 
         /// <summary>Fields registered under a tag (space-separated tags match any of them).</summary>
@@ -416,6 +734,7 @@ namespace PEV.Scripting
             entry.World = mirrored ? live.Frame : Placement.Compute(BuildInput(args, entry, cam));
 
             entry.Shape = ParseEnum(args, "shape", NoiseFieldShape.Rect);
+            entry.GpuInverted = ParseBool(args, "invert", entry.GpuInverted);
             entry.Feather = Mathf.Max(0f, ParseFloat(args, "feather", 0f));
             // The decoration's own colour wins when there is one: an author who recolours the
             // decoration expects the field to follow, and MoveDecorations tweens colour on the
@@ -463,6 +782,22 @@ namespace PEV.Scripting
             entry.FloorSeq = ParseInt(args, "__floor", entry.FloorSeq);
             entry.Depth = mirrored ? live.Depth : ParseInt(args, "depth", 0);
 
+            if (mirrored)
+            {
+                // Whatever the engine wrote on the carrier. This is what makes the field obey
+                // the native depth instead of a number we invented for it.
+                entry.SortingLayerID = live.SortingLayerID;
+                entry.SortingOrder = live.SortingOrder;
+                entry.UnityLayer = live.UnityLayer;
+                entry.Renderable = live.Renderable;
+            }
+            else
+            {
+                DecorationBridge.NativeSorting(entry.Depth,
+                    out entry.SortingLayerID, out entry.SortingOrder, out entry.UnityLayer);
+                entry.Renderable = entry.World.Size.x > 1e-4f && entry.World.Size.y > 1e-4f;
+            }
+
             entry.FrameIndex = ParseInt(args, "frame", 0);
             entry.Uv = ParseVector2(args, "uv", Vector2.zero);
             entry.Tiling = ParseVector2(args, "tiling", Vector2.one);
@@ -498,10 +833,10 @@ namespace PEV.Scripting
                 !DecorationBridge.TryReadEvent(ev, out live))
                 return false;
 
-            // A decoration outside the viewport is not drawn by the engine either; keeping
-            // the field alive there would only add to the layer's bounds.
-            if (live.Frame.Size.x <= 1e-4f || live.Frame.Size.y <= 1e-4f) return false;
-
+            // A collapsed decoration stays in the table and is simply not drawn: the engine
+            // does not render a zero-sized sprite, and substituting the script's default
+            // geometry here is what turned "the author scaled it to nothing" into "the field
+            // is visible anyway". Renderable carries the answer; the member filter reads it.
             return true;
         }
 
@@ -524,66 +859,95 @@ namespace PEV.Scripting
         /// </summary>
         private static bool RebuildDepth(int depth)
         {
+            if (_gpuRendering) return true;
             var members = new List<Entry>();
             foreach (var kv in Live)
             {
                 var entry = kv.Value;
                 if (entry.Depth != depth) continue;
                 bool visible = entry.OverrideVisibility == 0 ? entry.Visible : entry.OverrideVisibility == 1;
-                if (visible && entry.Opacity * entry.OverrideAlpha > 0f) members.Add(entry);
+                if (visible && entry.Renderable && entry.Opacity * entry.OverrideAlpha > 0f) members.Add(entry);
                 else entry.GameObject = null;
             }
             members.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
 
-            // Greedy clustering by bounding-box overlap. Fields that do not touch can never
-            // share a texel, so there is nothing to merge and everything to lose by merging.
-            var clusters = new List<List<Entry>>();
-            var boxes = new List<Rect>();
+            // Same depth, different sorting. The engine turns depth into a sorting layer and
+            // an order, and syncFloorDepth can put two rows of the same depth on the floor's
+            // own key instead — one quad can only draw at one order, so those cannot share a
+            // layer. Grouping first and clustering inside each group keeps the union where it
+            // belongs without pretending the two draw at the same place in the stack.
+            var groups = new Dictionary<string, List<Entry>>(StringComparer.Ordinal);
+            var order = new List<string>();
             foreach (var m in members)
             {
-                Rect box = Bounds(m);
-                int target = -1;
-                for (int i = 0; i < boxes.Count; i++)
+                // Camera culling also depends on the GameObject layer. Two carriers
+                // with the same sorting position but different layers cannot safely
+                // share a renderer, even if their rectangles overlap.
+                string groupKey = m.SortingLayerID + ":" + m.SortingOrder + ":" + m.UnityLayer;
+                if (!groups.TryGetValue(groupKey, out var list))
                 {
-                    if (boxes[i].Overlaps(box)) { target = i; break; }
+                    list = new List<Entry>();
+                    groups[groupKey] = list;
+                    order.Add(groupKey);
                 }
-                if (target < 0)
-                {
-                    clusters.Add(new List<Entry> { m });
-                    boxes.Add(box);
-                }
-                else
-                {
-                    clusters[target].Add(m);
-                    var merged = Rect.MinMaxRect(
-                        Mathf.Min(boxes[target].xMin, box.xMin), Mathf.Min(boxes[target].yMin, box.yMin),
-                        Mathf.Max(boxes[target].xMax, box.xMax), Mathf.Max(boxes[target].yMax, box.yMax));
-                    boxes[target] = merged;
-                    // A bridging field may join several existing clusters. Merge until
-                    // the expanded box no longer touches another cluster.
-                    for (int i = 0; i < boxes.Count; i++)
-                    {
-                        if (i == target || !boxes[target].Overlaps(boxes[i])) continue;
-                        clusters[target].AddRange(clusters[i]);
-                        boxes[target] = Rect.MinMaxRect(
-                            Mathf.Min(boxes[target].xMin, boxes[i].xMin), Mathf.Min(boxes[target].yMin, boxes[i].yMin),
-                            Mathf.Max(boxes[target].xMax, boxes[i].xMax), Mathf.Max(boxes[target].yMax, boxes[i].yMax));
-                        clusters.RemoveAt(i);
-                        boxes.RemoveAt(i);
-                        if (i < target) target--;
-                        i = -1;
-                    }
-                }
+                list.Add(m);
             }
 
             var wanted = new HashSet<string>(StringComparer.Ordinal);
             bool ok = true;
-            for (int i = 0; i < clusters.Count; i++)
+            foreach (var groupKey in order)
             {
-                clusters[i].Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
-                string key = depth + "#" + clusters[i][0].Key;
-                wanted.Add(key);
-                if (!CompositeCluster(key, depth, clusters[i])) ok = false;
+                var list = groups[groupKey];
+                // Greedy clustering by bounding-box overlap. Fields that do not touch can never
+                // share a texel, so there is nothing to merge and everything to lose by merging.
+                var clusters = new List<List<Entry>>();
+                var boxes = new List<Rect>();
+                foreach (var m in list)
+                {
+                    Rect box = Bounds(m);
+                    int target = -1;
+                    for (int i = 0; i < boxes.Count; i++)
+                    {
+                        if (boxes[i].Overlaps(box)) { target = i; break; }
+                    }
+                    if (target < 0)
+                    {
+                        clusters.Add(new List<Entry> { m });
+                        boxes.Add(box);
+                    }
+                    else
+                    {
+                        clusters[target].Add(m);
+                        boxes[target] = Rect.MinMaxRect(
+                            Mathf.Min(boxes[target].xMin, box.xMin), Mathf.Min(boxes[target].yMin, box.yMin),
+                            Mathf.Max(boxes[target].xMax, box.xMax), Mathf.Max(boxes[target].yMax, box.yMax));
+                        // A bridging field may join several existing clusters. Merge until
+                        // the expanded box no longer touches another cluster.
+                        for (int i = 0; i < boxes.Count; i++)
+                        {
+                            if (i == target || !boxes[target].Overlaps(boxes[i])) continue;
+                            clusters[target].AddRange(clusters[i]);
+                            boxes[target] = Rect.MinMaxRect(
+                                Mathf.Min(boxes[target].xMin, boxes[i].xMin), Mathf.Min(boxes[target].yMin, boxes[i].yMin),
+                                Mathf.Max(boxes[target].xMax, boxes[i].xMax), Mathf.Max(boxes[target].yMax, boxes[i].yMax));
+                            clusters.RemoveAt(i);
+                            boxes.RemoveAt(i);
+                            if (i < target) target--;
+                            i = -1;
+                        }
+                    }
+                }
+
+                for (int i = 0; i < clusters.Count; i++)
+                {
+                    clusters[i].Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
+                    // The sorting is part of the key, not just of the render: a row moved to a
+                    // different order needs a different quad, because a SpriteRenderer cannot
+                    // change its order without also changing where it sits among its peers.
+                    string key = depth + "#" + groupKey + "#" + clusters[i][0].Key;
+                    wanted.Add(key);
+                    if (!CompositeCluster(key, depth, clusters[i])) ok = false;
+                }
             }
 
             // Layers whose cluster no longer exists are stale; reclaim them now rather than
@@ -606,7 +970,6 @@ namespace PEV.Scripting
 
         private static bool CompositeCluster(string key, int depth, List<Entry> members)
         {
-            int sortingOrder = 900 + depth * 10;
             var lead = members[0];
 
             Vector2 min = new Vector2(float.MaxValue, float.MaxValue);
@@ -658,10 +1021,17 @@ namespace PEV.Scripting
             {
                 var go = EffectCanvas.CreateObject("PEV.Field." + key);
                 var sr = go.AddComponent<SpriteRenderer>();
-                sr.sortingOrder = sortingOrder;
                 layer = new Layer { GameObject = go, Renderer = sr };
                 Layers[key] = layer;
             }
+
+            // The sorting is the carrier's, every time. It changes on a depth edit and on
+            // syncFloorDepth, and the cluster key already carries it, so a changed value
+            // arrives here as a different layer; setting it unconditionally costs nothing and
+            // means an object reused after a rebuild cannot keep a stale order.
+            layer.Renderer.sortingLayerID = lead.SortingLayerID;
+            layer.Renderer.sortingOrder = lead.SortingOrder;
+            layer.GameObject.layer = lead.UnityLayer;
 
             var request = new NoiseTextureFactory.Request
             {
@@ -999,7 +1369,7 @@ namespace PEV.Scripting
         /// exist for the same purpose, and one of them is always available once a level is
         /// loaded.
         /// </summary>
-        private static Color SceneBackground()
+        internal static Color SceneBackground()
         {
             try
             {
@@ -1095,6 +1465,7 @@ namespace PEV.Scripting
         private static Color ParseColor(Dictionary<string, object> args, string key, Color fallback)
         {
             if (args == null || !args.TryGetValue(key, out var v) || v == null) return fallback;
+            if (v is Color color) return color;
             string s = v.ToString();
             if (ColorUtility.TryParseHtmlString(s.StartsWith("#") ? s : "#" + s, out var c)) return c;
             return fallback;

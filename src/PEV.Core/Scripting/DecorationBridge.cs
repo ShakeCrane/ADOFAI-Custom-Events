@@ -47,6 +47,37 @@ namespace PEV.Scripting
             public bool Visible;
             public int Depth;
             public string Tag;
+
+            /// <summary>
+            /// The sorting the carrier actually renders at.
+            ///
+            /// This is the whole of "obey the native depth": scrVisualDecoration.SetDepth
+            /// does not store a number the engine later interprets — it writes the sorting
+            /// layer name and sortingOrder onto the renderer, mapping depth ≥ 0 to "Bg" at
+            /// order -depth and depth &lt; 0 to "Default" at order -depth. A field that
+            /// draws at 900 + depth×10 is on neither layer, so it sits in front of the track
+            /// regardless of its depth. Reading these two values is what keeps it behind
+            /// exactly what it should be behind.
+            /// </summary>
+            public int SortingLayerID;
+            public int SortingOrder;
+
+            /// <summary>
+            /// The GameObject layer the carrier is on. SetDepth assigns 9 for depth ≥ 0 and 7
+            /// below, and the camera culls on this — a field drawn on layer 0 can appear in
+            /// front of a background the engine would have hidden.
+            /// </summary>
+            public int UnityLayer;
+
+            /// <summary>
+            /// False for a decoration the author scaled to nothing.
+            ///
+            /// The engine does not draw a zero-sized sprite, so the field must not either.
+            /// It is kept in the table rather than dropped: a MoveDecorations tween that
+            /// scales it back up must bring it straight back, and a zero scale read on one
+            /// frame is not the same thing as the row being deleted.
+            /// </summary>
+            public bool Renderable;
         }
 
         public static bool TryRead(LevelEvent ev, out Live live)
@@ -62,10 +93,12 @@ namespace PEV.Scripting
                 // scaleVec is already a multiplier — 1.0 means 100%. The percentage in the
                 // event data is converted by MoveDecorations before it ever reaches SetScale,
                 // so dividing again here would shrink every field by two orders of magnitude.
-                // A zero component would collapse the region to a line; treat it as 1.
+                // A zero component means the author collapsed the region; it is not replaced
+                // with 1. The engine draws nothing at that size, and a field that stayed
+                // visible through a zero scale would be a decoration that ignores its own
+                // transform — the one thing the whole decoration mapping exists to prevent.
                 Vector2 scale = dec.scaleVec;
-                if (Mathf.Abs(scale.x) < 1e-6f) scale.x = 1f;
-                if (Mathf.Abs(scale.y) < 1e-6f) scale.y = 1f;
+                bool collapsed = Mathf.Abs(scale.x) < 1e-4f || Mathf.Abs(scale.y) < 1e-4f;
 
                 // pivotPosVec is the pivot in world space and is exactly the value the
                 // engine's tweens write, so it is the honest source for the centre.
@@ -86,12 +119,65 @@ namespace PEV.Scripting
                 live.Visible = dec.GetVisible();
                 live.Depth = ev.Get("depth", -1);
                 live.Tag = ev.Get("tag", "") ?? "";
+                live.Renderable = !collapsed;
+
+                // The carrier's own renderer answers both, so syncFloorDepth is honoured for
+                // free: SetDepth took that branch and wrote the floor's layer and order here.
+                // Only the visual subclass carries a SpriteRenderer; a base scrDecoration
+                // would have no sprite to read, and the depth mapping stands in for it.
+                var sr = (dec as scrVisualDecoration)?.spriteRenderer;
+                if (sr != null)
+                {
+                    live.SortingLayerID = sr.sortingLayerID;
+                    live.SortingOrder = sr.sortingOrder;
+                    // SetDepth writes the renderer child's GameObject, not the parent
+                    // scrDecoration object (which commonly stays on layer 0).
+                    live.UnityLayer = sr.gameObject.layer;
+                }
+                else
+                {
+                    NativeSorting(live.Depth, out live.SortingLayerID, out live.SortingOrder, out live.UnityLayer);
+                }
                 return true;
             }
             catch
             {
                 return false;
             }
+        }
+
+        /// <summary>
+        /// scrVisualDecoration.SetDepth's own mapping, for the moments no component exists.
+        ///
+        /// Copied deliberately rather than inferred: depth ≥ 0 lands on the "Bg" layer at
+        /// sortingOrder -depth, and depth &lt; 0 on "Default" at the same -depth. Note the
+        /// sign — a LARGER depth sorts lower, so depth 5 draws behind depth 2. A field that
+        /// sorts at 900 + depth×10 inverts that and draws in front of the track.
+        ///
+        /// syncFloorDepth is not reproduced here: it depends on the parent floor, which the
+        /// row alone does not identify. When a component exists, its renderer is read directly
+        /// and needs none of this.
+        /// </summary>
+        private static void NativeSorting(int depth, out int sortingLayerID, out int sortingOrder)
+        {
+            NativeSorting(depth, out sortingLayerID, out sortingOrder, out _);
+        }
+
+        /// <summary>
+        /// The same mapping including the GameObject layer, which the camera culls on.
+        ///
+        /// Depth ≥ 0 puts the carrier on layer 9 and depth &lt; 0 on layer 7 — "Bg" and
+        /// "Default" in the game's own vocabulary. A field drawn on layer 0 would survive a
+        /// camera whose culling mask excludes the background, which is a different picture from
+        /// the one the decoration itself would make.
+        /// </summary>
+        public static void NativeSorting(int depth, out int sortingLayerID, out int sortingOrder,
+            out int unityLayer)
+        {
+            bool background = depth >= 0;
+            sortingLayerID = SortingLayer.NameToID(background ? "Bg" : "Default");
+            sortingOrder = -depth;
+            unityLayer = background ? 9 : 7;
         }
 
         /// <summary>Hex without '#', the form our own parameters use.</summary>
@@ -123,10 +209,12 @@ namespace PEV.Scripting
             {
                 float tile = ADOBase.controller != null ? ADOBase.controller.tileSize : 1f;
 
-                // Decoration scale is a percentage, so the neutral value is 100, not 1.
+                // Decoration scale is a percentage, so the neutral value is 100, not 1 — but
+                // zero is zero. Replacing a collapsed axis with 100 here is what made a field
+                // invisible for one frame reappear at full size while the component was being
+                // rebuilt; the row said 0 and the fallback overrode it.
                 Vector2 scale = ev.Get("scale", new Vector2(100f, 100f));
-                if (Mathf.Abs(scale.x) < 1e-6f) scale.x = 100f;
-                if (Mathf.Abs(scale.y) < 1e-6f) scale.y = 100f;
+                bool collapsed = Mathf.Abs(scale.x) < 1e-2f || Mathf.Abs(scale.y) < 1e-2f;
 
                 Vector2 position = ev.Get("position", Vector2.zero);
                 bool onTile = IsTileRelative(ev);
@@ -161,6 +249,8 @@ namespace PEV.Scripting
                 live.Visible = ev.Get("visible", true);
                 live.Depth = ev.Get("depth", -1);
                 live.Tag = ev.Get("tag", "") ?? "";
+                live.Renderable = !collapsed;
+                NativeSorting(live.Depth, out live.SortingLayerID, out live.SortingOrder, out live.UnityLayer);
                 return true;
             }
             catch

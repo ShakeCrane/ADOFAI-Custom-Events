@@ -25,6 +25,7 @@ namespace PEV.Core
         public static UnityModManager.ModEntry Mod;
         public static string EventsDirectory;
         public static bool Verbose = true;
+        internal static NoiseFieldSettings Settings = new NoiseFieldSettings();
 
         private static string _logPath;
 
@@ -33,6 +34,11 @@ namespace PEV.Core
             Mod = entry;
             _logPath = Path.Combine(entry.Path, "pev-core.log");
             TryResetLog();
+
+            try { Settings = UnityModManager.ModSettings.Load<NoiseFieldSettings>(entry) ?? new NoiseFieldSettings(); }
+            catch (Exception e) { Log("settings load failed: " + e.Message); Settings = new NoiseFieldSettings(); }
+            entry.OnGUI = OnGUI;
+            entry.OnSaveGUI = OnSaveGUI;
 
             EventsDirectory = Path.Combine(entry.Path, "Events");
             Directory.CreateDirectory(EventsDirectory);
@@ -60,6 +66,18 @@ namespace PEV.Core
             Diagnostics.ReviewHarness.Configure(entry.Path);
             Log("harmony patched");
             return true;
+        }
+
+        private static void OnGUI(UnityModManager.ModEntry entry)
+        {
+            if (Environment.GetEnvironmentVariable("PEV_EXPERIMENTAL_NOISE_GPU") != "1") return;
+            Settings.RealtimeSceneSampling = GUILayout.Toggle(Settings.RealtimeSceneSampling, "噪域实时场景采样（关闭可提高性能）");
+        }
+
+        private static void OnSaveGUI(UnityModManager.ModEntry entry)
+        {
+            try { Settings.Save(entry); }
+            catch (Exception e) { Log("settings save failed: " + e.Message); }
         }
 
         public static void Log(string message)

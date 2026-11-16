@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <Target Name="RequireUnityManaged" BeforeTargets="ResolveReferences" Condition="'$(UnityManaged)' == ''">
+    <Error Text="Pass -p:UnityManaged=&lt;Unity Editor/Data/Managed/UnityEngine&gt;" />
+  </Target>
+  <ItemGroup>
+    <Compile Include="../unity-noise-bundle/Assets/Editor/BuildNoiseBundle.cs" />
+    <Reference Include="UnityEngine"><HintPath>$(UnityManaged)/UnityEngine.dll</HintPath></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(UnityManaged)/UnityEngine.CoreModule.dll</HintPath></Reference>
+    <Reference Include="UnityEngine.AssetBundleModule"><HintPath>$(UnityManaged)/UnityEngine.AssetBundleModule.dll</HintPath></Reference>
+    <Reference Include="UnityEditor"><HintPath>$(UnityManaged)/UnityEditor.dll</HintPath></Reference>
+    <Reference Include="UnityEditor.CoreModule"><HintPath>$(UnityManaged)/UnityEditor.CoreModule.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

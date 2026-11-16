@@ -92,13 +92,19 @@ namespace PEV.Loading
         }
 
         /// <summary>Reads a side file (script, icon) out of a package.</summary>
+        public static bool IsPackageRelativePath(string relative)
+        {
+            if (string.IsNullOrWhiteSpace(relative)) return false;
+            relative = relative.Replace('\\', '/');
+            return !relative.StartsWith("/", StringComparison.Ordinal) && !relative.Contains(":") &&
+                   !relative.Split('/').Any(p => p == "..");
+        }
+
         public static byte[] ReadResource(string packagePath, string relative)
         {
-            if (string.IsNullOrEmpty(relative)) return null;
+            if (!IsPackageRelativePath(relative)) return null;
             // Both package forms use the same relative, slash-separated namespace.
             relative = relative.Replace('\\', '/');
-            if (relative.StartsWith("/", StringComparison.Ordinal) || relative.Contains(":") ||
-                relative.Split('/').Any(p => p == "..")) return null;
             if (Directory.Exists(packagePath))
             {
                 string p = Path.Combine(packagePath, relative);

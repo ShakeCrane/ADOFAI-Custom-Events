@@ -1,0 +1,259 @@
+// Draft only: no Unity/D3D11 execution or byte comparison has been performed.
+// Based on Phira-Pro c8fb11c6, prpr/src/core/block_mask.rs (GPL-3.0-or-later).
+// Coordinates are chart space, not ADOFAI world or viewport coordinates.
+#pragma kernel BuildSources
+#pragma kernel ComposeSources
+#pragma kernel WarpActive
+#pragma kernel DilateRing
+#pragma kernel ExportMasks
+#pragma kernel BuildTouch
+#pragma kernel WarpColors
+
+struct Area
+{
+    float2 center;
+    float2 halfSize;
+    float angleRadians;
+    float yScale;
+    float opacity;
+    uint flags; // bit 0 active, bit 1 inverted, bit 2 ready
+};
+struct Touch
+{
+    float2 center;
+    float scale;
+    float padding;
+};
+
+StructuredBuffer<Area> _Areas;
+uint _AreaCount;
+uint2 _Dimensions;
+float _Aspect;
+RWTexture2D<uint4> _Sources;   // active normal/subtract, disabled normal/subtract
+RWTexture2D<uint4> _AuxSources; // ready normal/subtract, disabled/ready subtract green
+RWTexture2D<uint4> _Compose;   // active composition in R, disabled in A
+RWTexture2D<uint4> _AuxCompose; // ready normal, ready subtract, disabled, reserved
+Texture2D<float4> _NoiseTexture; // RGBA8 UNorm, vertically flipped like reference upload
+uint2 _NoiseDimensions;
+float _TimeSeconds;
+RWTexture2D<uint4> _Effect;      // displaced active, edge, glow, disabled
+RWTexture2D<uint> _RingInput;
+RWTexture2D<uint> _RingOutput;
+float _GlowWeight;
+uint _RingPass;
+RWTexture2D<unorm float4> _EffectNormalized;
+RWTexture2D<unorm float4> _AuxNormalized;
+StructuredBuffer<Touch> _Touches;
+uint _TouchCount;
+float _ScreenAspect;
+Texture2D<float4> _TouchTexture;
+SamplerState sampler_TouchTexture;
+uint2 _TouchTextureDimensions;
+Texture2D<float4> _RawActiveColors;
+RWTexture2D<unorm float4> _WarpedActiveColors;
+
+uint unorm8(float value)
+{
+    float scaled = saturate(value) * 255.0;
+    uint whole = (uint)scaled;
+    return whole + (scaled - (float)whole >= 0.5 ? 1u : 0u);
+}
+
+uint addR8(uint previous, float opacity)
+{
+    return unorm8((float)previous / 255.0 + opacity);
+}
+
+[numthreads(8, 8, 1)]
+void BuildSources(uint3 tid : SV_DispatchThreadID)
+{
+    if (any(tid.xy >= _Dimensions)) return;
+    float2 samplePosition = (((float2)tid.xy + 0.5) / (float2)_Dimensions) * 2.0 - 1.0;
+    samplePosition.y /= _Aspect;
+    uint4 src = 0, aux = 0;
+    for (uint i = 0; i < _AreaCount; ++i)
+    {
+        Area a = _Areas[i];
+        if (a.halfSize.x <= 0.0 || a.halfSize.y <= 0.0 || a.yScale <= 0.0) continue;
+        float s, c;
+        sincos(a.angleRadians, s, c);
+        float2 delta = samplePosition - a.center;
+        delta.y /= a.yScale;
+        float2 local = float2(c * delta.x + s * delta.y, -s * delta.x + c * delta.y);
+        if (any(abs(local) > a.halfSize)) continue;
+        bool active = (a.flags & 1u) != 0u;
+        bool inverted = (a.flags & 2u) != 0u;
+        bool ready = (a.flags & 4u) != 0u;
+        float opacity = inverted ? 0.1 : a.opacity;
+        if (active)
+        {
+            if (inverted) src.y = addR8(src.y, opacity);
+            else src.x = addR8(src.x, opacity);
+        }
+        else
+        {
+            if (inverted)
+            {
+                src.w = addR8(src.w, opacity);
+                aux.z = addR8(aux.z, 0.1 * a.opacity);
+            }
+            else src.z = addR8(src.z, opacity);
+        }
+        if (ready)
+        {
+            if (inverted)
+            {
+                aux.y = addR8(aux.y, opacity);
+                aux.w = addR8(aux.w, 0.1 * a.opacity);
+            }
+            else aux.x = addR8(aux.x, opacity);
+        }
+    }
+    _Sources[tid.xy] = src;
+    _AuxSources[tid.xy] = aux;
+}
+
+uint2 disabledSubtract(uint red, uint green)
+{
+    float g = (float)green / 255.0;
+    float t = saturate((g - 0.2) * -10.0);
+    float r = ((red >= 23u && red <= 30u) ? 1.0 : 0.0) + t * t * (3.0 - 2.0 * t);
+    return uint2(unorm8(r), unorm8(g * r * 10.0));
+}
+
+[numthreads(8, 8, 1)]
+void ComposeSources(uint3 tid : SV_DispatchThreadID)
+{
+    if (any(tid.xy >= _Dimensions)) return;
+    uint4 src = _Sources[tid.xy], aux = _AuxSources[tid.xy];
+    uint inverse = (src.y >= 23u && src.y <= 30u) ? 255u : 0u;
+    uint active = src.x > inverse ? src.x - inverse : inverse - src.x;
+    uint2 sub = disabledSubtract(src.w, aux.z);
+    uint disabled = unorm8(abs(((float)sub.x / 255.0) * ((float)sub.y / 255.0) - (float)src.z / 255.0));
+    uint readySub = aux.w == 0u ? 0u : disabledSubtract(aux.y, aux.w).y;
+    _Compose[tid.xy] = uint4(active, 0u, 0u, disabled);
+    _AuxCompose[tid.xy] = uint4(aux.x, readySub, disabled, 0u);
+}
+
+uint mirroredIndex(float coordinate, uint size)
+{
+    float v = coordinate - floor(coordinate * 0.5) * 2.0;
+    if (v > 1.0) v = 2.0 - v;
+    return min((uint)floor(v * size), size - 1u);
+}
+
+// Match block_mask.rs::medium bit-for-bit. Native f32tof16 may use a
+// different rounding mode on the graphics driver, changing point samples.
+float medium(float v)
+{
+    uint bits = asuint(v);
+    return asfloat((bits + 0xfffu + ((bits >> 13u) & 1u)) & ~0x1fffu);
+}
+
+uint2 composeSourcePosition(uint2 pixel)
+{
+    const float d = 0.70703125;
+    precise float t0 = _TimeSeconds / 20.0;
+    precise float t1 = t0 * 2.59;
+    precise float dt = d * t1;
+    float2 uv = ((float2)pixel + 0.5) / (float2)_Dimensions;
+    float2 st = uv * float2(2.13, 1.02);
+    uint y = mirroredIndex(dt + st.y, _NoiseDimensions.y);
+    uint xa = mirroredIndex(dt + st.x, _NoiseDimensions.x);
+    uint xb = mirroredIndex(-dt + st.x, _NoiseDimensions.x);
+    float a = medium(medium(_NoiseTexture.Load(int3(xa, y, 0)).x) - 0.5);
+    float b = medium(medium(_NoiseTexture.Load(int3(xb, y, 0)).x) - 0.5);
+    precise float da = d * a;
+    precise float db = d * b;
+    precise float dx = (da - db) * 0.1;
+    precise float dy = (da + db) * 0.1;
+    precise float2 displaced = uv + float2(dx, dy);
+    return (uint2)clamp(displaced * (float2)_Dimensions, 0.0, (float2)(_Dimensions - 1u));
+}
+
+[numthreads(8, 8, 1)]
+void WarpActive(uint3 tid : SV_DispatchThreadID)
+{
+    if (any(tid.xy >= _Dimensions)) return;
+    uint2 samplePosition = composeSourcePosition(tid.xy);
+    uint4 output = _Compose[tid.xy];
+    output.x = _Compose[samplePosition].x;
+    _Effect[tid.xy] = output;
+    _RingOutput[tid.xy] = output.x;
+}
+
+[numthreads(8, 8, 1)]
+void WarpColors(uint3 tid : SV_DispatchThreadID)
+{
+    if (any(tid.xy >= _Dimensions)) return;
+    _WarpedActiveColors[tid.xy] = _RawActiveColors.Load(int3(composeSourcePosition(tid.xy), 0));
+}
+
+[numthreads(8, 8, 1)]
+void DilateRing(uint3 tid : SV_DispatchThreadID)
+{
+    if (any(tid.xy >= _Dimensions)) return;
+    int2 position = (int2)tid.xy;
+    uint previous = _RingInput[tid.xy], maximum = 0u;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x)
+            maximum = max(maximum, _RingInput[clamp(position + int2(x, y), int2(0, 0), (int2)_Dimensions - 1)]);
+    uint delta = maximum - previous;
+    uint4 effect = _Effect[tid.xy];
+    if (_RingPass == 0u) effect.y = delta;
+    if (delta != 0u && effect.x != 255u)
+    {
+        float outside = 1.0 - (float)effect.x / 255.0;
+        effect.z = unorm8(_GlowWeight * (outside * ((float)delta / 255.0)) + (float)effect.z / 255.0);
+    }
+    _RingOutput[tid.xy] = maximum;
+    _Effect[tid.xy] = effect;
+}
+
+[numthreads(8, 8, 1)]
+void ExportMasks(uint3 tid : SV_DispatchThreadID)
+{
+    if (any(tid.xy >= _Dimensions)) return;
+    _EffectNormalized[tid.xy] = (float4)_Effect[tid.xy] / 255.0;
+    _AuxNormalized[tid.xy] = (float4)_AuxCompose[tid.xy] / 255.0;
+}
+
+float2 touchSample(float2 uv)
+{
+    precise float2 coord = uv * (float2)_TouchTextureDimensions - 0.5;
+    int2 origin = (int2)floor(coord);
+    precise float2 fraction = coord - floor(coord);
+    int2 limit = (int2)_TouchTextureDimensions - 1;
+    float2 p00 = _TouchTexture.Load(int3(clamp(origin, 0, limit), 0)).ra;
+    float2 p10 = _TouchTexture.Load(int3(clamp(origin + int2(1, 0), 0, limit), 0)).ra;
+    float2 p01 = _TouchTexture.Load(int3(clamp(origin + int2(0, 1), 0, limit), 0)).ra;
+    float2 p11 = _TouchTexture.Load(int3(clamp(origin + int2(1, 1), 0, limit), 0)).ra;
+    precise float2 lower = p00 * (1.0 - fraction.x) + p10 * fraction.x;
+    precise float2 upper = p01 * (1.0 - fraction.x) + p11 * fraction.x;
+    precise float2 result = lower * (1.0 - fraction.y) + upper * fraction.y;
+    return result;
+}
+
+[numthreads(8, 8, 1)]
+void BuildTouch(uint3 tid : SV_DispatchThreadID)
+{
+    if (any(tid.xy >= _Dimensions)) return;
+    uint2 baseSize = _Dimensions / 2u;
+    float2 screenUv = ((float2)(tid.xy / 2u) + 0.5) / (float2)baseSize;
+    uint value = 0u;
+    for (uint i = 0; i < min(_TouchCount, 10u); ++i)
+    {
+        Touch touch = _Touches[i];
+        if (touch.scale <= 0.0) continue;
+        float size = (44.0 / 100.0 * 11.5 / 10.0) * touch.scale;
+        precise float2 delta = screenUv - touch.center;
+        precise float2 uv = float2(delta.x * _ScreenAspect / size + 0.5, delta.y / size + 0.5);
+        if (any(uv < 0.0) || any(uv > 1.0)) continue;
+        float2 pixel = touchSample(uv);
+        precise float blended = pixel.x * pixel.y + ((float)value / 255.0) * (1.0 - pixel.y);
+        value = unorm8(blended);
+    }
+    uint4 result = _AuxCompose[tid.xy];
+    result.a = value;
+    _AuxCompose[tid.xy] = result;
+}

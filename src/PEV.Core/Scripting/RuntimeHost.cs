@@ -29,6 +29,8 @@ namespace PEV.Scripting
         private const double RewindThreshold = 0.05;
 
         private readonly List<EventInstance> _instances = new List<EventInstance>();
+        private NoiseFieldStateSchedule _fieldStates = new NoiseFieldStateSchedule();
+        private NoiseFieldGpuDriver _gpuDriver = new NoiseFieldGpuDriver();
         private bool _live;
 
         public static RuntimeHost Ensure()
@@ -44,8 +46,10 @@ namespace PEV.Scripting
 
         public static void Shutdown()
         {
-            if (_instance == null) return;
+            if (_instance == null) { ShaderBundleCache.Clear(); ReferenceNoiseTextures.Clear(); return; }
             _instance.Teardown();
+            ShaderBundleCache.Clear();
+            ReferenceNoiseTextures.Clear();
             UnityEngine.Object.Destroy(_instance.gameObject);
             _instance = null;
         }
@@ -64,7 +68,10 @@ namespace PEV.Scripting
                 if (ADOBase.editor == null) return;
                 var level = ADOBase.editor.levelData;
                 if (level == null) return;
-                Ensure().Rebuild(level);
+                // Called from the Play prefix, which runs before playMode is set inside
+                // scnEditor.Play. Asking ShouldDescribeFromRows here would answer "idle" and
+                // register nothing for the whole of playback, so this path states its intent.
+                Ensure().Rebuild(level, true);
             }
             catch (Exception e)
             {
@@ -73,7 +80,16 @@ namespace PEV.Scripting
         }
 
         /// <summary>Rebuilds instances for the level now loaded. Safe to call repeatedly.</summary>
-        public void Rebuild(LevelData level)
+        public void Rebuild(LevelData level) => Rebuild(level, NoiseFieldRenderer.ShouldDescribeFromRows());
+
+        /// <summary>
+        /// Rebuilds instances, optionally registering decoration-backed fields from their rows.
+        ///
+        /// describeFields is false in the editor's idle state, where the preview component
+        /// already draws each row from its live values; registering again would draw the same
+        /// rectangle twice with different parameters.
+        /// </summary>
+        public void Rebuild(LevelData level, bool describeFields)
         {
             Teardown();
             if (level == null) return;
@@ -95,7 +111,7 @@ namespace PEV.Scripting
                         if (data.IsPlaceholder) continue;
                         if (!EventRegistry.TryGetById(data.Id, out var manifest)) continue;
 
-                        Arm(ev, data, manifest, floors);
+                        Arm(ev, data, manifest, floors, describeFields);
                         built++;
                     }
                 }
@@ -116,7 +132,14 @@ namespace PEV.Scripting
 
                 if (!EventRegistry.TryGetById(data.Id, out var manifest)) continue;
 
-                Arm(ev, data, manifest, floors);
+                if (data.Id == NoiseFieldStateSchedule.EventId)
+                {
+                    _fieldStates.Add(ev, data);
+                    built++;
+                    continue;
+                }
+
+                Arm(ev, data, manifest, floors, describeFields);
                 built++;
             }
 
@@ -124,7 +147,8 @@ namespace PEV.Scripting
             Plugin.Log($"runtime: {built} instance(s) armed");
         }
 
-        private void Arm(LevelEvent ev, EventInstanceData data, PEV.Model.EventManifest manifest, List<scrFloor> floors)
+        private void Arm(LevelEvent ev, EventInstanceData data, PEV.Model.EventManifest manifest, List<scrFloor> floors,
+            bool describeFields)
         {
             // Floor times are not reliable at arm time (the path may not be rebuilt yet),
             // so this is only a first guess. EventInstance re-resolves it on start and
@@ -149,12 +173,30 @@ namespace PEV.Scripting
             // the live component instead of the values frozen at the last save. The scope has
             // to be the same string the script host stamps into its calls, which is the
             // instance's own key.
-            if (ev.IsDecoration) NoiseFieldRenderer.Bind(inst.Key, ev);
+            if (ev.IsDecoration)
+            {
+                NoiseFieldRenderer.Bind(inst.Key, ev);
+
+                // And register the field now, not when the song reaches this tile. A
+                // decoration exists from the moment the level loads; a tag-addressed state
+                // event at time 0 must be able to find a field whose row sits on a later
+                // floor. The placement tile is where the event sits, not when it appears.
+                if (describeFields && NoiseFieldRenderer.IsFieldEvent(manifest))
+                    NoiseFieldRenderer.Describe(inst.Key, "noisefield", ev, data);
+            }
 
             _instances.Add(inst);
         }
 
         private double _lastSongTime = double.NegativeInfinity;
+
+        private void LateUpdate()
+        {
+            bool playing = _live && (ADOBase.editor == null || ADOBase.editor.playMode);
+            double time = _lastSongTime;
+            // The driver is disabled unless explicitly opted into the unverified draft.
+            _gpuDriver.Tick(playing, time, Plugin.Settings?.RealtimeSceneSampling ?? true);
+        }
 
         private void Update()
         {
@@ -164,7 +206,12 @@ namespace PEV.Scripting
             // below so a bake still finishes while the song is paused or nothing is playing.
             NoiseTextureFactory.Pump(1.5f);
 
-            if (!_live || _instances.Count == 0) return;
+            // Fields registered at level init follow their decoration until a script takes
+            // them over. Outside the early-outs below so a paused or not-yet-started song
+            // still mirrors an editor drag or a MoveDecorations tween.
+            try { NoiseFieldRenderer.Refresh(); } catch { }
+
+            if (!_live || (_instances.Count == 0 && !_fieldStates.Any)) return;
 
             double songTime;
             try
@@ -186,6 +233,7 @@ namespace PEV.Scripting
 
             if (rewound)
             {
+                _fieldStates.Reset();
                 int reset = 0;
                 foreach (var inst in _instances)
                 {
@@ -201,6 +249,10 @@ namespace PEV.Scripting
             {
                 _lastSongTime = songTime;
             }
+
+            if (_fieldStates.Any && (advancing || rewound) &&
+                _fieldStates.Resolve(ADOBase.lm != null ? ADOBase.lm.listFloors : null))
+                NoiseFieldRenderer.EvaluateGpuPhases(_fieldStates, songTime);
 
             for (int i = 0; i < _instances.Count; i++)
             {
@@ -226,11 +278,14 @@ namespace PEV.Scripting
 
         public void Teardown()
         {
+            _gpuDriver.Dispose();
+            _gpuDriver = new NoiseFieldGpuDriver();
             foreach (var inst in _instances)
             {
                 try { inst.End(); } catch { }
             }
             _instances.Clear();
+            _fieldStates = new NoiseFieldStateSchedule();
             _live = false;
             _lastSongTime = double.NegativeInfinity;
 

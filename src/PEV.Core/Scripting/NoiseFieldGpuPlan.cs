@@ -1,0 +1,91 @@
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace PEV.Scripting
+{
+    /// <summary>
+    /// Draft preparation for GPU groups. No GPU resources are allocated here.
+    /// Groups and lists are reused between frames; they must not be retained by callers.
+    /// </summary>
+    internal sealed class NoiseFieldGpuPlan
+    {
+        internal struct Key : IEquatable<Key>
+        {
+            public int SortingLayer, SortingOrder, UnityLayer;
+            public bool Equals(Key other) => SortingLayer == other.SortingLayer &&
+                SortingOrder == other.SortingOrder && UnityLayer == other.UnityLayer;
+            public override bool Equals(object other) => other is Key key && Equals(key);
+            public override int GetHashCode() => ((SortingLayer * 397) ^ SortingOrder) * 397 ^ UnityLayer;
+        }
+
+        internal sealed class Group
+        {
+            public readonly List<NoiseFieldGpuMasks.Area> Areas = new List<NoiseFieldGpuMasks.Area>();
+            public readonly List<NoiseFieldColorOwnership.Zone> Colors = new List<NoiseFieldColorOwnership.Zone>();
+            public readonly List<NoiseFieldTouchGeometry.Area> TouchAreas = new List<NoiseFieldTouchGeometry.Area>();
+            public bool HasActive, HasDisabled, Colored;
+            internal void Clear() { Areas.Clear(); Colors.Clear(); TouchAreas.Clear(); HasActive = HasDisabled = Colored = false; }
+        }
+
+        private readonly Dictionary<Key, Group> _groups = new Dictionary<Key, Group>();
+        private readonly List<NoiseFieldRenderer.Entry> _ordered = new List<NoiseFieldRenderer.Entry>();
+        private readonly List<Key> _stale = new List<Key>();
+        private static readonly Comparison<NoiseFieldRenderer.Entry> CompareSequence =
+            (a, b) => a.GpuSequence.CompareTo(b.GpuSequence);
+        internal IReadOnlyDictionary<Key, Group> Groups => _groups;
+
+        internal void Build(IReadOnlyList<NoiseFieldRenderer.Entry> entries, Camera camera, float aspect)
+        {
+            foreach (var group in _groups.Values) group.Clear();
+            _ordered.Clear();
+            if (entries != null)
+                for (int i = 0; i < entries.Count; i++) if (entries[i] != null) _ordered.Add(entries[i]);
+            _ordered.Sort(CompareSequence);
+            foreach (var entry in _ordered)
+            {
+                bool visible = entry.OverrideVisibility == 0 ? entry.Visible : entry.OverrideVisibility == 1;
+                float opacity = entry.Opacity * entry.OverrideAlpha;
+                if (!visible || !entry.Renderable || opacity <= 0f || float.IsNaN(opacity) || float.IsInfinity(opacity)) continue;
+                // Reference areas are rectangular. Retain an old chart's deprecated
+                // shape value in its data, but do not let it disable every GPU group.
+                var frame = entry.World;
+                frame.Center += (Vector3)entry.OverrideOffset;
+                frame.Size *= entry.OverrideScale;
+                frame.Rotation += entry.OverrideRotation;
+                if (!NoiseFieldProjection.TryProject(camera, frame, aspect, out var area))
+                    throw new NotSupportedException("Field cannot be projected without shear or perspective");
+                area.Opacity = Mathf.Clamp01(opacity);
+                area.Flags = (entry.GpuPhase == NoiseFieldPhase.Active ? 1u : 0u) |
+                             (entry.GpuInverted ? 2u : 0u) |
+                             (entry.GpuPhase == NoiseFieldPhase.Ready ? 4u : 0u);
+                var key = new Key { SortingLayer = entry.SortingLayerID, SortingOrder = entry.SortingOrder, UnityLayer = entry.UnityLayer };
+                if (!_groups.TryGetValue(key, out var group)) _groups.Add(key, group = new Group());
+                group.Areas.Add(area);
+                // The native decoration color also receives MoveDecorations tweens. The
+                // legacy edgeColor remains stored for old charts but is not the GPU tint.
+                var color = entry.FillColor;
+                group.Colors.Add(new NoiseFieldColorOwnership.Zone
+                {
+                    CenterX = area.Center.x, CenterY = area.Center.y, HalfX = area.HalfSize.x, HalfY = area.HalfSize.y,
+                    Angle = area.AngleRadians, YScale = area.YScale, Opacity = area.Opacity,
+                    Red = color.r, Green = color.g, Blue = color.b,
+                    Active = entry.GpuPhase == NoiseFieldPhase.Active, Inverted = entry.GpuInverted
+                });
+                group.Colored |= color.r != 1f || color.g != 84f / 255f || color.b != 84f / 255f;
+                group.TouchAreas.Add(new NoiseFieldTouchGeometry.Area
+                {
+                    Center = area.Center, Size = area.HalfSize * 2f,
+                    RotationDegrees = area.AngleRadians * Mathf.Rad2Deg,
+                    Active = entry.GpuPhase == NoiseFieldPhase.Active,
+                    Inverted = entry.GpuInverted, Visible = true
+                });
+                group.HasActive |= entry.GpuPhase != NoiseFieldPhase.Disabled;
+                group.HasDisabled |= entry.GpuPhase != NoiseFieldPhase.Active;
+            }
+            _stale.Clear();
+            foreach (var pair in _groups) if (pair.Value.Areas.Count == 0) _stale.Add(pair.Key);
+            foreach (var key in _stale) _groups.Remove(key);
+        }
+    }
+}
