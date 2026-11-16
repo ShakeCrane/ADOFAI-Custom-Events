@@ -73,7 +73,7 @@ namespace PEV.Scripting
             string source = EventScriptCache.Get(Manifest);
             if (source == null) { Phase = InstancePhase.Faulted; return false; }
 
-            Host = ScriptHost.Create(source, Key, out string err);
+            Host = ScriptHost.Create(source, Key, out string err, Manifest);
             if (Host == null)
             {
                 Plugin.Log("create failed: " + err);

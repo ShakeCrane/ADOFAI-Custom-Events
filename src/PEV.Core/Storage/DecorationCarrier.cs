@@ -4,7 +4,7 @@ using Newtonsoft.Json.Linq;
 namespace PEV.Storage
 {
     /// <summary>
-    /// Marks a native AddDecoration row as a PEV noise field, and carries its payload.
+    /// Marks a native AddDecoration row as a PEV event carrier, and carries its payload.
     ///
     /// The row has to stay a genuine AddDecoration: vanilla decodes decorations by looking
     /// the eventType up in its own table, and an unknown type leaves `info` null, which
@@ -34,7 +34,7 @@ namespace PEV.Storage
         /// clear already removed, so the lookup throws and playback aborts before it starts.
         /// Any non-empty tag avoids the branch.
         /// </summary>
-        public const string DefaultTag = "noise";
+        public const string DefaultTag = "pev";
 
         /// <summary>Prefix that tells our payload apart from a real masking target.</summary>
         public const string PayloadPrefix = "pev1:";

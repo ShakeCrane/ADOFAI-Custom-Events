@@ -1,1 +1,1 @@
-本目录的四张 PNG 原样来自 Phira-Pro 固定提交 `c8fb11c6a41faaf1233a5affabf87b0223e2edd8` 的 `assets/blockarea/`，遵循 GPL-3.0-or-later。当前旧渲染器尚未使用它们；新 GPU 路径需要这些原生素材，打包后不依赖外部下载。
+本目录的四张 PNG 原样来自 Phira-Pro 固定提交 `c8fb11c6a41faaf1233a5affabf87b0223e2edd8` 的 `assets/blockarea/`，遵循 GPL-3.0-or-later；新 GPU 路径使用这些素材。`legacy/` 中保存此前嵌入 Core 的旧渲染资源，其中 `block.png`、`point.png` 由事件 manifest 声明并供 CPU 回退路径读取。素材随事件包分发，不需要外部下载。

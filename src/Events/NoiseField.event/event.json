@@ -1,12 +1,42 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "id": "pev.noise-field",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "apiVersion": 1,
   "entry": "main.js",
   "icon": "icon.png",
   "category": "DecorationFx",
   "decoration": true,
+  "decorationDefaults": { "color": "ff5454", "tag": "noise" },
+  "decorationMigration": [
+    { "source": "size", "target": "scale", "conversion": "tilesToScale" },
+    { "source": "positionOffset", "target": "position", "conversion": "vector2" },
+    { "source": "rotation", "target": "rotation", "conversion": "float" },
+    { "source": "tag", "target": "tag", "conversion": "string" },
+    { "source": "depth", "target": "depth", "conversion": "int" },
+    { "source": "opacity", "target": "opacity", "conversion": "percent" },
+    { "source": "color", "target": "color", "conversion": "string" }
+  ],
+  "hostPrimitive": "fx.field",
+  "legacyFieldTextures": { "block": "assets/legacy/block.png", "point": "assets/legacy/point.png" },
+  "legacyFieldProfile": {
+    "composeScale": 0.125, "composeDisplaceSpeed": 2.5899999141693115, "composeDisplaceStrength": 0.10000000149011612,
+    "composeDisplaceDirection": [0.5, 0.5], "composeDisplaceMapScale": [2.13, 1.02],
+    "displaceBlendIntensity": 0.41100001335144043, "activeDisplaceDirection": [1, 1],
+    "activeDisplaceMapScale": [0.8, 0.3], "activeSparkMapScale": [3, 1.2],
+    "activeSparkDisplaceIntensity": 2.390000104904175, "activeSparkHueShiftAmount": 0.20000000298023224,
+    "fillStrength": 0.667, "activeDisplaceSpeed": 1.5, "activeDisplaceStrength": 0.15, "sparkMapOpacity": 5.69,
+    "fillValue": 0.713207483291626, "glowSaturation": 1.2253520800891937, "sparkSaturation": 1.0676054460523543, "grainPixels": 1.5,
+    "glowWeights": [0.458567970132, 0.282861223139, 0.156589227109, 0.07305908496, 0.024947807942]
+  },
+  "fieldPreview": {
+    "key": "noisefield",
+    "parameterMap": {
+      "noiseBrightness": "brightness", "noiseSaturation": "saturation", "noiseSampleRate": "sampleRate",
+      "noiseEvolveSpeed": "evolveSpeed", "noiseFrameCount": "frameCount", "noiseMoveSpeed": "moveSpeed",
+      "noiseScale": "tiling", "glitchRange": "glitch"
+    }
+  },
   "name": {
     "en": "Noise Field",
     "zh-CN": "噪声域"
@@ -18,7 +48,8 @@
   "params": [
     {
       "name": "shape",
-      "type": "Enum:PEV.Scripting.NoiseFieldShape, PEV.Core",
+      "type": "Choice",
+      "options": ["Rect", "Circle"],
       "default": "Rect",
       "group": "Geometry",
       "order": 0,

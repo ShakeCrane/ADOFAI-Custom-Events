@@ -175,7 +175,7 @@ namespace PEV.Editor
             // takes that branch. It is also what the author needs anyway: MoveDecorations
             // finds a field by tag, and "find it by tag and move it" is the requirement.
             if (string.IsNullOrEmpty(row.GetString("tag")))
-                row["tag"] = DecorationCarrier.DefaultTag;
+                row["tag"] = manifest.DecorationDefaultTag ?? DecorationCarrier.DefaultTag;
 
             // Seed the panel with the manifest defaults and enable them. Decode marks absent
             // properties disabled; a freshly created row has no such history, but doing this

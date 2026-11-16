@@ -28,6 +28,7 @@ namespace PEV.Scripting
             public string Key;
             public string Scope;
             internal long GpuSequence;
+            internal PEV.Model.EventManifest Provider;
             /// <summary>The key the script passes to fx.field, without the scope prefix.</summary>
             public string ScriptKey;
             public string Tag;
@@ -150,7 +151,7 @@ namespace PEV.Scripting
             public Color EdgeColor;
             public Color GlowColor;
             public Color SparkColor;
-            public float FillOpacity = 0.667f;
+            public float FillOpacity = 1f;
             public float Exposure;
 
             /// <summary>
@@ -160,11 +161,11 @@ namespace PEV.Scripting
             /// speed. That mismatch was ~90x, which is exactly why the field read as random
             /// regeneration instead of flow.
             /// </summary>
-            public float EvolveSpeed = 12f;
-            public float EdgeOpacity = 0.8f;
-            public float GlowOpacity = 0.8f;
-            public float SparkOpacity = 1f;
-            public float GlowPasses = 5f;
+            public float EvolveSpeed = 1f;
+            public float EdgeOpacity = 1f;
+            public float GlowOpacity;
+            public float SparkOpacity;
+            public float GlowPasses;
             public float Displace;
             public float Glitch;
             public float Brightness;
@@ -172,8 +173,7 @@ namespace PEV.Scripting
             public float SampleRate;
             public float LineOpacity;
 
-            // Author-facing coastline controls. Defaults match the reference's calibration;
-            // events override them per instance.
+            // Generic fallback values; event packages supply their own visual profile.
             public float EdgeDistance = DefaultEdgeDistance;
             public float EdgeDetail = DefaultEdgeDetail;
             public int EdgeThickness = DefaultEdgeThickness;
@@ -240,15 +240,13 @@ namespace PEV.Scripting
         private static long _nextGpuSequence;
 
         /// <summary>
-        /// Defaults for the author-facing edge controls, used when an event does not send
-        /// them. Calibrated offline against reference frames: band 0.7 keeps the interior
-        /// ~99% solid while biting bays into the border and leaving flakes outside.
+        /// Neutral defaults for fields that omit edge controls.
         /// </summary>
-        public const float DefaultEdgeDistance = 0.7f;
-        public const float DefaultEdgeDetail = 8f;
+        public const float DefaultEdgeDistance = 0f;
+        public const float DefaultEdgeDetail = 1f;
         public const int DefaultEdgeThickness = 1;
-        public const float DefaultEdgeMargin = 0.6f;
-        public const float DefaultEdgeFragment = 1f;
+        public const float DefaultEdgeMargin = 0f;
+        public const float DefaultEdgeFragment = 0f;
 
         /// <summary>
         /// One quad per overlapping cluster of same-depth fields, keyed "depth#cluster".
@@ -262,6 +260,20 @@ namespace PEV.Scripting
         public static int LiveCount => Live.Count;
         public static int LayerCount => Layers.Count;
         private static bool _gpuRendering;
+        private static readonly HashSet<PEV.Model.EventManifest> GpuProviders =
+            new HashSet<PEV.Model.EventManifest>();
+
+        // GPU ownership is per package. A failed or unready provider must not suspend
+        // the CPU fallback of another package using the same field primitive.
+        internal static void SetGpuProviders(HashSet<PEV.Model.EventManifest> providers)
+        {
+            if (GpuProviders.SetEquals(providers)) return;
+            GpuProviders.Clear();
+            GpuProviders.UnionWith(providers);
+            var depths = new HashSet<int>();
+            foreach (var entry in Live.Values) depths.Add(entry.Depth);
+            foreach (int depth in depths) RebuildDepth(depth);
+        }
 
         // Draft driver only: switch after GPU groups have produced a complete frame.
         // On failure, rebuild the legacy path from the retained entries.
@@ -458,28 +470,28 @@ namespace PEV.Scripting
         {
             var args = new Dictionary<string, object>(StringComparer.Ordinal) { ["__floor"] = ev.floor };
             if (data == null) return args;
+            if (PEV.Registry.EventRegistry.TryGetById(data.Id, out var manifest)) args["__manifest"] = manifest;
             foreach (var kv in data.Effective)
             {
                 object value = kv.Value;
                 try { value = ev.Get<object>(kv.Key) ?? value; } catch { }
                 args[kv.Key] = value;
             }
-            foreach (var alias in new[]
-            {
-                new[] { "noiseBrightness", "brightness" }, new[] { "noiseSaturation", "saturation" },
-                new[] { "noiseSampleRate", "sampleRate" }, new[] { "noiseEvolveSpeed", "evolveSpeed" },
-                new[] { "noiseScale", "tiling" }, new[] { "noiseFrameCount", "frameCount" },
-                new[] { "glitchRange", "glitch" }
-            })
-                if (args.TryGetValue(alias[0], out var value)) args[alias[1]] = value;
+            ApplyFieldBindings(manifest, args);
             return args;
+        }
+
+        internal static void ApplyFieldBindings(PEV.Model.EventManifest manifest, Dictionary<string, object> args)
+        {
+            if (manifest == null || args == null) return;
+            foreach (var binding in manifest.FieldParameterBindings)
+                if (args.TryGetValue(binding.Key, out var value)) args[binding.Value] = value;
         }
 
         /// <summary>Manifests whose instances render through the field primitive.</summary>
         public static bool IsFieldEvent(PEV.Model.EventManifest m)
         {
-            return m != null && (m.HostPrimitive == "fx.field" ||
-                (m.SchemaVersion < 3 && m.Params.Exists(p => p.Name == "noiseEvolveSpeed")));
+            return m != null && m.HostPrimitive == "fx.field" && !string.IsNullOrEmpty(m.FieldPreviewKey);
         }
 
         /// <summary>
@@ -617,6 +629,7 @@ namespace PEV.Scripting
         public static void DestroyAll()
         {
             _gpuRendering = false;
+            GpuProviders.Clear();
             ReleaseLegacyLayers();
             Live.Clear();
             NoiseTextureFactory.Clear();
@@ -730,6 +743,8 @@ namespace PEV.Scripting
 
         private static void Apply(Entry entry, Dictionary<string, object> args)
         {
+            if (args != null && args.TryGetValue("__manifest", out var provider) && provider is PEV.Model.EventManifest manifest)
+                entry.Provider = manifest;
             var cam = GameCamera.Current;
             bool mirrored = TryReadDecoration(entry, args, out var live);
             entry.World = mirrored ? live.Frame : Placement.Compute(BuildInput(args, entry, cam));
@@ -742,29 +757,26 @@ namespace PEV.Scripting
             // component rather than in the event data.
             var baseColor = mirrored
                 ? live.Color
-                : ParseColor(args, "color", new Color(1f, 0.330f, 0.330f));
+                : ParseColor(args, "color", Color.white);
             entry.FillColor = baseColor;
             entry.EdgeColor = ParseColor(args, "edgeColor", baseColor);
             entry.GlowColor = ParseColor(args, "glowColor", baseColor);
             entry.SparkColor = ParseColor(args, "sparkColor", baseColor);
-            // Reference defaults: fill 0.667, edge 0.8, glow 0.8. They are much more
-            // saturated than the earlier guess, and that guess is why the region read as a
-            // pale orange wash instead of a dark red cut-out.
-            entry.FillOpacity = Mathf.Clamp01(ParseFloat(args, "fillOpacity", 0.667f));
-            entry.Exposure = Mathf.Clamp(ParseFloat(args, "exposure", 0.15f), 0f, 2f);
-            entry.EvolveSpeed = Mathf.Clamp(ParseFloat(args, "evolveSpeed", 48f), 1f, 60f);
-            entry.EdgeOpacity = Mathf.Clamp01(ParseFloat(args, "edgeOpacity", 0.8f));
-            entry.GlowOpacity = Mathf.Clamp01(ParseFloat(args, "glowOpacity", 0.8f));
-            entry.SparkOpacity = Mathf.Clamp01(ParseFloat(args, "sparkOpacity", 1f));
-            entry.GlowPasses = Mathf.Clamp(ParseFloat(args, "glowPasses", 5f), 0f, 6f);
+            entry.FillOpacity = Mathf.Clamp01(ParseFloat(args, "fillOpacity", 1f));
+            entry.Exposure = Mathf.Clamp(ParseFloat(args, "exposure", 0f), 0f, 2f);
+            entry.EvolveSpeed = Mathf.Clamp(ParseFloat(args, "evolveSpeed", 1f), 1f, 60f);
+            entry.EdgeOpacity = Mathf.Clamp01(ParseFloat(args, "edgeOpacity", 1f));
+            entry.GlowOpacity = Mathf.Clamp01(ParseFloat(args, "glowOpacity", 0f));
+            entry.SparkOpacity = Mathf.Clamp01(ParseFloat(args, "sparkOpacity", 0f));
+            entry.GlowPasses = Mathf.Clamp(ParseFloat(args, "glowPasses", 0f), 0f, 6f);
             entry.PreDuration = Mathf.Max(0f, ParseFloat(args, "preDuration", 0f));
             entry.Ready = ParseBool(args, "pre", false);
-            entry.Displace = Mathf.Clamp01(ParseFloat(args, "displace", 0.35f));
+            entry.Displace = Mathf.Clamp01(ParseFloat(args, "displace", 0f));
             entry.Glitch = Mathf.Clamp01(ParseFloat(args, "glitch", 0f));
             entry.Brightness = Mathf.Max(0f, ParseFloat(args, "brightness", 1f));
             entry.Saturation = Mathf.Max(0f, ParseFloat(args, "saturation", 1f));
             entry.SampleRate = Mathf.Max(0.1f, ParseFloat(args, "sampleRate", 1f));
-            entry.LineOpacity = Mathf.Clamp01(ParseFloat(args, "lineOpacity", 0.35f));
+            entry.LineOpacity = Mathf.Clamp01(ParseFloat(args, "lineOpacity", 0f));
 
             entry.EdgeDistance = Mathf.Clamp(ParseFloat(args, "edgeDistance", DefaultEdgeDistance), 0f, 2f);
             entry.EdgeDetail = Mathf.Clamp(ParseFloat(args, "edgeDetail", DefaultEdgeDetail), 1f, 32f);
@@ -772,7 +784,7 @@ namespace PEV.Scripting
             entry.EdgeMargin = Mathf.Clamp(ParseFloat(args, "edgeMargin", DefaultEdgeMargin), 0f, 2f);
             entry.EdgeFragment = Mathf.Clamp01(ParseFloat(args, "edgeFragment", DefaultEdgeFragment));
 
-            entry.FrameCount = Mathf.Clamp(ParseInt(args, "frameCount", 96), 2, 128);
+            entry.FrameCount = Mathf.Clamp(ParseInt(args, "frameCount", 2), 2, 128);
 
             // When mirrored, visibility, opacity, tag and depth are the decoration's. That is
             // the whole point of the mapping: an author hides the decoration or retags it and
@@ -866,6 +878,11 @@ namespace PEV.Scripting
             {
                 var entry = kv.Value;
                 if (entry.Depth != depth) continue;
+                if (GpuProviders.Contains(LegacyFieldTextureSet.ResolveProvider(entry.Provider)))
+                {
+                    entry.GameObject = null;
+                    continue;
+                }
                 bool visible = entry.OverrideVisibility == 0 ? entry.Visible : entry.OverrideVisibility == 1;
                 if (visible && entry.Renderable && entry.Opacity * entry.OverrideAlpha > 0f) members.Add(entry);
                 else entry.GameObject = null;
@@ -884,7 +901,8 @@ namespace PEV.Scripting
                 // Camera culling also depends on the GameObject layer. Two carriers
                 // with the same sorting position but different layers cannot safely
                 // share a renderer, even if their rectangles overlap.
-                string groupKey = m.SortingLayerID + ":" + m.SortingOrder + ":" + m.UnityLayer;
+                string groupKey = m.SortingLayerID + ":" + m.SortingOrder + ":" + m.UnityLayer + ":" +
+                    LegacyFieldTextureSet.Identity(LegacyFieldTextureSet.ResolveProvider(m.Provider));
                 if (!groups.TryGetValue(groupKey, out var list))
                 {
                     list = new List<Entry>();
@@ -1036,6 +1054,7 @@ namespace PEV.Scripting
 
             var request = new NoiseTextureFactory.Request
             {
+                Provider = lead.Provider,
                 WidthWorld = size.x,
                 HeightWorld = size.y,
                 Margin = margin,

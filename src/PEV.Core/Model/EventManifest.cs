@@ -29,6 +29,11 @@ namespace PEV.Model
         public float Base, Amplitude, Frequency, Scale;
         public float At(float time) => (Base + Amplitude * (UnityEngine.Mathf.Sin(time * Frequency) * 0.5f + 0.5f)) * Scale;
     }
+
+    public sealed class DecorationMigrationBinding
+    {
+        public string Source, Target, Conversion;
+    }
     /// <summary>One parameter declared by an event manifest.</summary>
     public class ParamSpec
     {
@@ -171,11 +176,17 @@ namespace PEV.Model
         public string ShaderBundlePath;
         public readonly List<GlobalSettingSpec> GlobalSettings = new List<GlobalSettingSpec>();
         public string DecorationDefaultColor;
+        public string DecorationDefaultTag;
         public string HostPrimitive;
         public readonly List<FieldUniformSpec> FieldUniforms = new List<FieldUniformSpec>();
         public readonly List<FieldWaveSpec> FieldWaves = new List<FieldWaveSpec>();
         public readonly Dictionary<string, string> FieldTextures = new Dictionary<string, string>(StringComparer.Ordinal);
         public readonly Dictionary<string, string> FieldShaders = new Dictionary<string, string>(StringComparer.Ordinal);
+        public readonly Dictionary<string, string> LegacyFieldTextures = new Dictionary<string, string>(StringComparer.Ordinal);
+        public readonly Dictionary<string, float[]> LegacyFieldProfile = new Dictionary<string, float[]>(StringComparer.Ordinal);
+        public string FieldPreviewKey;
+        public readonly Dictionary<string, string> FieldParameterBindings = new Dictionary<string, string>(StringComparer.Ordinal);
+        public readonly List<DecorationMigrationBinding> DecorationMigration = new List<DecorationMigrationBinding>();
         public string Category = "VisualFx";
         public string DisplayName = "";
         public string Description = "";
@@ -329,11 +340,36 @@ namespace PEV.Model
             if (root["decorationDefaults"] != null)
             {
                 if (m.SchemaVersion < 3 || !m.DecorationBacked || !(root["decorationDefaults"] is JObject defaults) ||
-                    defaults.Properties().Any(p => p.Name != "color") ||
+                    defaults.Properties().Any(p => p.Name != "color" && p.Name != "tag") ||
                     (defaults["color"] != null && (defaults["color"].Type != JTokenType.String ||
-                    !System.Text.RegularExpressions.Regex.IsMatch(defaults.Value<string>("color"), "^[0-9a-fA-F]{6}$"))))
-                { error = "decorationDefaults requires a decoration-backed schema 3 event and optional six-digit color"; return null; }
+                    !System.Text.RegularExpressions.Regex.IsMatch(defaults.Value<string>("color"), "^[0-9a-fA-F]{6}$"))) ||
+                    (defaults["tag"] != null && (defaults["tag"].Type != JTokenType.String ||
+                    string.IsNullOrWhiteSpace(defaults.Value<string>("tag")) || defaults.Value<string>("tag").Length > 128)))
+                { error = "decorationDefaults requires a decoration-backed schema 3 event, optional six-digit color and nonempty tag"; return null; }
                 m.DecorationDefaultColor = defaults.Value<string>("color");
+                m.DecorationDefaultTag = defaults.Value<string>("tag");
+            }
+
+            if (root["decorationMigration"] != null)
+            {
+                if (m.SchemaVersion < 3 || !m.DecorationBacked || !(root["decorationMigration"] is JArray migrations) || migrations.Count > 16)
+                { error = "decorationMigration requires a schema 3 decoration event and at most 16 bindings"; return null; }
+                var targets = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var item in migrations)
+                {
+                    if (!(item is JObject binding) || binding.Count != 3 || binding["source"]?.Type != JTokenType.String ||
+                        binding["target"]?.Type != JTokenType.String || binding["conversion"]?.Type != JTokenType.String)
+                    { error = "invalid decorationMigration binding"; return null; }
+                    string source = binding.Value<string>("source"), target = binding.Value<string>("target"), conversion = binding.Value<string>("conversion");
+                    bool supported = (target == "scale" && conversion == "tilesToScale") ||
+                        (target == "position" && conversion == "vector2") ||
+                        (target == "rotation" && conversion == "float") ||
+                        ((target == "tag" || target == "color") && conversion == "string") ||
+                        (target == "depth" && conversion == "int") || (target == "opacity" && conversion == "percent");
+                    if (!ValidFieldArgumentName(source) || !supported || !targets.Add(target))
+                    { error = "invalid or duplicate decorationMigration binding"; return null; }
+                    m.DecorationMigration.Add(new DecorationMigrationBinding { Source = source, Target = target, Conversion = conversion });
+                }
             }
 
             if (root["fieldUniforms"] != null)
@@ -372,6 +408,60 @@ namespace PEV.Model
                     !ReadResourceMap(root["fieldTextures"], m.FieldTextures, new[] { "displacement", "spark", "noise", "touch" }) ||
                     !ReadResourceMap(root["fieldShaders"], m.FieldShaders, new[] { "compute", "disabled", "activeCapture", "hoverCapture", "activeNoCapture", "hoverNoCapture", "disabledColored", "activeCaptureColored", "hoverCaptureColored", "activeNoCaptureColored", "hoverNoCaptureColored" }))
                 { error = "field shader providers require package-relative fieldTextures and fieldShaders for every role"; return null; }
+            }
+
+            if (root["legacyFieldTextures"] != null &&
+                (m.SchemaVersion < 3 || m.HostPrimitive != "fx.field" ||
+                 !ReadResourceMap(root["legacyFieldTextures"], m.LegacyFieldTextures, new[] { "block", "point" })))
+            { error = "legacyFieldTextures requires package-relative block and point roles on a schema 3 fx.field event"; return null; }
+
+            if (root["legacyFieldProfile"] != null || m.LegacyFieldTextures.Count != 0)
+            {
+                var scalarNames = new[] { "composeScale", "composeDisplaceSpeed", "composeDisplaceStrength", "displaceBlendIntensity",
+                    "activeSparkDisplaceIntensity", "activeSparkHueShiftAmount", "fillStrength", "activeDisplaceSpeed",
+                    "activeDisplaceStrength", "sparkMapOpacity", "fillValue", "glowSaturation", "sparkSaturation", "grainPixels" };
+                var vectorNames = new[] { "composeDisplaceDirection", "composeDisplaceMapScale", "activeDisplaceDirection",
+                    "activeDisplaceMapScale", "activeSparkMapScale" };
+                if (m.SchemaVersion < 3 || m.HostPrimitive != "fx.field" || !(root["legacyFieldProfile"] is JObject profile) ||
+                    profile.Count != scalarNames.Length + vectorNames.Length + 1)
+                { error = "legacyFieldProfile requires all declared scalar, vector and glow weight roles"; return null; }
+                foreach (string name in scalarNames.Concat(vectorNames).Concat(new[] { "glowWeights" }))
+                {
+                    var token = profile[name];
+                    var values = token is JArray array ? array.ToArray() : token == null ? Array.Empty<JToken>() : new[] { token };
+                    int expected = scalarNames.Contains(name) ? 1 : vectorNames.Contains(name) ? 2 : 5;
+                    if (values.Length != expected || (expected == 1 && token is JArray) ||
+                        values.Any(v => v.Type != JTokenType.Float && v.Type != JTokenType.Integer))
+                    { error = "invalid legacyFieldProfile value '" + name + "'"; return null; }
+                    var converted = new float[expected];
+                    for (int i = 0; i < expected; i++)
+                    {
+                        double value = values[i].Value<double>(); converted[i] = (float)value;
+                        if (double.IsNaN(value) || double.IsInfinity(value) || Math.Abs(value) > 1024)
+                        { error = "legacyFieldProfile values must be finite and bounded"; return null; }
+                    }
+                    if (name == "composeScale" && (converted[0] <= 0 || converted[0] > 1))
+                    { error = "legacyFieldProfile composeScale must be in (0,1]"; return null; }
+                    m.LegacyFieldProfile.Add(name, converted);
+                }
+            }
+
+            if (root["fieldPreview"] != null)
+            {
+                if (m.SchemaVersion < 3 || m.HostPrimitive != "fx.field" || !(root["fieldPreview"] is JObject preview) ||
+                    preview.Count != 2 || preview["key"]?.Type != JTokenType.String ||
+                    string.IsNullOrWhiteSpace(preview.Value<string>("key")) || preview.Value<string>("key").Length > 128 ||
+                    !(preview["parameterMap"] is JObject map) || map.Count > 64)
+                { error = "fieldPreview requires a key and parameterMap on a schema 3 fx.field event"; return null; }
+                var destinations = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var property in map.Properties())
+                {
+                    string target = property.Value.Type == JTokenType.String ? property.Value.Value<string>() : null;
+                    if (!ValidFieldArgumentName(property.Name) || !ValidFieldArgumentName(target) || !destinations.Add(target))
+                    { error = "invalid or duplicate fieldPreview parameter mapping"; return null; }
+                    m.FieldParameterBindings.Add(property.Name, target);
+                }
+                m.FieldPreviewKey = preview.Value<string>("key");
             }
 
             if (root["fieldWaves"] != null)
@@ -475,6 +565,10 @@ namespace PEV.Model
             }
             return true;
         }
+
+        private static bool ValidFieldArgumentName(string value) =>
+            !string.IsNullOrEmpty(value) && !value.StartsWith("__", StringComparison.Ordinal) &&
+            System.Text.RegularExpressions.Regex.IsMatch(value, "^[A-Za-z_][A-Za-z0-9_]{0,63}$");
 
         /// <summary>
         /// Reads a param's enum captions. Accepted shapes:

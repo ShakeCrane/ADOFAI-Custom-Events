@@ -68,7 +68,8 @@ CameraWarp.event
 | `decoration` | 否 | 为 `true` 时使用原生 AddDecoration 载体，可被装饰的 tag 和移动事件控制 |
 | `shaderBundle` | 否 | schema 2 及以上的包内资源路径；供 Core 内置原语加载，脚本不能自行加载 shader |
 | `globalSettings` | 否 | schema 3、API 2 的事件级全局设置声明；由 Core 通用绘制到 UMM 面板 |
-| `decorationDefaults` | 否 | schema 3 的原生装饰新建默认值，目前只支持六位十六进制 `color` |
+| `decorationDefaults` | 否 | schema 3 的原生装饰新建默认值，支持六位十六进制 `color` 与非空 `tag` |
+| `decorationMigration` | 否 | schema 3 的旧事件数据到原生装饰属性的声明式迁移映射 |
 
 `shaderBundle` 必须是包内相对路径；打包器会检查文件存在。旧版 Core 不认识 schema 2，使用它的包需要更新 Core。声明该字段不会赋予脚本额外的文件、材质或 shader 访问权限。
 
@@ -94,9 +95,9 @@ Core 按已加载事件自动生成面板，按事件 ID 和设置名隔离数�
 
 API 2 的脚本通过 `ctx.settings.enabled` 读取本包的当前值。`ctx.settings` 是冻结的普通 JavaScript 数据快照；开关变更后，下一次 `update` 会收到新快照，脚本应在 `update` 内读取，而不是永久缓存初始值。脚本不能借此修改持久化设置或读取其他包的设置。API 1 和旧包保持原有行为。
 
-`hostPrimitive`、`fieldUniforms`、`fieldWaves`、`fieldTextures`、`fieldShaders` 和 `globalSettings[].binding` 是目前实验性字段原语的内部接线，并非通用脚本 API；噪域草稿用它把包内声明的采样开关、视觉默认值、波形参数和资源角色绑定到 `fx.field` 原语。`fieldUniforms` 只接受有限数值或四维数值，不能覆盖相机、纹理等 Core 管理的保留字段；贴图路径从事件包读取，shader 路径指向事件包内 bundle 的资源。它不允许脚本自行加载 shader，也不能用作其他任意绑定。实验渲染器目前只支持一个字段 shader 资源提供者，多个提供者会回退旧渲染；这不是已完成的通用多事件渲染方案。
+`hostPrimitive`、`fieldPreview`、`legacyFieldTextures`、`legacyFieldProfile`、`fieldUniforms`、`fieldWaves`、`fieldTextures`、`fieldShaders` 和 `globalSettings[].binding` 是字段原语的内部接线，并非稳定的通用脚本 API。字段包以 `fieldPreview` 声明预览键和参数名映射，以 `legacyFieldTextures` 和 `legacyFieldProfile` 声明 CPU 回退需要的包内纹理及烘焙配置；实验 GPU 路径还读取包内声明的采样开关、视觉数值、波形和资源角色。`fieldUniforms` 只接受有限数值或四维数值，不能覆盖相机、纹理等 Core 管理的保留字段；贴图从事件包读取，shader 路径指向包内 bundle 的资源。脚本不能自行加载 shader。多提供者的 GPU 路径尚未用有效 Unity bundle 实机验证。
 
-`decorationDefaults` 只在创建新装饰行时使用，不覆盖已有谱面的原生属性。历史字段迁移与面板兼容限制见 [Core 边界审计](CORE-BOUNDARY-AUDIT.md)。
+`decorationDefaults` 用于新建装饰和旧事件迁移，不覆盖已有装饰行的原生属性。升级本版 Core 时必须同时升级噪域事件包至 1.0.1 或更新版本：1.0.0 包缺少迁移到包内的纹理，无法单独搭配新 Core 渲染；旧谱面数据由升级后的同 ID 事件包读取。详细边界及未验证项见 [Core 边界审计](CORE-BOUNDARY-AUDIT.md)。
 
 ### `category` 的合法值
 

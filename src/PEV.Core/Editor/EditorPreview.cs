@@ -29,7 +29,7 @@ namespace PEV.Editor
         private const string PreviewScopePrefix = "editor/";
 
         private static EditorPreview _instance;
-        private readonly Dictionary<string, bool> _seen = new Dictionary<string, bool>(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _seen = new Dictionary<string, string>(StringComparer.Ordinal);
         private double _clock;
 
         [HarmonyPatch(typeof(scnEditor), "Start")]
@@ -121,7 +121,7 @@ namespace PEV.Editor
             foreach (var key in stale)
             {
                 var args = new Dictionary<string, object> { { "__instance", PreviewScopePrefix + key } };
-                NoiseFieldRenderer.Destroy("noisefield", args, out _);
+                NoiseFieldRenderer.Destroy(_seen[key], args, out _);
                 _seen.Remove(key);
             }
         }
@@ -138,7 +138,8 @@ namespace PEV.Editor
                     // the live scrDecoration. In the editor there is no EventInstance, so the
                     // event object is what carries the binding.
                     { "__event", ev },
-                    { "key", "noisefield" }
+                    { "__manifest", manifest },
+                    { "key", manifest.FieldPreviewKey }
                 };
 
                 // Read the event's current values, not the load-time snapshot: this is what
@@ -156,37 +157,28 @@ namespace PEV.Editor
                 }
 
                 args["shape"] = EnumName(ArgString(args, "shape", "Rect"), "Rect");
-                foreach (var pair in new[]
-                {
-                    new[] { "noiseBrightness", "brightness" },
-                    new[] { "noiseSaturation", "saturation" },
-                    new[] { "noiseSampleRate", "sampleRate" },
-                    new[] { "noiseEvolveSpeed", "evolveSpeed" },
-                    new[] { "noiseScale", "tiling" },
-                    new[] { "glitchRange", "glitch" }
-                })
-                    if (args.TryGetValue(pair[0], out var value)) args[pair[1]] = value;
+                NoiseFieldRenderer.ApplyFieldBindings(manifest, args);
 
                 // relativeTo and anchor are gone on purpose: they are decoration properties
                 // now, and the renderer reads them off the row rather than from this call.
 
-                int frameCount = Mathf.Clamp(Convert.ToInt32(args.TryGetValue("noiseFrameCount", out var fc) ? fc : 96), 2, 128);
-                float evolve = Convert.ToSingle(args.TryGetValue("noiseEvolveSpeed", out var es) ? es : 48f);
+                int frameCount = Mathf.Clamp(Convert.ToInt32(args.TryGetValue("frameCount", out var fc) ? fc : 2), 2, 128);
+                float evolve = Convert.ToSingle(args.TryGetValue("evolveSpeed", out var es) ? es : 0f);
                 int frame = Mathf.FloorToInt((float)_clock * evolve) % frameCount;
                 if (frame < 0) frame += frameCount;
                 args["frame"] = frame;
                 args["frameCount"] = frameCount;
 
-                var move = args.TryGetValue("noiseMoveSpeed", out var mv) ? mv as float[] : null;
-                if (move == null || move.Length < 2) move = new[] { 0.15f, 0f };
+                var move = args.TryGetValue("moveSpeed", out var mv) ? mv as float[] : null;
+                if (move == null || move.Length < 2) move = new[] { 0f, 0f };
                 args["uv"] = new[] { (float)_clock * move[0], (float)_clock * move[1] };
 
                 // Opacity is the decoration's, not a parameter: the panel row the author drags
                 // is the native one, and its value lives on the component the renderer reads.
 
-                NoiseFieldRenderer.Set("noisefield", args, out string error);
+                NoiseFieldRenderer.Set(manifest.FieldPreviewKey, args, out string error);
                 if (!string.IsNullOrEmpty(error)) PEV.Core.Plugin.Log("preview: " + error);
-                _seen[uid] = true;
+                _seen[uid] = manifest.FieldPreviewKey;
             }
             catch (Exception e)
             {
@@ -197,10 +189,10 @@ namespace PEV.Editor
         private void Clear()
         {
             if (_seen.Count == 0) return;
-            foreach (var uid in _seen.Keys)
+            foreach (var pair in _seen)
             {
-                var args = new Dictionary<string, object> { { "__instance", PreviewScopePrefix + uid } };
-                NoiseFieldRenderer.Destroy("noisefield", args, out _);
+                var args = new Dictionary<string, object> { { "__instance", PreviewScopePrefix + pair.Key } };
+                NoiseFieldRenderer.Destroy(pair.Value, args, out _);
             }
             _seen.Clear();
         }

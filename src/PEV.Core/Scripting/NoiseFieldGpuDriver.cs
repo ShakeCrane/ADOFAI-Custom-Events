@@ -2,89 +2,87 @@ using System;
 using System.Collections.Generic;
 using PEV.Core;
 using PEV.Model;
-using PEV.Registry;
 using UnityEngine;
 
 namespace PEV.Scripting
 {
-    /// <summary>
-    /// Explicitly gated test integration. This is not enabled for players until the
-    /// Unity bundle, native depth, capture and visual equivalence are verified.
-    /// </summary>
+    /// <summary>Opt-in experimental field rendering, isolated by package provider.</summary>
     internal sealed class NoiseFieldGpuDriver : IDisposable
     {
         private readonly bool _enabled = Environment.GetEnvironmentVariable("PEV_EXPERIMENTAL_NOISE_GPU") == "1";
-        private NoiseFieldGpuCoordinator _coordinator;
+        private readonly Dictionary<EventManifest, NoiseFieldGpuCoordinator> _coordinators =
+            new Dictionary<EventManifest, NoiseFieldGpuCoordinator>();
+        private readonly HashSet<EventManifest> _faulted = new HashSet<EventManifest>();
         private readonly List<NoiseFieldRenderer.Entry> _entries = new List<NoiseFieldRenderer.Entry>();
-        private bool _faulted;
+        private readonly Dictionary<EventManifest, List<NoiseFieldRenderer.Entry>> _groups =
+            new Dictionary<EventManifest, List<NoiseFieldRenderer.Entry>>();
+        private readonly HashSet<EventManifest> _ready = new HashSet<EventManifest>();
 
         internal void Tick(bool playing, double songTime)
         {
-            if (!_enabled || _faulted) return;
-            EventManifest manifest = null;
-            foreach (var candidate in EventRegistry.All)
-            {
-                if (candidate.HostPrimitive != "fx.field" || string.IsNullOrEmpty(candidate.ShaderBundlePath)) continue;
-                if (manifest != null)
-                {
-                    _faulted = true;
-                    Plugin.Log("experimental field GPU disabled: multiple field shader providers are not yet supported");
-                    DisposeCoordinator();
-                    NoiseFieldRenderer.SetGpuRendering(false);
-                    return;
-                }
-                manifest = candidate;
-            }
-            if (manifest == null)
-            {
-                DisposeCoordinator();
-                NoiseFieldRenderer.SetGpuRendering(false);
-                return;
-            }
-            bool captureScene = Plugin.EventSettings.GetBoundBool(manifest, "fx.field.captureScene", true);
+            if (!_enabled) return;
             NoiseFieldRenderer.CopyEntriesTo(_entries);
-            if (_entries.Count == 0)
+            _groups.Clear();
+            foreach (var entry in _entries)
             {
-                DisposeCoordinator();
-                NoiseFieldRenderer.SetGpuRendering(false);
-                return;
+                var provider = LegacyFieldTextureSet.ResolveProvider(entry.Provider);
+                if (provider == null || provider.HostPrimitive != "fx.field" ||
+                    string.IsNullOrEmpty(provider.ShaderBundlePath) || _faulted.Contains(provider)) continue;
+                if (!_groups.TryGetValue(provider, out var group))
+                    _groups.Add(provider, group = new List<NoiseFieldRenderer.Entry>());
+                group.Add(entry);
             }
+
             var camera = GameCamera.Current;
-            if (camera == null)
-            {
-                DisposeCoordinator();
-                NoiseFieldRenderer.SetGpuRendering(false);
-                return;
-            }
             float time = playing ? (float)songTime : Time.unscaledTime;
             if (float.IsNaN(time) || float.IsInfinity(time)) return;
-            try
+            _ready.Clear();
+            if (camera != null)
             {
-                if (_coordinator == null) _coordinator = new NoiseFieldGpuCoordinator(manifest);
-                bool ready = _coordinator.Render(_entries, camera, time, captureScene, NoiseFieldRenderer.SceneBackground());
-                NoiseFieldRenderer.SetGpuRendering(ready);
+                foreach (var pair in _groups)
+                {
+                    var provider = pair.Key;
+                    try
+                    {
+                        if (!_coordinators.TryGetValue(provider, out var coordinator))
+                            _coordinators.Add(provider, coordinator = new NoiseFieldGpuCoordinator(provider));
+                        bool capture = Plugin.EventSettings.GetBoundBool(provider, "fx.field.captureScene", true);
+                        if (coordinator.Render(pair.Value, camera, time, capture, NoiseFieldRenderer.SceneBackground()))
+                            _ready.Add(provider);
+                    }
+                    catch (Exception e)
+                    {
+                        _faulted.Add(provider);
+                        Plugin.Log("experimental field GPU failed for " + provider.Id + "; restoring its legacy renderer: " + e);
+                        DisposeCoordinator(provider);
+                    }
+                }
             }
-            catch (Exception e)
-            {
-                _faulted = true;
-                Plugin.Log("experimental noise GPU disabled; restoring legacy renderer: " + e);
-                DisposeCoordinator();
-                NoiseFieldRenderer.SetGpuRendering(false);
-            }
+
+            // Dispose unused or camera-less groups before restoring their CPU layers.
+            var stale = new List<EventManifest>();
+            foreach (var pair in _coordinators)
+                if (camera == null || !_groups.ContainsKey(pair.Key)) stale.Add(pair.Key);
+            foreach (var provider in stale) DisposeCoordinator(provider);
+            NoiseFieldRenderer.SetGpuProviders(_ready);
         }
 
-        private void DisposeCoordinator()
+        private void DisposeCoordinator(EventManifest provider)
         {
-            if (_coordinator == null) return;
-            _coordinator.Dispose();
-            _coordinator = null;
+            if (!_coordinators.TryGetValue(provider, out var coordinator)) return;
+            _coordinators.Remove(provider);
+            coordinator.Dispose();
         }
 
         public void Dispose()
         {
-            DisposeCoordinator();
+            foreach (var coordinator in _coordinators.Values) coordinator.Dispose();
+            _coordinators.Clear();
+            _faulted.Clear();
             _entries.Clear();
-            // Teardown destroys all entries immediately after disposing this driver.
+            _groups.Clear();
+            _ready.Clear();
+            // The owning host destroys all field entries immediately after disposal.
         }
     }
 }

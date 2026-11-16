@@ -48,79 +48,6 @@ namespace PEV.Scripting
     /// </summary>
     internal static class NoiseComposer
     {
-        // --- config.json ---------------------------------------------------------------
-        private const float ComposeScale = 0.125f;   // activeCompose
-        private const float EffectsScale = 0.25f;    // effects, pingA, pingB
-
-        // --- composeActive.glsl ---------------------------------------------------------
-        private const float ComposeDisplaceSpeed = 2.5899999141693115f;
-        private const float ComposeDisplaceStrength = 0.10000000149011612f;
-        private static readonly Vector2 ComposeDisplaceDirection = new Vector2(0.5f, 0.5f);
-        private static readonly Vector2 ComposeDisplaceMapST = new Vector2(2.13f, 1.02f);
-
-        // --- main.glsl constants ---------------------------------------------------------
-        private const float DisplaceBlendIntensity = 0.41100001335144043f;
-        private static readonly Vector2 ActiveDisplaceDirection = new Vector2(1f, 1f);
-        private static readonly Vector2 ActiveDisplaceMapST = new Vector2(0.80f, 0.30f);
-        private static readonly Vector2 ActiveSparkMapST = new Vector2(3.00f, 1.20f);
-        private const float ActiveSparkDisplaceIntensity = 2.390000104904175f;
-        private const float ActiveSparkHueShiftAmount = 0.20000000298023224f;
-
-        // --- main.glsl editor defaults ---------------------------------------------------
-        private const float DefaultFillStrength = 0.667f;
-        private const float DefaultActiveDisplaceSpeed = 1.5f;
-        private const float DefaultActiveDisplaceStrength = 0.15f;
-        private const float DefaultActiveSparkMapOpacity = 5.69f;
-
-        // nfFill / nfGlow / nfSpark.
-        private const float FillValue = 0.713207483291626f;
-        private const float GlowSaturation = 1.2253520800891937f;
-        private const float SparkSaturation = 1.0676054460523543f;
-
-        // glow.glsl passWeight values, in pipeline order.
-        private static readonly float[] GlowWeights =
-        {
-            0.458567970132f, 0.282861223139f, 0.156589227109f,
-            0.07305908496f, 0.024947807942f
-        };
-
-        // --- texture caches ---------------------------------------------------------------
-        private static Color32[] _blockPx;
-        private static int _blockW, _blockH;
-        private static Color32[] _pointPx;
-        private static int _pointW, _pointH;
-
-        public static void WarmTextures()
-        {
-            if (_blockPx != null) return;
-            try
-            {
-                var t = NoiseTextures.Block;
-                if (t != null) { _blockPx = t.GetPixels32(); _blockW = t.width; _blockH = t.height; }
-                var p = NoiseTextures.Point;
-                if (p != null) { _pointPx = p.GetPixels32(); _pointW = p.width; _pointH = p.height; }
-            }
-            catch { }
-        }
-
-        /// <summary>texture2D(blockNoise, uv).r, wrap=mirror, filter=nearest.</summary>
-        private static float BlockAt(float u, float v)
-        {
-            if (_blockPx == null) return 0.5f;
-            int x = Mathf.Clamp(Mathf.FloorToInt(NoiseTextures.Mirror(u) * _blockW), 0, _blockW - 1);
-            int y = Mathf.Clamp(Mathf.FloorToInt(NoiseTextures.Mirror(v) * _blockH), 0, _blockH - 1);
-            return _blockPx[y * _blockW + x].r / 255f;
-        }
-
-        /// <summary>texture2D(pointNoise, uv).r, wrap=repeat, filter=nearest.</summary>
-        private static float PointAt(float u, float v)
-        {
-            if (_pointPx == null) return 0f;
-            int x = Mathf.Clamp(Mathf.FloorToInt(NoiseTextures.Repeat(u) * _pointW), 0, _pointW - 1);
-            int y = Mathf.Clamp(Mathf.FloorToInt(NoiseTextures.Repeat(v) * _pointH), 0, _pointH - 1);
-            return _pointPx[y * _pointW + x].r / 255f;
-        }
-
         /// <summary>texture2D(t, uv) bilinear (GL_LINEAR), edge-clamped as the host allocates it.</summary>
         private static float Linear(float[] grid, int w, int h, float u, float v)
         {
@@ -208,6 +135,22 @@ namespace PEV.Scripting
             private float _span = 2f;
             private int _frames = 8;
             private Vector3 _scene;
+            private LegacyFieldTextureSet _samples;
+            private FieldBakeProfile _profile;
+
+            private float BlockAt(float u, float v)
+            {
+                int x = Mathf.Clamp(Mathf.FloorToInt(NoiseTextures.Mirror(u) * _samples.BlockWidth), 0, _samples.BlockWidth - 1);
+                int y = Mathf.Clamp(Mathf.FloorToInt(NoiseTextures.Mirror(v) * _samples.BlockHeight), 0, _samples.BlockHeight - 1);
+                return _samples.Block[y * _samples.BlockWidth + x].r / 255f;
+            }
+
+            private float PointAt(float u, float v)
+            {
+                int x = Mathf.Clamp(Mathf.FloorToInt(NoiseTextures.Repeat(u) * _samples.PointWidth), 0, _samples.PointWidth - 1);
+                int y = Mathf.Clamp(Mathf.FloorToInt(NoiseTextures.Repeat(v) * _samples.PointHeight), 0, _samples.PointHeight - 1);
+                return _samples.Point[y * _samples.PointWidth + x].r / 255f;
+            }
 
             /// <summary>Builds every grid this frame needs. Serial; cheap next to the main pass.</summary>
             public static Frame Build(NoiseTextureFactory.Piece[] pieces, NoiseTextureFactory.Request req,
@@ -217,6 +160,8 @@ namespace PEV.Scripting
                 {
                     TexW = texW,
                     TexH = texH,
+                    _samples = req.Samples,
+                    _profile = req.Samples.Profile,
                     _span = Mathf.Max(1e-3f, req.LoopPeriod),
                     _frames = Mathf.Max(1, frameCount)
                 };
@@ -250,7 +195,7 @@ namespace PEV.Scripting
                 // mainTex at one *effects* texel, which is two compose texels, so the border
                 // is two mask cells thick. Scaling both by the same factor keeps that.
                 int screenW = req.ScreenPixelWidth > 0 ? req.ScreenPixelWidth : TexW;
-                int cw = _cw = Mathf.Clamp(Mathf.RoundToInt(screenW * ComposeScale), 1, TexW);
+                int cw = _cw = Mathf.Clamp(Mathf.RoundToInt(screenW * _profile.ComposeScale), 1, TexW);
                 int ch = _ch = Mathf.Clamp(
                     Mathf.RoundToInt(cw * (float)TexH / Mathf.Max(1, TexW)), 1, TexH);
                 var compose = _compose = new float[cw * ch];
@@ -266,7 +211,7 @@ namespace PEV.Scripting
                 // loop. Radius is chosen so the arc speed matches 2.59/20 units per second.
                 // Fixed basis the two taps are recombined with, exactly as the shader does;
                 // only the sample offsets rotate.
-                Vector2 cdir = Normalize(ComposeDisplaceDirection);
+                Vector2 cdir = Normalize(_profile.ComposeDisplaceDirection);
                 Vector2 cperp = new Vector2(-cdir.y, cdir.x);
                 // Distance the sample point must travel per DISPLAYED frame.
                 //
@@ -276,7 +221,7 @@ namespace PEV.Scripting
                 // step to wall time makes a 12 fps set lurch 5.9 noise texels per frame, which
                 // is exactly the "random regeneration" the reference never shows. Fixing the
                 // step and letting the cycle length follow keeps every playback rate coherent.
-                float cStep = (ComposeDisplaceSpeed / 20f) / 60f;
+                float cStep = (_profile.ComposeDisplaceSpeed / 20f) / 60f;
                 float cAngle = (2f * Mathf.PI) * (time / _span);
                 float cRadius = cStep * _frames / (2f * Mathf.PI);
                 // The two taps use the radius and its quarter turn, so the pair still spans
@@ -292,15 +237,15 @@ namespace PEV.Scripting
                         float u = (i + 0.5f) / cw;
                         float v = (j + 0.5f) / ch;
 
-                        float d1 = BlockAt(u * ComposeDisplaceMapST.x + cdrift.x,
-                                           v * ComposeDisplaceMapST.y + cdrift.y) - 0.5f;
-                        float d2 = BlockAt(u * ComposeDisplaceMapST.x + cortho.x,
-                                           v * ComposeDisplaceMapST.y + cortho.y) - 0.5f;
+                        float d1 = BlockAt(u * _profile.ComposeDisplaceMapScale.x + cdrift.x,
+                                           v * _profile.ComposeDisplaceMapScale.y + cdrift.y) - 0.5f;
+                        float d2 = BlockAt(u * _profile.ComposeDisplaceMapScale.x + cortho.x,
+                                           v * _profile.ComposeDisplaceMapScale.y + cortho.y) - 0.5f;
                         float dispx = cdir.x * d1 + cperp.x * d2;
                         float dispy = cdir.y * d1 + cperp.y * d2;
 
-                        float maskU = u + dispx * ComposeDisplaceStrength;
-                        float maskV = v + dispy * ComposeDisplaceStrength;
+                        float maskU = u + dispx * _profile.ComposeDisplaceStrength;
+                        float maskV = v + dispy * _profile.ComposeDisplaceStrength;
 
                         // nfMaskBit: q = (floor(p * msz) + 0.5) / msz.
                         float qx = (Mathf.Floor(maskU * cw) + 0.5f) / cw;
@@ -343,9 +288,9 @@ namespace PEV.Scripting
                 var nextR = new float[ew * eh];
                 var nextAccum = new float[ew * eh];
 
-                for (int p = 0; p < GlowWeights.Length; p++)
+                for (int p = 0; p < _profile.GlowWeights.Length; p++)
                 {
-                    float weight = GlowWeights[p];
+                    float weight = _profile.GlowWeights[p];
                     bool firstPass = p == 0;
 
                     for (int j = 0; j < eh; j++)
@@ -454,26 +399,26 @@ namespace PEV.Scripting
             private void BuildShading(NoiseTextureFactory.Request req, float time)
             {
                 Color outline = req.EdgeColor;
-                _nfFill = Variant(outline, 1f, FillValue);
+                _nfFill = Variant(outline, 1f, _profile.FillValue);
                 _nfEdge = Variant(outline, 1f, 1f);
-                _nfGlow = Variant(outline, GlowSaturation, 1f);
-                _nfSpark = Variant(outline, SparkSaturation, 1f);
+                _nfGlow = Variant(outline, _profile.GlowSaturation, 1f);
+                _nfSpark = Variant(outline, _profile.SparkSaturation, 1f);
 
                 _fillOpacity = Mathf.Clamp01(req.FillOpacity);
-                _fillStrength = Mathf.Clamp01(req.FillStrength <= 0f ? DefaultFillStrength : req.FillStrength);
+                _fillStrength = Mathf.Clamp01(req.FillStrength <= 0f ? _profile.FillStrength : req.FillStrength);
                 _exposure = Mathf.Clamp(req.Exposure, 0f, 2f);
                 _edgeOpacity = Mathf.Max(0f, req.EdgeOpacity);
                 _glowIntensity = Mathf.Max(0f, req.GlowOpacity);
-                _sparkMapOpacity = DefaultActiveSparkMapOpacity * Mathf.Max(0f, req.SparkOpacity);
-                _displaceStrength = req.Displace > 0f ? Mathf.Clamp01(req.Displace) : DefaultActiveDisplaceStrength;
+                _sparkMapOpacity = _profile.SparkMapOpacity * Mathf.Max(0f, req.SparkOpacity);
+                _displaceStrength = req.Displace > 0f ? Mathf.Clamp01(req.Displace) : _profile.ActiveDisplaceStrength;
 
-                _dir = Normalize(ActiveDisplaceDirection);
+                _dir = Normalize(_profile.ActiveDisplaceDirection);
                 _perp = new Vector2(-_dir.y, _dir.x);
                 _scene = new Vector3(req.SceneColor.r, req.SceneColor.g, req.SceneColor.b);
 
                 // Same circular drift as the compose pass, at the main pass's own speed. The
                 // two must share the period or the fill would drift against its own coast.
-                float stepPerFrame = (DefaultActiveDisplaceSpeed / 20f) / 60f;
+                float stepPerFrame = (_profile.ActiveDisplaceSpeed / 20f) / 60f;
                 float angle = (2f * Mathf.PI) * (time / _span);
                 float radius = stepPerFrame * _frames / (2f * Mathf.PI);
                 _drift = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius;
@@ -522,7 +467,7 @@ namespace PEV.Scripting
                     _colCompose[x] = Mathf.Clamp((int)(u * _cw), 0, _cw - 1);
                     _colEdge[x] = Mathf.Clamp((int)(u * _ew), 0, _ew - 1);
                     _colCell[x] = Mathf.Clamp(x / 6, 0, _cellCols - 1);
-                    _colSparkU[x] = u * ActiveSparkMapST.x;
+                    _colSparkU[x] = u * _profile.ActiveSparkMapScale.x;
 
                     // Same arithmetic as Linear(), resolved once per column.
                     float px = u * w - 0.5f;
@@ -556,7 +501,7 @@ namespace PEV.Scripting
                     int iy1 = Mathf.Clamp((int)gy0 + 1, 0, _eh - 1) * _ew;
                     float fy = gy - gy0;
 
-                    float sparkV = v * ActiveSparkMapST.y;
+                    float sparkV = v * _profile.ActiveSparkMapScale.y;
                     float sparkScale = _sparkMapOpacity;
 
                     for (int x = 0; x < TexW; x++)
@@ -575,15 +520,15 @@ namespace PEV.Scripting
 
                         // Spark is the only per-pixel term: its UV is not quantised.
                         Cell cell = _cells[cellRowBase + _colCell[x]];
-                        float spark = PointAt(_colSparkU[x] + cell.Disp.x * ActiveSparkDisplaceIntensity,
-                                              sparkV + cell.Disp.y * ActiveSparkDisplaceIntensity);
+                        float spark = PointAt(_colSparkU[x] + cell.Disp.x * _profile.ActiveSparkDisplaceIntensity,
+                                              sparkV + cell.Disp.y * _profile.ActiveSparkDisplaceIntensity);
                         float sv = spark * cell.DispAvg * sparkScale;
 
                         Vector3 fill = cell.FillFlat;
                         if (sv > 1e-4f)
                         {
                             Vector3 sparkVec = _nfSpark * sv;
-                            Vector3 hsv = cell.SceneHsv + sparkVec * ActiveSparkHueShiftAmount;
+                            Vector3 hsv = cell.SceneHsv + sparkVec * _profile.ActiveSparkHueShiftAmount;
                             Vector3 processed = Overlay(HsvToRgb(hsv), sparkVec);
                             fill = new Vector3(
                                 cell.FillBase.x + _fillStrength * (processed.x - cell.FillBase.x),
@@ -615,7 +560,7 @@ namespace PEV.Scripting
             /// <summary>Fills one 6-pixel cell: the block-noise taps, displacement and no-grain fill.</summary>
             private Cell BuildCell(float cellU, float cellV, Vector3 nfFill, Vector3 scene)
             {
-                Vector2 duv = new Vector2(cellU * ActiveDisplaceMapST.x, cellV * ActiveDisplaceMapST.y);
+                Vector2 duv = new Vector2(cellU * _profile.ActiveDisplaceMapScale.x, cellV * _profile.ActiveDisplaceMapScale.y);
 
                 float a1 = BlockAt(duv.x + _drift.x, duv.y + _drift.y);
                 float a2 = BlockAt(duv.x + _ortho.x, duv.y + _ortho.y);
@@ -623,7 +568,7 @@ namespace PEV.Scripting
                 Vector2 disp = new Vector2(_dir.x * (a1 - 0.5f) + _perp.x * (a2 - 0.5f),
                                            _dir.y * (a1 - 0.5f) + _perp.y * (a2 - 0.5f));
 
-                Vector3 fillBase = nfFill - Vector3.one * (dispAvg * DisplaceBlendIntensity);
+                Vector3 fillBase = nfFill - Vector3.one * (dispAvg * _profile.DisplaceBlendIntensity);
 
                 // overlay(scene, 0): the fill with no grain. Ch(b,0) is 2b·0 below 0.5 and
                 // 1−2(1−b) at or above, i.e. max(0, 2b−1).
@@ -663,7 +608,13 @@ namespace PEV.Scripting
         public static Color32[] Compose(NoiseTextureFactory.Piece[] pieces,
             NoiseTextureFactory.Request req, int texW, int texH, float time, uint seed)
         {
-            WarmTextures();
+            if (req.Samples == null)
+            {
+                req.Provider = LegacyFieldTextureSet.ResolveProvider(req.Provider);
+                req.Samples = LegacyFieldTextureSet.Load(req.Provider, out var error);
+                if (req.Samples == null) throw new System.InvalidOperationException(error);
+            }
+            if (req.Samples.Profile == null) throw new System.InvalidOperationException("field package does not declare its legacy profile");
             var frame = Frame.Build(pieces, req, texW, texH, time, seed, 8);
 
             var pixels = new Color32[texW * texH];

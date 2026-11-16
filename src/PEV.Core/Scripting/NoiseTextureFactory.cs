@@ -42,27 +42,6 @@ namespace PEV.Scripting
         /// </summary>
         public const int ResolutionStep = 96;
 
-        private const float GrainPixels = 1.5f;
-
-        /// <summary>
-        /// Colour variants, copied from the reference's main.glsl.
-        ///
-        /// Every layer is the SAME outline colour run through one HSV variant, which is why
-        /// recolouring a field keeps the layers consistent. These saturation and value scales
-        /// are the reference's own numbers (1.0/0.7132074 for the fill, 1.2253521 for the
-        /// glow, 1.0676054 for sparks), not estimates — an earlier version used a made-up
-        /// 0.24 brightness factor and the fill came out nowhere near the reference.
-        /// </summary>
-        private const float FillValueScale = 0.713207483291626f;
-        private const float GlowSaturationScale = 1.2253520800891937f;
-        private const float SparkSaturationScale = 1.0676054460523543f;
-
-        /// <summary>The reference's five glow passes, verbatim from config.json.</summary>
-        private static readonly float[] GlowWeights =
-        {
-            0.458567970132f, 0.282861223139f, 0.156589227109f,
-            0.07305908496f, 0.024947807942f
-        };
 
         public const float PixelsPerUnit = 100f;
 
@@ -125,6 +104,9 @@ namespace PEV.Scripting
             // Field initialisers make the defaulted values real, but the language then requires
             // an explicit constructor for the struct.
             public Request() { }
+
+            internal PEV.Model.EventManifest Provider;
+            internal LegacyFieldTextureSet Samples;
 
             public float WidthWorld;
             public float HeightWorld;
@@ -357,6 +339,7 @@ namespace PEV.Scripting
         public static Frames Begin(Request req, out string error)
         {
             error = null;
+            req.Provider = LegacyFieldTextureSet.ResolveProvider(req.Provider);
             string key = Fingerprint(req);
             if (Cache.TryGetValue(key, out var hit) && HitIsAlive(hit))
             {
@@ -364,6 +347,9 @@ namespace PEV.Scripting
                 return hit;
             }
 
+            req.Samples = LegacyFieldTextureSet.Load(req.Provider, out error);
+            if (req.Samples == null) return null;
+            if (req.Samples.Profile == null) { error = "field package does not declare its legacy profile"; return null; }
             var frames = new Frames { Key = key, Refs = 1 };
             try
             {
@@ -378,11 +364,6 @@ namespace PEV.Scripting
             Generations++;
             Bakes++;
             Cache[key] = frames;
-
-            // WarmTextures must run here, on the main thread: the noise maps decode lazily
-            // through a Unity texture read, and letting two workers race that decode would
-            // allocate twice and leak one copy.
-            NoiseComposer.WarmTextures();
 
             var worker = new System.Threading.Thread(() => RunWorker(req, frames))
             {
@@ -531,11 +512,16 @@ namespace PEV.Scripting
         /// caches. A separate key in the renderer drifts from this one and causes either
         /// missed rebuilds or a rebuild on every frame.
         /// </summary>
-        public static string Key(Request req) => Fingerprint(req);
+        public static string Key(Request req)
+        {
+            req.Provider = LegacyFieldTextureSet.ResolveProvider(req.Provider);
+            return Fingerprint(req);
+        }
 
         private static string Fingerprint(Request r)
         {
             var sb = new StringBuilder(240);
+            sb.Append(LegacyFieldTextureSet.Identity(r.Provider)).Append('|');
             sb.Append(F(r.WidthWorld)).Append('|').Append(F(r.HeightWorld)).Append('|')
               .Append(C(r.FillColor)).Append('|').Append(C(r.EdgeColor)).Append('|')
               .Append(C(r.SparkColor)).Append('|')
@@ -585,7 +571,7 @@ namespace PEV.Scripting
         {
             int frames = Mathf.Clamp(req.FrameCount, 2, 128);
             float sampleRate = Mathf.Clamp(req.SampleRate, 0.1f, 8f);
-            int block = Mathf.Clamp(Mathf.RoundToInt(GrainPixels / sampleRate), 1, 16);
+            int block = Mathf.Clamp(Mathf.RoundToInt(req.Samples.Profile.GrainPixels / sampleRate), 1, 16);
 
             // The quad is the geometry box grown by the margin on every side. Geometry
             // size stays the reference for the coastline band and feature size, so padding
@@ -665,7 +651,7 @@ namespace PEV.Scripting
         private static void RenderPixels(Request req, Color32[][] pixelSets, int texW, int texH, Func<bool> cancelled)
         {
             int frames = pixelSets.Length;
-            int block = Mathf.Clamp(Mathf.RoundToInt(GrainPixels / Mathf.Clamp(req.SampleRate, 0.1f, 8f)), 1, 16);
+            int block = Mathf.Clamp(Mathf.RoundToInt(req.Samples.Profile.GrainPixels / Mathf.Clamp(req.SampleRate, 0.1f, 8f)), 1, 16);
             uint seed = (uint)req.Seed;
             var pieces = req.Pieces ?? Array.Empty<Piece>();
 

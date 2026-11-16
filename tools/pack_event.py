@@ -124,10 +124,31 @@ def validate(root, manifest):
     if "decorationDefaults" in manifest:
         defaults = manifest["decorationDefaults"]
         if (manifest.get("schemaVersion") != 3 or manifest.get("decoration") is not True or
-                not isinstance(defaults, dict) or any(k != "color" for k in defaults) or
+                not isinstance(defaults, dict) or any(k not in ("color", "tag") for k in defaults) or
                 ("color" in defaults and (not isinstance(defaults["color"], str) or
-                                          not re.fullmatch(r"[0-9a-fA-F]{6}", defaults["color"])))):
-            problems.append("decorationDefaults requires a decoration-backed schema 3 event and optional six-digit color")
+                                          not re.fullmatch(r"[0-9a-fA-F]{6}", defaults["color"]))) or
+                ("tag" in defaults and (not isinstance(defaults["tag"], str) or
+                                        not defaults["tag"].strip() or len(defaults["tag"]) > 128))):
+            problems.append("decorationDefaults requires a decoration-backed schema 3 event, optional six-digit color and nonempty tag")
+
+    if "decorationMigration" in manifest:
+        migrations = manifest["decorationMigration"]
+        if manifest.get("schemaVersion") != 3 or manifest.get("decoration") is not True or not isinstance(migrations, list) or len(migrations) > 16:
+            problems.append("decorationMigration requires a schema 3 decoration event and at most 16 bindings")
+        else:
+            allowed = {("scale", "tilesToScale"), ("position", "vector2"), ("rotation", "float"),
+                       ("tag", "string"), ("color", "string"), ("depth", "int"), ("opacity", "percent")}
+            targets = set()
+            for item in migrations:
+                if not isinstance(item, dict) or set(item) != {"source", "target", "conversion"}:
+                    problems.append("invalid decorationMigration binding")
+                    continue
+                source, target, conversion = item["source"], item["target"], item["conversion"]
+                if (not isinstance(source, str) or source.startswith("__") or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", source) or
+                        not isinstance(target, str) or not isinstance(conversion, str) or (target, conversion) not in allowed or target in targets):
+                    problems.append("invalid or duplicate decorationMigration binding")
+                else:
+                    targets.add(target)
 
     if "fieldUniforms" in manifest:
         uniforms = manifest["fieldUniforms"]
@@ -179,6 +200,59 @@ def validate(root, manifest):
                         problems.append(f"field {kind} '{role}' needs a package-relative path")
                     elif kind == "texture" and not os.path.isfile(os.path.join(root, normalized)):
                         problems.append(f"field texture '{path}' not found")
+
+    if "legacyFieldTextures" in manifest:
+        textures = manifest["legacyFieldTextures"]
+        if (manifest.get("schemaVersion") != 3 or primitive != "fx.field" or
+                not isinstance(textures, dict) or set(textures) != {"block", "point"}):
+            problems.append("legacyFieldTextures requires block and point roles on a schema 3 fx.field event")
+        else:
+            for role, path in textures.items():
+                if not isinstance(path, str) or not path.strip():
+                    problems.append(f"legacy field texture '{role}' needs a package-relative path")
+                    continue
+                normalized = path.replace("\\", "/")
+                if normalized.startswith("/") or ":" in normalized or ".." in PurePosixPath(normalized).parts:
+                    problems.append(f"legacy field texture '{role}' needs a package-relative path")
+                elif not os.path.isfile(os.path.join(root, normalized)):
+                    problems.append(f"legacy field texture '{path}' not found")
+
+    if "legacyFieldProfile" in manifest or "legacyFieldTextures" in manifest:
+        profile = manifest.get("legacyFieldProfile")
+        scalars = {"composeScale", "composeDisplaceSpeed", "composeDisplaceStrength", "displaceBlendIntensity",
+                   "activeSparkDisplaceIntensity", "activeSparkHueShiftAmount", "fillStrength", "activeDisplaceSpeed",
+                   "activeDisplaceStrength", "sparkMapOpacity", "fillValue", "glowSaturation", "sparkSaturation", "grainPixels"}
+        vectors = {"composeDisplaceDirection", "composeDisplaceMapScale", "activeDisplaceDirection",
+                   "activeDisplaceMapScale", "activeSparkMapScale"}
+        if (manifest.get("schemaVersion") != 3 or primitive != "fx.field" or not isinstance(profile, dict) or
+                set(profile) != scalars | vectors | {"glowWeights"}):
+            problems.append("legacyFieldProfile requires all declared scalar, vector and glow weight roles")
+        else:
+            for name, value in profile.items():
+                values = value if isinstance(value, list) else [value]
+                expected = 1 if name in scalars else 2 if name in vectors else 5
+                if (len(values) != expected or (name in scalars and isinstance(value, list)) or
+                        not all(valid_uniform_number(v) and abs(v) <= 1024 for v in values)):
+                    problems.append(f"invalid legacyFieldProfile value '{name}'")
+            scale = profile["composeScale"]
+            if not valid_uniform_number(scale) or not 0 < scale <= 1:
+                problems.append("legacyFieldProfile composeScale must be in (0,1]")
+
+    if "fieldPreview" in manifest:
+        preview = manifest["fieldPreview"]
+        if (manifest.get("schemaVersion") != 3 or primitive != "fx.field" or not isinstance(preview, dict) or
+                set(preview) != {"key", "parameterMap"} or not isinstance(preview.get("key"), str) or
+                not preview["key"].strip() or len(preview["key"]) > 128 or not isinstance(preview.get("parameterMap"), dict) or
+                len(preview["parameterMap"]) > 64):
+            problems.append("fieldPreview requires a key and parameterMap on a schema 3 fx.field event")
+        else:
+            seen_targets = set()
+            for source, target in preview["parameterMap"].items():
+                if (not isinstance(source, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", source) or source.startswith("__") or
+                        not isinstance(target, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", target) or target.startswith("__") or target in seen_targets):
+                    problems.append("invalid or duplicate fieldPreview parameter mapping")
+                else:
+                    seen_targets.add(target)
 
     category = manifest.get("category", "VisualFx")
     if not isinstance(category, str) or category not in VALID_CATEGORIES:

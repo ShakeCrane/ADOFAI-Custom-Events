@@ -1,4 +1,5 @@
 import copy
+import json
 import tempfile
 import unittest
 import zipfile
@@ -77,11 +78,19 @@ class PackageValidationTests(unittest.TestCase):
         self.assertTrue(validate(self.root, dict(valid, globalSettings=[setting, setting])))
 
     def test_decoration_defaults_are_scoped_and_validated(self):
-        valid = dict(self.manifest, schemaVersion=3, decoration=True, decorationDefaults={"color": "ff5454"})
+        valid = dict(self.manifest, schemaVersion=3, decoration=True, decorationDefaults={"color": "ff5454", "tag": "noise"})
         self.assertEqual([], validate(self.root, valid))
-        for defaults in ({"color": "#ff5454"}, {"color": "oops"}, {"depth": 2}, [], None):
+        for defaults in ({"color": "#ff5454"}, {"color": "oops"}, {"tag": " "}, {"tag": 1}, {"tag": "x" * 129}, {"depth": 2}, [], None):
             self.assertTrue(validate(self.root, dict(valid, decorationDefaults=defaults)))
         self.assertTrue(validate(self.root, dict(valid, decoration=False)))
+
+    def test_decoration_migration_binding_validation(self):
+        binding = {"source": "size", "target": "scale", "conversion": "tilesToScale"}
+        valid = dict(self.manifest, schemaVersion=3, decoration=True, decorationMigration=[binding])
+        self.assertEqual([], validate(self.root, valid))
+        self.assertTrue(validate(self.root, dict(valid, decorationMigration=[binding, binding])))
+        self.assertTrue(validate(self.root, dict(valid, decorationMigration=[dict(binding, target="color")])))
+        self.assertTrue(validate(self.root, dict(valid, decorationMigration=[dict(binding, source="__private")])))
 
     def test_manifest_choice_validation(self):
         choice = {"name": "action", "type": "Choice", "options": ["Off", "On"], "default": "On"}
@@ -121,6 +130,26 @@ class PackageValidationTests(unittest.TestCase):
             self.assertTrue(validate(self.root, dict(valid, fieldWaves=bad)))
         self.assertTrue(validate(self.root, dict(valid, fieldUniforms={"shine": 1})))
 
+    def test_legacy_field_texture_roles(self):
+        profile_path = Path(__file__).resolve().parents[1] / "src/Events/NoiseField.event/event.json"
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))["legacyFieldProfile"]
+        valid = dict(self.manifest, schemaVersion=3, hostPrimitive="fx.field",
+                     legacyFieldTextures={"block": "main.js", "point": "main.js"}, legacyFieldProfile=profile)
+        self.assertEqual([], validate(self.root, valid))
+        self.assertTrue(validate(self.root, dict(valid, legacyFieldTextures={"block": "../secret", "point": "main.js"})))
+        self.assertTrue(validate(self.root, dict(valid, legacyFieldTextures={"block": "main.js"})))
+        self.assertTrue(validate(self.root, dict(valid, legacyFieldTextures={"block": "missing", "point": "main.js"})))
+        self.assertTrue(validate(self.root, dict(valid, legacyFieldProfile=dict(profile, composeScale=0))))
+        self.assertTrue(validate(self.root, dict(valid, legacyFieldProfile={})))
+
+    def test_field_preview_bindings(self):
+        preview = {"key": "field", "parameterMap": {"authorSpeed": "evolveSpeed"}}
+        valid = dict(self.manifest, schemaVersion=3, hostPrimitive="fx.field", fieldPreview=preview)
+        self.assertEqual([], validate(self.root, valid))
+        for mapping in ({"__unsafe": "x"}, {"x": "__unsafe"}, {"x": "y", "z": "y"}):
+            self.assertTrue(validate(self.root, dict(valid, fieldPreview={"key": "field", "parameterMap": mapping})))
+        self.assertTrue(validate(self.root, dict(valid, fieldPreview={"key": "", "parameterMap": {}})))
+
     def test_qualified_enum_is_valid(self):
         manifest = dict(self.manifest, params=[{"name": "x", "type": "Enum:Example.Type, Assembly"}])
         self.assertEqual([], validate(self.root, manifest))
@@ -150,7 +179,8 @@ class PackageValidationTests(unittest.TestCase):
             names = set(archive.namelist())
             self.assertTrue({"event.json", "main.js", "icon.png", "assets/noise-field.bundle",
                              "assets/BlockNoise1.png", "assets/PointNoise.png", "assets/FD_Noise_00000.png",
-                             "assets/TouchHover.png", "assets/README.md"}.issubset(names))
+                             "assets/TouchHover.png", "assets/README.md", "assets/legacy/block.png",
+                             "assets/legacy/point.png"}.issubset(names))
             self.assertIn(b"invert: !!params.invert", archive.read("main.js"))
             self.assertEqual(bundle.read_bytes(), archive.read("assets/noise-field.bundle"))
         old = output.read_bytes()

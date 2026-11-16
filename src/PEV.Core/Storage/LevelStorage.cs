@@ -262,45 +262,36 @@ namespace PEV.Storage
                 info.propertiesInfo.TryGetValue("relativeTo", out var relativeToInfo);
                 row["relativeTo"] = ParamCoercion.Coerce(relativeToInfo, source.floor >= 0 ? "Tile" : "Camera");
                 row["depth"] = 0;
-                row["tag"] = DecorationCarrier.DefaultTag;
+                row["tag"] = manifest.DecorationDefaultTag ?? DecorationCarrier.DefaultTag;
                 row["visible"] = true;
                 row["opacity"] = 100f;
                 if (!string.IsNullOrEmpty(manifest.DecorationDefaultColor))
                     row["color"] = manifest.DecorationDefaultColor;
-                else if (NoiseFieldRenderer.IsFieldEvent(manifest))
-                    row["color"] = "ff5454"; // historical field-comment migration only
-
-                // Old comment parameters map onto the decoration's own fields where a
-                // counterpart exists, so a chart that used the previous geometry keeps it.
-                //
-                // Units do not carry over directly: a comment measured size in tiles, while a
-                // decoration stores scale as a percentage of its own base. Converting through
-                // the documented base size is what keeps a migrated field the size it was —
-                // copying the number across would make every migrated field 100× too small.
-                if (NoiseFieldRenderer.IsFieldEvent(manifest))
+                // Each package declares which legacy values map to native properties.
+                foreach (var binding in manifest.DecorationMigration)
                 {
-                    Copy(data, row, "size", v =>
+                    Copy(data, row, binding.Source, v =>
                     {
-                        Vector2 tiles = ToVector2(v);
-                        row["scale"] = new Vector2(
-                            tiles.x / DecorationBridge.BaseSizeTiles.x * 100f,
-                            tiles.y / DecorationBridge.BaseSizeTiles.y * 100f);
+                        switch (binding.Conversion)
+                        {
+                            case "tilesToScale":
+                                Vector2 tiles = ToVector2(v);
+                                row[binding.Target] = new Vector2(
+                                    tiles.x / DecorationBridge.BaseSizeTiles.x * 100f,
+                                    tiles.y / DecorationBridge.BaseSizeTiles.y * 100f);
+                                break;
+                            case "vector2": row[binding.Target] = ToVector2(v); break;
+                            case "float": row[binding.Target] = Convert.ToSingle(v); break;
+                            case "int": row[binding.Target] = Convert.ToInt32(v); break;
+                            case "percent": row[binding.Target] = Mathf.Clamp(Convert.ToSingle(v), 0f, 100f); break;
+                            case "string": row[binding.Target] = v.ToString(); break;
+                        }
                     });
-                    Copy(data, row, "positionOffset", v => row["position"] = ToVector2(v));
-                    Copy(data, row, "rotation", v => row["rotation"] = Convert.ToSingle(v));
-                    Copy(data, row, "tag", v => row["tag"] = v.ToString());
-                    Copy(data, row, "depth", v => row["depth"] = Convert.ToInt32(v));
-                    Copy(data, row, "opacity", v =>
-                    {
-                        float pct = Convert.ToSingle(v);
-                        row["opacity"] = Mathf.Clamp(pct, 0f, 100f);
-                    });
-                    Copy(data, row, "color", v => row["color"] = v.ToString());
                 }
 
                 Adopt(row, data, summary);
                 if (string.IsNullOrWhiteSpace(row.GetString("tag")))
-                    row["tag"] = DecorationCarrier.DefaultTag;
+                    row["tag"] = manifest.DecorationDefaultTag ?? DecorationCarrier.DefaultTag;
                 rows.Add(row);
                 return true;
             }

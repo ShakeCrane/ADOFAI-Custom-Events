@@ -1,109 +1,15 @@
 using System;
 using System.IO;
 using System.IO.Compression;
-using System.Reflection;
 using UnityEngine;
 
 namespace PEV.Scripting
 {
     /// <summary>
-    /// Loads the noise maps the effect samples, verbatim from Phira-Pro's
-    /// noise-skins/NoiseField/tex (GPL-3.0-or-later).
-    ///
-    /// These are not decorative assets: the shader's entire character — where the coast bites,
-    /// how the grains scatter — comes from the exact pixel values in these three images. They
-    /// are mirror-wrapped value noise, sparse points, and an RG flow field, none of which an
-    /// analytic function reproduces closely enough. Every earlier attempt to synthesise a
-    /// substitute looked like a different effect, because it was one.
-    ///
-    /// Decoded here rather than through UnityEngine.ImageConversionModule: that assembly is
-    /// built against netstandard 2.1 and this project targets 2.0, so referencing it fails to
-    /// compile. The images are plain non-interlaced 8-bit PNGs, which is a small enough subset
-    /// to decode directly.
+    /// PNG and texture-coordinate utilities; pixel assets come from event packages.
     /// </summary>
     public static class NoiseTextures
     {
-        private static Texture2D _block, _point, _flow;
-
-        public static Texture2D Block => _block != null ? _block : (_block = Load("BlockNoise1.png", true));
-        public static Texture2D Point => _point != null ? _point : (_point = Load("PointNoise.png", false));
-        public static Texture2D Flow => _flow != null ? _flow : (_flow = Load("FD_Noise.png", true));
-
-        /// <summary>True when every map decoded. Diagnostics read this; the renderer does not gate on it.</summary>
-        public static bool AllLoaded => Block != null && Point != null && Flow != null;
-
-        public static void Clear()
-        {
-            foreach (var t in new[] { _block, _point, _flow })
-                if (t != null) UnityEngine.Object.Destroy(t);
-            _block = _point = _flow = null;
-        }
-
-        private static Texture2D Load(string name, bool mirror)
-        {
-            try
-            {
-                byte[] png = ReadResource(name);
-                if (png == null)
-                {
-                    PEV.Core.Plugin.Log("noise map '" + name + "' is missing from the assembly");
-                    return null;
-                }
-
-                int w, h;
-                Color32[] pixels = DecodePng(png, out w, out h);
-                if (pixels == null)
-                {
-                    PEV.Core.Plugin.Log("noise map '" + name + "' did not decode");
-                    return null;
-                }
-
-                var tex = new Texture2D(w, h, TextureFormat.RGBA32, false)
-                {
-                    // The skin's own sampler states: mirror for the block and flow maps,
-                    // repeat for the points. Getting these wrong changes where the coast
-                    // wraps, which is visible at the quad edge.
-                    wrapMode = mirror ? TextureWrapMode.Mirror : TextureWrapMode.Repeat,
-                    filterMode = FilterMode.Point,
-                    name = "PEV.Tex." + name
-                };
-                tex.SetPixels32(pixels);
-                tex.Apply(false);
-                return tex;
-            }
-            catch (Exception e)
-            {
-                PEV.Core.Plugin.Log("noise map '" + name + "' failed: " + e.Message);
-                return null;
-            }
-        }
-
-        private static byte[] ReadResource(string name)
-        {
-            var asm = Assembly.GetExecutingAssembly();
-            string resource = null;
-            foreach (var candidate in asm.GetManifestResourceNames())
-            {
-                if (candidate.EndsWith(".Textures." + name, StringComparison.Ordinal)
-                    || candidate == name)
-                {
-                    resource = candidate;
-                    break;
-                }
-            }
-            if (resource == null) return null;
-
-            using (var stream = asm.GetManifestResourceStream(resource))
-            {
-                if (stream == null) return null;
-                using (var ms = new MemoryStream())
-                {
-                    stream.CopyTo(ms);
-                    return ms.ToArray();
-                }
-            }
-        }
-
         // --- minimal PNG decoder ------------------------------------------------------
         // Supports what these assets are: 8-bit, non-interlaced, colour type 2 (RGB) or 6
         // (RGBA), no palette, no tRNS. Anything else returns null rather than rendering noise
@@ -112,10 +18,13 @@ namespace PEV.Scripting
         internal static Color32[] DecodePng(byte[] data, out int width, out int height)
         {
             width = height = 0;
-            if (data == null || data.Length < 8) return null;
+            if (data == null || data.Length < 8 || data.Length > 16 * 1024 * 1024) return null;
+            byte[] signature = { 137, 80, 78, 71, 13, 10, 26, 10 };
+            for (int i = 0; i < signature.Length; i++) if (data[i] != signature[i]) return null;
 
             int pos = 8; // skip signature
             int bitDepth = 0, colorType = -1, interlace = 0;
+            bool header = false, ended = false;
             var idat = new MemoryStream();
 
             while (pos + 8 <= data.Length)
@@ -123,9 +32,12 @@ namespace PEV.Scripting
                 int length = ReadInt32BE(data, pos);
                 string type = System.Text.Encoding.ASCII.GetString(data, pos + 4, 4);
                 int body = pos + 8;
+                if (length < 0 || length > data.Length - body - 4) return null;
 
                 if (type == "IHDR")
                 {
+                    if (header || length != 13) return null;
+                    header = true;
                     width = ReadInt32BE(data, body);
                     height = ReadInt32BE(data, body + 4);
                     bitDepth = data[body + 8];
@@ -134,14 +46,15 @@ namespace PEV.Scripting
                 }
                 else if (type == "IDAT")
                 {
+                    if (!header || idat.Length + length > 16 * 1024 * 1024) return null;
                     idat.Write(data, body, length);
                 }
-                else if (type == "IEND") break;
+                else if (type == "IEND") { ended = true; break; }
 
                 pos = body + length + 4; // skip CRC
             }
 
-            if (bitDepth != 8 || interlace != 0) return null;
+            if (!header || !ended || width <= 0 || height <= 0 || width > 4096 || height > 4096 || bitDepth != 8 || interlace != 0) return null;
             if (colorType != 2 && colorType != 6) return null;
 
             int channels = colorType == 6 ? 4 : 3;
@@ -149,7 +62,7 @@ namespace PEV.Scripting
             byte[] raw;
             try
             {
-                raw = Inflate(idat.ToArray());
+                raw = Inflate(idat.ToArray(), checked((stride + 1) * height));
             }
             catch { return null; }
             if (raw == null || raw.Length < (stride + 1) * height) return null;
@@ -162,6 +75,7 @@ namespace PEV.Scripting
             for (int y = 0; y < height; y++)
             {
                 int filter = raw[src++];
+                if (filter > 4) return null;
                 Buffer.BlockCopy(raw, src, line, 0, stride);
                 src += stride;
 
@@ -218,15 +132,21 @@ namespace PEV.Scripting
             }
         }
 
-        private static byte[] Inflate(byte[] zlib)
+        private static byte[] Inflate(byte[] zlib, int expected)
         {
             if (zlib == null || zlib.Length < 2) return null;
             using (var input = new MemoryStream(zlib, 2, zlib.Length - 2)) // skip zlib header
             using (var deflate = new DeflateStream(input, CompressionMode.Decompress))
-            using (var output = new MemoryStream())
             {
-                deflate.CopyTo(output);
-                return output.ToArray();
+                var output = new byte[expected];
+                int offset = 0;
+                while (offset < expected)
+                {
+                    int count = deflate.Read(output, offset, expected - offset);
+                    if (count == 0) return null;
+                    offset += count;
+                }
+                return deflate.ReadByte() == -1 ? output : null;
             }
         }
 

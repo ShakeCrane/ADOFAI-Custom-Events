@@ -40,6 +40,7 @@ def stage(bundle, output):
         shutil.copy2(LEGACY / "icon.png", package / "icon.png")
         for name in ("BlockNoise1.png", "PointNoise.png", "FD_Noise_00000.png", "TouchHover.png", "README.md"):
             shutil.copy2(LEGACY / "assets" / name, assets / name)
+        shutil.copytree(LEGACY / "assets" / "legacy", assets / "legacy")
         shutil.copy2(bundle, assets / "noise-field.bundle")
         problems = validate(package, manifest)
         if problems:

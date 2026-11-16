@@ -583,6 +583,42 @@ namespace PEV.Diagnostics
                 }
                 finally { ReferenceNoiseTextures.Clear(); Directory.Delete(root, true); }
             });
+            Check("LEGACY-package-texture-isolation", () =>
+            {
+                string root = Path.Combine(Path.GetTempPath(), "pev-legacy-" + Guid.NewGuid().ToString("N"));
+                string a = Path.Combine(root, "a"), b = Path.Combine(root, "b");
+                Directory.CreateDirectory(a); Directory.CreateDirectory(b);
+                try
+                {
+                    var red = new[] { new Color32(255, 0, 0, 255) };
+                    var blue = new[] { new Color32(0, 0, 255, 255) };
+                    File.WriteAllBytes(Path.Combine(a, "tex.png"), NoiseTextures.EncodePng(red, 1, 1));
+                    File.WriteAllBytes(Path.Combine(b, "tex.png"), NoiseTextures.EncodePng(blue, 1, 1));
+                    var first = new EventManifest { Id = "example.a", SourcePath = a };
+                    var second = new EventManifest { Id = "example.b", SourcePath = b };
+                    first.LegacyFieldTextures["block"] = first.LegacyFieldTextures["point"] = "tex.png";
+                    second.LegacyFieldTextures["block"] = second.LegacyFieldTextures["point"] = "tex.png";
+                    var x = LegacyFieldTextureSet.Load(first, out _);
+                    var y = LegacyFieldTextureSet.Load(second, out _);
+                    if (x == null || y == null || x.Block[0].r != 255 || y.Block[0].b != 255 ||
+                        ReferenceEquals(x, y) || LegacyFieldTextureSet.Identity(first) == LegacyFieldTextureSet.Identity(second)) return false;
+                    var malformed = new byte[] { 137, 80, 78, 71, 13, 10, 26, 10, 127, 255, 255, 255, 73, 72, 68, 82 };
+                    return NoiseTextures.DecodePng(malformed, out _, out _) == null;
+                }
+                finally { Directory.Delete(root, true); }
+            });
+            Check("CORE-no-embedded-event-png", () =>
+                !typeof(NoiseTextures).Assembly.GetManifestResourceNames().Any(n => n.EndsWith(".png", StringComparison.OrdinalIgnoreCase)));
+            Check("LEGACY-profile-cache-isolation", () =>
+            {
+                var a = new EventManifest { SourcePath = "same", Version = "1" };
+                var b = new EventManifest { SourcePath = "same", Version = "1" };
+                a.LegacyFieldTextures["block"] = b.LegacyFieldTextures["block"] = "block.png";
+                a.LegacyFieldTextures["point"] = b.LegacyFieldTextures["point"] = "point.png";
+                a.LegacyFieldProfile["sample"] = new[] { 1f };
+                b.LegacyFieldProfile["sample"] = new[] { 2f };
+                return LegacyFieldTextureSet.Identity(a) != LegacyFieldTextureSet.Identity(b);
+            });
         }
 
         private static void CheckStorage(scnEditor editor)
@@ -797,6 +833,24 @@ namespace PEV.Diagnostics
             Check("CACHE-glow-opacity", () => { var r = req; r.GlowOpacity = 0.4f; return NoiseTextureFactory.Key(r) != key; });
             Check("CACHE-scene-colour", () => { var r = req; r.SceneColor = Color.white; return NoiseTextureFactory.Key(r) != key; });
             Check("CACHE-screen-density", () => { var r = req; r.ScreenPixelWidth = 384; return NoiseTextureFactory.Key(r) != key; });
+            try
+            {
+                var piece = new NoiseTextureFactory.Piece { Half = new Vector2(1f, 0.7f),
+                    FillColor = Color.red, EdgeColor = Color.red, FillOpacity = 0.65f, EdgeOpacity = 0.8f, Band = 0.2f };
+                var pixels = NoiseComposer.Compose(new[] { piece }, req, 48, 32, 0.7f, 42);
+                var bytes = new byte[pixels.Length * 4];
+                for (int i = 0; i < pixels.Length; i++)
+                {
+                    bytes[i * 4] = pixels[i].r; bytes[i * 4 + 1] = pixels[i].g;
+                    bytes[i * 4 + 2] = pixels[i].b; bytes[i * 4 + 3] = pixels[i].a;
+                }
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                {
+                    string hash = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "");
+                    Row("LEGACY-noise-baseline", hash == "A239194121FF97E023D150DE3A2E3F733675C89B7E04453B8B9BEAFA901EBDF7" ? "PASS" : "FAIL", hash);
+                }
+            }
+            catch (Exception e) { Row("LEGACY-noise-baseline", "FAIL", e.Message); }
         }
 
         private static IEnumerator CheckTextures()
@@ -835,6 +889,17 @@ namespace PEV.Diagnostics
             Check("FIELD-gpu-takeover-suspends-bake", () => NoiseFieldRenderer.LayerCount == 0 && NoiseFieldRenderer.LiveCount == 1);
             NoiseFieldRenderer.SetGpuRendering(false);
             Check("FIELD-gpu-failure-restores-legacy", () => NoiseFieldRenderer.LayerCount == 1 && NoiseFieldRenderer.LiveCount == 1);
+            var first = LegacyFieldTextureSet.ResolveProvider(null);
+            var other = new EventManifest { Id = "example.other", SourcePath = first.SourcePath, Version = "other" };
+            foreach (var item in first.LegacyFieldTextures) other.LegacyFieldTextures[item.Key] = item.Value;
+            foreach (var item in first.LegacyFieldProfile) other.LegacyFieldProfile[item.Key] = item.Value;
+            var otherArgs = new Dictionary<string, object>(args) { ["__instance"] = "review/other", ["__manifest"] = other };
+            NoiseFieldRenderer.Set("field", otherArgs, out _);
+            NoiseFieldRenderer.SetGpuProviders(new HashSet<EventManifest> { first });
+            Check("FIELD-gpu-provider-isolation", () => NoiseFieldRenderer.LayerCount == 1 && NoiseFieldRenderer.LiveCount == 2);
+            NoiseFieldRenderer.SetGpuProviders(new HashSet<EventManifest>());
+            Check("FIELD-gpu-provider-fallback", () => NoiseFieldRenderer.LayerCount == 2 && NoiseFieldRenderer.LiveCount == 2);
+            NoiseFieldRenderer.Destroy("field", otherArgs, out _);
 
             float deadline = Time.realtimeSinceStartup + 20f;
             while (NoiseFieldRenderer.AllEntries()[0].GameObject == null && Time.realtimeSinceStartup < deadline)

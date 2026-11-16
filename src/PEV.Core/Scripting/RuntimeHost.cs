@@ -45,10 +45,11 @@ namespace PEV.Scripting
 
         public static void Shutdown()
         {
-            if (_instance == null) { ShaderBundleCache.Clear(); ReferenceNoiseTextures.Clear(); return; }
+            if (_instance == null) { ShaderBundleCache.Clear(); ReferenceNoiseTextures.Clear(); LegacyFieldTextureSet.Clear(); return; }
             _instance.Teardown();
             ShaderBundleCache.Clear();
             ReferenceNoiseTextures.Clear();
+            LegacyFieldTextureSet.Clear();
             UnityEngine.Object.Destroy(_instance.gameObject);
             _instance = null;
         }
@@ -175,7 +176,7 @@ namespace PEV.Scripting
                 // event at time 0 must be able to find a field whose row sits on a later
                 // floor. The placement tile is where the event sits, not when it appears.
                 if (describeFields && NoiseFieldRenderer.IsFieldEvent(manifest))
-                    NoiseFieldRenderer.Describe(inst.Key, "noisefield", ev, data);
+                    NoiseFieldRenderer.Describe(inst.Key, manifest.FieldPreviewKey, ev, data);
             }
 
             _instances.Add(inst);
