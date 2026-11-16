@@ -6,10 +6,9 @@ using UnityEngine;
 
 namespace PEV.Scripting
 {
-    /// <summary>Opt-in experimental field rendering, isolated by package provider.</summary>
+    /// <summary>Field rendering isolated by package provider, with per-provider fallback.</summary>
     internal sealed class NoiseFieldGpuDriver : IDisposable
     {
-        private readonly bool _enabled = Environment.GetEnvironmentVariable("PEV_EXPERIMENTAL_NOISE_GPU") == "1";
         private readonly Dictionary<EventManifest, NoiseFieldGpuCoordinator> _coordinators =
             new Dictionary<EventManifest, NoiseFieldGpuCoordinator>();
         private readonly HashSet<EventManifest> _faulted = new HashSet<EventManifest>();
@@ -20,7 +19,6 @@ namespace PEV.Scripting
 
         internal void Tick(bool playing, double songTime)
         {
-            if (!_enabled) return;
             NoiseFieldRenderer.CopyEntriesTo(_entries);
             _groups.Clear();
             foreach (var entry in _entries)

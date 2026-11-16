@@ -68,6 +68,7 @@ function create(ctx, params) {
     if (frame < 0) frame += p.frameCount;
 
     fx.field(key, {
+      invert: !!params.invert,
       shape: p.shape,
       feather: p.feather,
 

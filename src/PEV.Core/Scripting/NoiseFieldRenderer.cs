@@ -262,6 +262,7 @@ namespace PEV.Scripting
         private static bool _gpuRendering;
         private static readonly HashSet<PEV.Model.EventManifest> GpuProviders =
             new HashSet<PEV.Model.EventManifest>();
+        internal static bool IsGpuProviderActive(PEV.Model.EventManifest provider) => GpuProviders.Contains(provider);
 
         // GPU ownership is per package. A failed or unready provider must not suspend
         // the CPU fallback of another package using the same field primitive.

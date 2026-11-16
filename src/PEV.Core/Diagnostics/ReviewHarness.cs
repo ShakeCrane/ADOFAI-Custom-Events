@@ -76,9 +76,242 @@ namespace PEV.Diagnostics
             CheckKeys();
             yield return CheckTextures();
             yield return CheckFields();
+            if (Environment.GetEnvironmentVariable("PEV_TEST_REAL_FIELD_BUNDLE") == "1")
+                yield return CheckRealFieldBundle();
             yield return ProbeGlobalSettingsGui();
             CheckEditorPlacement(editor);
             Row("DONE", "ok");
+        }
+
+        private static IEnumerator CheckRealFieldBundle()
+        {
+            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest))
+            { Row("GPU-real-bundle-assets", "FAIL", "event not registered"); yield break; }
+            bool assets = true;
+            foreach (var item in manifest.FieldShaders)
+            {
+                string error;
+                if (item.Key == "compute")
+                {
+                    if (ShaderBundleCache.LoadCompute(manifest, item.Value, out error) == null)
+                    { assets = false; Row("GPU-real-asset-" + item.Key, "FAIL", error); }
+                }
+                else if (ShaderBundleCache.Load(manifest, item.Value, out error) == null)
+                { assets = false; Row("GPU-real-asset-" + item.Key, "FAIL", error); }
+            }
+            Row("GPU-real-bundle-assets", assets && manifest.FieldShaders.Count == 11 ? "PASS" : "FAIL");
+            if (!assets) yield break;
+
+            var args = new Dictionary<string, object>
+            {
+                ["__instance"] = "review/real-gpu", ["__manifest"] = manifest,
+                ["relativeTo"] = "Camera", ["size"] = new[] { 2f, 2f },
+                ["frameCount"] = 2, ["color"] = "ff5454", ["depth"] = 0
+            };
+            NoiseFieldGpuCoordinator coordinator = null;
+            try
+            {
+                NoiseFieldRenderer.Set("field", args, out _);
+                coordinator = new NoiseFieldGpuCoordinator(manifest);
+            }
+            catch (Exception e) { Row("GPU-real-create", "FAIL", e.ToString()); }
+            if (coordinator == null) { NoiseFieldRenderer.DestroyAll(); yield break; }
+            bool captureReady = false, noCaptureReady = false;
+            string renderError = null;
+            var entries = NoiseFieldRenderer.AllEntries();
+            float deadline = Time.realtimeSinceStartup + 15f;
+            while (Time.realtimeSinceStartup < deadline && (!captureReady || !noCaptureReady))
+            {
+                try
+                {
+                    var camera = GameCamera.Current;
+                    captureReady |= coordinator.Render(entries, camera, 1f, true, Color.black);
+                    if (captureReady) noCaptureReady |= coordinator.Render(entries, camera, 1f, false, Color.black);
+                }
+                catch (Exception e) { renderError = e.ToString(); break; }
+                yield return null;
+            }
+            Row("GPU-real-coordinator-capture", captureReady ? "PASS" : "FAIL", renderError);
+            Row("GPU-real-coordinator-no-capture", noCaptureReady ? "PASS" : "FAIL", renderError);
+            coordinator.Dispose();
+            NoiseFieldRenderer.DestroyAll();
+            yield return CheckRealFieldDepthSafe(manifest);
+            yield return CheckRealFieldDriver(manifest);
+        }
+
+        private static IEnumerator CheckRealFieldDriver(EventManifest manifest)
+        {
+            RuntimeHost.Ensure();
+            var args = new Dictionary<string, object>
+            {
+                ["__instance"] = "review/real-driver", ["__manifest"] = manifest,
+                ["relativeTo"] = "Camera", ["size"] = new[] { 2f, 2f },
+                ["frameCount"] = 2, ["color"] = "ff5454", ["depth"] = 0
+            };
+            NoiseFieldRenderer.Set("field", args, out string error);
+            float deadline = Time.realtimeSinceStartup + 15f;
+            while (!NoiseFieldRenderer.IsGpuProviderActive(manifest) && Time.realtimeSinceStartup < deadline)
+                yield return null;
+            Row("GPU-real-driver-takeover", NoiseFieldRenderer.IsGpuProviderActive(manifest) &&
+                NoiseFieldRenderer.LiveCount == 1 && NoiseFieldRenderer.LayerCount == 0 ? "PASS" : "FAIL", error);
+            NoiseFieldRenderer.DestroyAll();
+            yield return null;
+        }
+
+        private static IEnumerator CheckRealFieldDepthSafe(EventManifest manifest)
+        {
+            var probe = CheckRealFieldDepth(manifest);
+            while (true)
+            {
+                bool next;
+                try { next = probe.MoveNext(); }
+                catch (Exception e) { Row("GPU-real-depth", "FAIL", e.ToString()); yield break; }
+                if (!next) yield break;
+                yield return probe.Current;
+            }
+        }
+
+        private static IEnumerator CheckRealFieldDepth(EventManifest manifest)
+        {
+            var objects = new List<GameObject>();
+            RenderTexture target = null;
+            Texture2D read = null;
+            NoiseFieldGpuCoordinator coordinator = null;
+            var prior = RenderTexture.active;
+            try
+            {
+                var cameraGo = new GameObject("PEV.ReviewRealGpuCamera"); objects.Add(cameraGo);
+                var camera = cameraGo.AddComponent<Camera>(); camera.enabled = false; camera.orthographic = true;
+                camera.orthographicSize = 1f; camera.aspect = 1f; camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = Color.black; camera.cullingMask = unchecked((int)0x80000000u);
+                cameraGo.transform.position = new Vector3(0, 0, -10);
+                target = new RenderTexture(128, 128, 0, RenderTextureFormat.ARGB32) { antiAliasing = 1 };
+                if (!target.Create()) throw new InvalidOperationException("Cannot create GPU probe target");
+                camera.targetTexture = target;
+                read = new Texture2D(128, 128, TextureFormat.RGBA32, false, true);
+                Func<string, Color, int, float, float, SpriteRenderer> sprite = (name, color, order, x, size) =>
+                {
+                    var go = new GameObject(name); objects.Add(go); go.layer = 31;
+                    go.transform.position = new Vector3(x, 0, 0); go.transform.localScale = new Vector3(size, size, 1);
+                    var renderer = go.AddComponent<SpriteRenderer>(); renderer.sprite = SolidSprite.White;
+                    renderer.color = color; renderer.sortingOrder = order; return renderer;
+                };
+                var background = sprite("PEV.ReviewRealGpuBack", Color.blue, 0, 0, 2);
+                sprite("PEV.ReviewRealGpuFront", Color.green, 10, .5f, 1);
+                Func<Color32[]> capture = () =>
+                {
+                    try
+                    {
+                        camera.Render(); RenderTexture.active = target;
+                        read.ReadPixels(new Rect(0, 0, 128, 128), 0, 0); read.Apply(false, false);
+                        var pixels = read.GetPixels32();
+                        return new[] { pixels[64 * 128 + 48], pixels[64 * 128 + 96], pixels[64 * 128 + 4] };
+                    }
+                    finally { RenderTexture.active = prior; }
+                };
+                var before = capture();
+                var entry = new NoiseFieldRenderer.Entry
+                {
+                    Provider = manifest, Visible = true, Renderable = true, Opacity = 1f,
+                    FillColor = new Color32(255, 84, 84, 255), SortingLayerID = 0,
+                    SortingOrder = 5, UnityLayer = 31,
+                    World = new Placement.Frame { Center = Vector3.zero, Size = new Vector2(1.6f, 1.6f) }
+                };
+                var entries = new[] { entry };
+                coordinator = new NoiseFieldGpuCoordinator(manifest);
+                bool ready = false;
+                float deadline = Time.realtimeSinceStartup + 15f;
+                while (!ready && Time.realtimeSinceStartup < deadline)
+                {
+                    ready = coordinator.Render(entries, camera, 1f, true, Color.black);
+                    yield return null;
+                }
+                if (!ready) { Row("GPU-real-depth", "FAIL", "GPU group did not become ready"); yield break; }
+                var after = capture();
+                bool changed = !before[0].Equals(after[0]);
+                bool foregroundPreserved = before[1].Equals(after[1]);
+                Row("GPU-real-depth", changed && foregroundPreserved ? "PASS" : "FAIL",
+                    $"back {before[0]}->{after[0]}; front {before[1]}->{after[1]}");
+                Func<Color32[]> captureFrame = () =>
+                {
+                    try
+                    {
+                        camera.Render(); RenderTexture.active = target;
+                        read.ReadPixels(new Rect(0, 0, 128, 128), 0, 0); read.Apply(false, false);
+                        return read.GetPixels32();
+                    }
+                    finally { RenderTexture.active = prior; }
+                };
+                var frameA = captureFrame();
+                coordinator.Render(entries, camera, 2.5f, true, Color.black);
+                var frameB = captureFrame();
+                int flowChanged = 0;
+                for (int i = 0; i < frameA.Length; i++) if (!frameA[i].Equals(frameB[i])) flowChanged++;
+                Row("GPU-real-flow", flowChanged > 10 ? "PASS" : "FAIL", $"{flowChanged} pixels changed between t=1 and t=2.5");
+                coordinator.Render(entries, camera, 1f, true, Color.black);
+                background.color = Color.red;
+                var alternate = capture();
+                Row("GPU-real-capture-samples", !after[0].Equals(alternate[0]) ? "PASS" : "FAIL",
+                    $"blue {after[0]}; red {alternate[0]}");
+                coordinator.Render(entries, camera, 1f, false, Color.black);
+                var noCaptureRed = capture();
+                background.color = Color.blue;
+                var noCaptureBlue = capture();
+                // The no-capture shader still alpha-blends over the framebuffer. Switching
+                // red to blue should change only the corresponding background contribution,
+                // with identical attenuation and an unchanged green channel.
+                var nr = noCaptureRed[0]; var nb = noCaptureBlue[0];
+                bool sameBlend = Math.Abs((nr.r - nb.r) - (nb.b - nr.b)) <= 2 && Math.Abs(nr.g - nb.g) <= 2;
+                Row("GPU-real-no-capture-background", sameBlend ? "PASS" : "FAIL",
+                    $"red {noCaptureRed[0]}; blue {noCaptureBlue[0]}");
+                entry.GpuPhase = NoiseFieldPhase.Disabled;
+                for (int i = 0; i < 8; i++) { coordinator.Render(entries, camera, 1f, true, Color.black); yield return null; }
+                var disabled = capture();
+                entry.GpuPhase = NoiseFieldPhase.Ready;
+                for (int i = 0; i < 8; i++) { coordinator.Render(entries, camera, 1f, true, Color.black); yield return null; }
+                var warning = capture();
+                Row("GPU-real-three-phases", !after[0].Equals(disabled[0]) && !disabled[0].Equals(warning[0]) &&
+                    !after[0].Equals(warning[0]) ? "PASS" : "FAIL",
+                    $"active {after[0]}; disabled {disabled[0]}; ready {warning[0]}");
+                entry.GpuPhase = NoiseFieldPhase.Active;
+                var higher = new NoiseFieldRenderer.Entry
+                {
+                    Provider = manifest, Visible = true, Renderable = true, Opacity = 1f,
+                    FillColor = new Color32(255, 84, 84, 255), SortingLayerID = 0,
+                    SortingOrder = 7, UnityLayer = 31,
+                    World = new Placement.Frame { Center = Vector3.zero, Size = new Vector2(1.6f, 1.6f) }
+                };
+                var twoLayers = new[] { entry, higher };
+                for (int i = 0; i < 8; i++) { coordinator.Render(twoLayers, camera, 1f, true, Color.black); yield return null; }
+                var both = capture();
+                entry.Visible = false;
+                for (int i = 0; i < 8; i++) { coordinator.Render(twoLayers, camera, 1f, true, Color.black); yield return null; }
+                var higherOnly = capture();
+                Row("GPU-real-two-depths", !both[0].Equals(higherOnly[0]) && both[1].Equals(before[1]) ? "PASS" : "FAIL",
+                    $"both {both[0]}; upper only {higherOnly[0]}; foreground {both[1]}");
+                entry.Visible = true;
+                entry.GpuInverted = true;
+                var outer = new NoiseFieldRenderer.Entry
+                {
+                    Provider = manifest, Visible = true, Renderable = true, Opacity = 1f,
+                    FillColor = new Color32(255, 84, 84, 255), SortingLayerID = 0,
+                    SortingOrder = 5, UnityLayer = 31,
+                    World = new Placement.Frame { Center = Vector3.zero, Size = new Vector2(2.2f, 2.2f) }
+                };
+                var withHole = new[] { outer, entry };
+                for (int i = 0; i < 8; i++) { coordinator.Render(withHole, camera, 1f, true, Color.black); yield return null; }
+                var inverted = capture();
+                Row("GPU-real-invert", inverted[0].Equals(before[0]) && !inverted[2].Equals(before[2]) ? "PASS" : "FAIL",
+                    $"inside {before[0]}->{inverted[0]}; outside {before[2]}->{inverted[2]}");
+            }
+            finally
+            {
+                coordinator?.Dispose();
+                RenderTexture.active = prior;
+                if (target != null) { target.Release(); UnityEngine.Object.Destroy(target); }
+                if (read != null) UnityEngine.Object.Destroy(read);
+                foreach (var go in objects) if (go != null) UnityEngine.Object.Destroy(go);
+            }
         }
 
         private sealed class SettingsGuiProbe : MonoBehaviour

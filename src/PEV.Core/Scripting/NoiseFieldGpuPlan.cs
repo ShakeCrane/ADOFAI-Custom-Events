@@ -31,6 +31,8 @@ namespace PEV.Scripting
         private readonly Dictionary<Key, Group> _groups = new Dictionary<Key, Group>();
         private readonly List<NoiseFieldRenderer.Entry> _ordered = new List<NoiseFieldRenderer.Entry>();
         private readonly List<Key> _stale = new List<Key>();
+        private readonly Dictionary<PEV.Model.EventManifest, Color?> _defaultColors =
+            new Dictionary<PEV.Model.EventManifest, Color?>();
         private static readonly Comparison<NoiseFieldRenderer.Entry> CompareSequence =
             (a, b) => a.GpuSequence.CompareTo(b.GpuSequence);
         internal IReadOnlyDictionary<Key, Group> Groups => _groups;
@@ -72,7 +74,23 @@ namespace PEV.Scripting
                     Red = color.r, Green = color.g, Blue = color.b,
                     Active = entry.GpuPhase == NoiseFieldPhase.Active, Inverted = entry.GpuInverted
                 });
-                group.Colored |= color.r != 1f || color.g != 84f / 255f || color.b != 84f / 255f;
+                // The non-palette shader uses the package's own declared default color.
+                // A missing default is conservatively treated as custom, so no event's
+                // preferred color becomes an implicit Core-wide rule.
+                var provider = entry.Provider;
+                if (provider == null) group.Colored = true;
+                else
+                {
+                    if (!_defaultColors.TryGetValue(provider, out var expected))
+                    {
+                        string value = provider.DecorationDefaultColor;
+                        expected = !string.IsNullOrEmpty(value) && ColorUtility.TryParseHtmlString("#" + value, out var parsed)
+                            ? parsed : (Color?)null;
+                        _defaultColors.Add(provider, expected);
+                    }
+                    if (!expected.HasValue) group.Colored = true;
+                    else group.Colored |= color.r != expected.Value.r || color.g != expected.Value.g || color.b != expected.Value.b;
+                }
                 group.TouchAreas.Add(new NoiseFieldTouchGeometry.Area
                 {
                     Center = area.Center, Size = area.HalfSize * 2f,

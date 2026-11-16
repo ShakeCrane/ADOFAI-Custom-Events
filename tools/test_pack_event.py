@@ -181,7 +181,7 @@ class PackageValidationTests(unittest.TestCase):
                              "assets/BlockNoise1.png", "assets/PointNoise.png", "assets/FD_Noise_00000.png",
                              "assets/TouchHover.png", "assets/README.md", "assets/legacy/block.png",
                              "assets/legacy/point.png"}.issubset(names))
-            self.assertIn(b"invert: !!params.invert", archive.read("main.js"))
+            self.assertEqual(1, archive.read("main.js").count(b"invert: !!params.invert"))
             self.assertEqual(bundle.read_bytes(), archive.read("assets/noise-field.bundle"))
         old = output.read_bytes()
         with self.assertRaises(FileExistsError):

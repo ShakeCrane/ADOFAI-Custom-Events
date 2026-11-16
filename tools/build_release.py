@@ -20,10 +20,14 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
+
+from pack_event import validate
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE = os.path.join(ROOT, "src", "PEV.Core")
@@ -53,7 +57,8 @@ def main():
     args = ap.parse_args()
 
     out_dir = os.path.join(ROOT, args.out)
-    stage = os.path.join(out_dir, MOD_ID)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", args.version):
+        ap.error("version must contain only letters, digits, dots, underscores, plus or hyphens")
 
     if not args.skip_build:
         print("building core...")
@@ -63,49 +68,55 @@ def main():
     if not os.path.isfile(dll):
         raise SystemExit(f"missing build output: {dll}")
 
-    print("staging...")
-    if os.path.isdir(stage):
-        shutil.rmtree(stage)
-    os.makedirs(stage)
-    os.makedirs(os.path.join(stage, "Events"))
-
-    shutil.copy2(dll, stage)
-    for dep in ("Jint.dll", "Acornima.dll"):
-        src = os.path.join(PACKAGES, dep)
-        if not os.path.isfile(src):
-            raise SystemExit(f"missing dependency: {src}")
-        shutil.copy2(src, stage)
-
-    with open(os.path.join(stage, "Info.json"), "w", encoding="utf-8") as fh:
-        json.dump({
-            "Id": MOD_ID,
-            "DisplayName": "ADOFAI Programmable Events",
-            "Author": "ShakeCrane",
-            "Version": args.version,
-            "AssemblyName": "PEV.Core.dll",
-            "EntryMethod": ENTRY,
-        }, fh, indent=2)
-        fh.write("\n")
-
     for name in sorted(os.listdir(EVENTS)):
         src = os.path.join(EVENTS, name)
         if not os.path.isdir(src) or not name.endswith(".event"):
             continue
-        dst = os.path.join(stage, "Events", name)
-        shutil.copytree(src, dst)
-        print(f"  + Events/{name}")
+        with open(os.path.join(src, "event.json"), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        problems = validate(src, manifest)
+        if problems:
+            raise SystemExit(f"invalid event {name}: " + "; ".join(problems))
 
     zip_path = os.path.join(out_dir, f"{MOD_ID}-{args.version}.zip")
-    if os.path.isfile(zip_path):
-        os.remove(zip_path)
-
-    print("packing...")
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for dirpath, _dirnames, filenames in os.walk(stage):
-            for fn in filenames:
-                full = os.path.join(dirpath, fn)
-                rel = os.path.relpath(full, out_dir).replace(os.sep, "/")
-                zf.write(full, rel)
+    os.makedirs(out_dir, exist_ok=True)
+    if os.path.exists(zip_path):
+        raise SystemExit(f"refusing to overwrite existing release: {zip_path}")
+    print("staging...")
+    with tempfile.TemporaryDirectory(prefix="pev-release-") as staging_root:
+        stage = os.path.join(staging_root, MOD_ID)
+        os.makedirs(os.path.join(stage, "Events"))
+        shutil.copy2(dll, stage)
+        shutil.copy2(os.path.join(ROOT, "LICENSE"), stage)
+        shutil.copy2(os.path.join(ROOT, "docs", "INSTALL-zh-CN.md"), stage)
+        for dep in ("Jint.dll", "Acornima.dll"):
+            src = os.path.join(PACKAGES, dep)
+            if not os.path.isfile(src):
+                raise SystemExit(f"missing dependency: {src}")
+            shutil.copy2(src, stage)
+        with open(os.path.join(stage, "Info.json"), "w", encoding="utf-8") as fh:
+            json.dump({
+                "Id": MOD_ID,
+                "DisplayName": "ADOFAI Programmable Events",
+                "Author": "ShakeCrane",
+                "Version": args.version,
+                "AssemblyName": "PEV.Core.dll",
+                "EntryMethod": ENTRY,
+            }, fh, indent=2)
+            fh.write("\n")
+        for name in sorted(os.listdir(EVENTS)):
+            src = os.path.join(EVENTS, name)
+            if not os.path.isdir(src) or not name.endswith(".event"):
+                continue
+            shutil.copytree(src, os.path.join(stage, "Events", name))
+            print(f"  + Events/{name}")
+        print("packing...")
+        with zipfile.ZipFile(zip_path, "x", zipfile.ZIP_DEFLATED) as zf:
+            for dirpath, _dirnames, filenames in os.walk(stage):
+                for fn in filenames:
+                    full = os.path.join(dirpath, fn)
+                    rel = os.path.relpath(full, staging_root).replace(os.sep, "/")
+                    zf.write(full, rel)
 
     size = os.path.getsize(zip_path)
     print(f"\n{zip_path}  ({size / 1024 / 1024:.1f} MB)")

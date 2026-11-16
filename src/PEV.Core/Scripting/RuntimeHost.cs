@@ -188,7 +188,6 @@ namespace PEV.Scripting
         {
             bool playing = _live && (ADOBase.editor == null || ADOBase.editor.playMode);
             double time = _lastSongTime;
-            // The driver is disabled unless explicitly opted into the unverified draft.
             _gpuDriver.Tick(playing, time);
         }
 

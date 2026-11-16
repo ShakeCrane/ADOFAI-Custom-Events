@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 3,
+  "id": "pev.noise-field-state",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "main.js",
+  "category": "DecorationFx",
+  "name": { "en": "Noise Field State", "zh-CN": "噪域状态" },
+  "description": {
+    "en": "Set the phase of noise fields matched by tag. Warning starts at this tile and is followed by activation.",
+    "zh-CN": "按标签设置噪域状态。预警从当前格开始，结束后激活。"
+  },
+  "params": [
+    { "name": "tag", "type": "String", "default": "", "order": 0,
+      "label": { "en": "Target Tag", "zh-CN": "目标标签" } },
+    { "name": "action", "type": "Choice", "default": "Active", "order": 1,
+      "options": ["Disabled", "Ready", "Active", "WarnThenActive"],
+      "label": { "en": "State", "zh-CN": "状态" },
+      "optionLabels": {
+        "Disabled": { "en": "Disabled", "zh-CN": "未激活" },
+        "Ready": { "en": "Ready", "zh-CN": "预警" },
+        "Active": { "en": "Active", "zh-CN": "激活" },
+        "WarnThenActive": { "en": "Warn Then Activate", "zh-CN": "预警后激活" }
+      } },
+    { "name": "warningDuration", "type": "Float", "default": 0.5, "min": 0, "max": 30,
+      "unit": "s", "order": 2, "showIf": ["action", "WarnThenActive"],
+      "label": { "en": "Warning Duration", "zh-CN": "预警时长" } }
+  ]
+}

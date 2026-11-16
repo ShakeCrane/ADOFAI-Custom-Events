@@ -29,7 +29,11 @@ def stage(bundle, output):
     marker = "    fx.field(key, {\n"
     if script.count(marker) != 1:
         raise ValueError("Unexpected legacy noise driver; cannot safely add inversion")
-    script = script.replace(marker, marker + "      invert: !!params.invert,\n", 1)
+    binding = "      invert: !!params.invert,\n"
+    if script.count(binding) > 1:
+        raise ValueError("Duplicate inversion binding in noise driver")
+    if binding not in script:
+        script = script.replace(marker, marker + binding, 1)
     with tempfile.TemporaryDirectory(prefix="pev-noise-draft-") as temp:
         temp = Path(temp)
         package = temp / "NoiseField.event"

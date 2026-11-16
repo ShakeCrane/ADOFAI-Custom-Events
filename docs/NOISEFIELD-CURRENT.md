@@ -1,5 +1,7 @@
 # 噪域重做：当前进展与未完成事项
 
+> **更新：**以下为授权前的历史记录，不再代表当前状态。Unity bundle 已构建并在游戏中实测，GPU 路径已接入；最新验证、剩余限制和安装说明见 [发布验证记录](NOISEFIELD-RELEASE-VALIDATION.md) 与 [安装说明](INSTALL-zh-CN.md)。
+
 2026-11-16，本轮起始基线 `46ae7a8`。目标仍是复现 Phira-Pro 固定提交 `c8fb11c6a41faaf1233a5affabf87b0223e2edd8` 的默认噪域。用户要求暂不登录 Unity；本记录不把未运行的方案记为已完成。
 
 ## 当前结论

@@ -27,7 +27,9 @@ def main():
     env = os.environ.copy()
     env["PEV_NOISE_BUNDLE_OUTPUT"] = str(output)
     log = project / "build.log"
-    result = subprocess.run([str(args.unity.resolve()), "-batchmode", "-quit", "-projectPath", str(project),
+    # This isolated shader project has no package dependencies. Avoid a global UPM
+    # installation or network failure preventing an otherwise self-contained build.
+    result = subprocess.run([str(args.unity.resolve()), "-batchmode", "-quit", "-noUpm", "-projectPath", str(project),
                              "-executeMethod", "BuildNoiseBundle.Build", "-logFile", str(log)], env=env)
     print(f"Unity exit code: {result.returncode}; log: {log}")
     if result.returncode:

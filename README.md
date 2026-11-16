@@ -102,6 +102,7 @@ Shipped in `Mods/PEV.Core/Events/`:
 | `ScreenShake` | Two instances of one event keeping separate state |
 | `Pulse` | Continuous per-frame animation via `update(t)` |
 | `NoiseField` | Stored as a real decoration: place, drag, resize and retag it with the editor's own tools; MoveDecorations drives it by tag |
+| `NoiseFieldState` | Controls matching noise fields by tag, including warning and activation |
 
 ---
 
@@ -153,9 +154,10 @@ UMM `0.32.5.0`:
 - script sandbox blocks CLR access, `eval`, runaway loops and recursion
 - continuous effects run per frame and clean up after themselves
 
-Known gaps: visual output has not been inspected by eye; all testing used synthetic
-charts at realistic density rather than real community levels; real mouse interaction
-with the palette was not exercised.
+The GPU noise field has been exercised in the game, including depth, capture modes,
+states and inversion. Testing used synthetic charts; real community charts, different
+GPUs and full frame-by-frame comparison in Unity remain to be verified. See
+[noise field validation](docs/NOISEFIELD-RELEASE-VALIDATION.md).
 
 ---
 

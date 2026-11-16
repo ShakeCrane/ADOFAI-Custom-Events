@@ -622,13 +622,19 @@ namespace PEV.Diagnostics
                 yield return new WaitForSeconds(0.05f);
 
             float fieldDeadline = Time.realtimeSinceStartup + 20f;
-            while (NoiseFieldRenderer.AllEntries().Any(e => e.Visible && e.Renderable && e.GameObject == null) &&
+            while (NoiseFieldRenderer.AllEntries().Any(e => e.Visible && e.Renderable && e.GameObject == null &&
+                       !NoiseFieldRenderer.IsGpuProviderActive(e.Provider)) &&
                    Time.realtimeSinceStartup < fieldDeadline)
                 yield return null;
 
             Row("LIVE-during-play", NoiseFieldRenderer.LiveCount.ToString(),
                 $"textureSets={NoiseFieldRenderer.TextureSets}");
+            if (!string.IsNullOrEmpty(manifest.ShaderBundlePath))
+                Row("GPU-takeover", NoiseFieldRenderer.IsGpuProviderActive(manifest) ? "PASS" : "FAIL",
+                    "the event's GPU provider must take over during playback");
+            bool gpuActive = NoiseFieldRenderer.IsGpuProviderActive(manifest);
             Row("LAYERS", $"{NoiseFieldRenderer.LayerCount}/{NoiseFieldRenderer.LiveCount}",
+                gpuActive ? "GPU provider active; CPU layer count does not measure GPU groups" :
                 NoiseFieldRenderer.LayerCount < NoiseFieldRenderer.LiveCount ? "PASS same-depth union" : "CHECK no merge");
             Row("LAYER-BOXES", NoiseFieldRenderer.LayerReport(), "world extents per composited quad");
             foreach (var e in NoiseFieldRenderer.AllEntries())
@@ -685,16 +691,22 @@ namespace PEV.Diagnostics
             {
                 yield return new WaitForSeconds(0.15f);
                 var e = FirstEntry();
-                if (e == null || e.GameObject == null) continue;
+                if (e == null || (e.GameObject == null && !NoiseFieldRenderer.IsGpuProviderActive(e.Provider))) continue;
                 if (firstFrame < 0) { firstFrame = e.FrameIndex; firstUvX = e.Uv.x; firstUvY = e.Uv.y; }
                 lastFrame = e.FrameIndex;
                 lastUvX = e.Uv.x;
                 lastUvY = e.Uv.y;
-                samples.Add($"t{i}: frame={e.FrameIndex} uv=({e.Uv.x:F3},{e.Uv.y:F3}) order={e.SortingOrder} scale={e.GameObject.transform.localScale}");
+                samples.Add($"t{i}: frame={e.FrameIndex} uv=({e.Uv.x:F3},{e.Uv.y:F3}) order={e.SortingOrder} " +
+                    (e.GameObject != null ? $"scale={e.GameObject.transform.localScale}" : "GPU provider"));
             }
             foreach (var s in samples) Row("SAMPLE", s, "");
 
-            if (firstFrame >= 0)
+            if (gpuActive)
+            {
+                Row("ANIMATES", "INFO", "GPU animation uses shader time; see GPU-real-flow pixel test");
+                Row("UV-MOVING", "INFO", "legacy baked UV is not used to animate the GPU field");
+            }
+            else if (firstFrame >= 0)
             {
                 bool frameMoved = firstFrame != lastFrame;
                 bool uvMoved = Math.Abs(lastUvX - firstUvX) > 1e-3f || Math.Abs(lastUvY - firstUvY) > 1e-3f;
