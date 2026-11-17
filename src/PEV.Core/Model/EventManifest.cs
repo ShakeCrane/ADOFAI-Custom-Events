@@ -23,6 +23,12 @@ namespace PEV.Model
         public float[] Values;
     }
 
+    public sealed class ImageAssetSpec
+    {
+        public string Path, Wrap, Filter;
+        public bool FlipY, Linear;
+    }
+
     public sealed class FieldWaveSpec
     {
         public string Name;
@@ -185,8 +191,8 @@ namespace PEV.Model
         public string HostPrimitive;
         public readonly List<FieldUniformSpec> FieldUniforms = new List<FieldUniformSpec>();
         public readonly List<FieldWaveSpec> FieldWaves = new List<FieldWaveSpec>();
-        public readonly Dictionary<string, string> FieldTextures = new Dictionary<string, string>(StringComparer.Ordinal);
-        public readonly Dictionary<string, string> FieldShaders = new Dictionary<string, string>(StringComparer.Ordinal);
+        public readonly Dictionary<string, ImageAssetSpec> ImageAssets = new Dictionary<string, ImageAssetSpec>(StringComparer.Ordinal);
+        public readonly Dictionary<string, string> ShaderAssets = new Dictionary<string, string>(StringComparer.Ordinal);
         public string FieldPreviewKey;
         public readonly Dictionary<string, string> FieldParameterBindings = new Dictionary<string, string>(StringComparer.Ordinal);
         public readonly List<DecorationMigrationBinding> DecorationMigration = new List<DecorationMigrationBinding>();
@@ -354,6 +360,27 @@ namespace PEV.Model
                     m.PixelResources.Add(entry.Name, entry.Value.Value<string>().Replace('\\', '/'));
                 }
             }
+            if (root["shaderAssets"] != null &&
+                (m.SchemaVersion < 4 || string.IsNullOrEmpty(m.ShaderBundlePath) || !ReadNamedResourceMap(root["shaderAssets"], m.ShaderAssets)))
+            { error = "shaderAssets requires schemaVersion 4, a shader bundle and package-relative asset names"; return null; }
+            if (root["imageAssets"] != null)
+            {
+                if (m.SchemaVersion < 4 || !(root["imageAssets"] is JObject images) || images.Count < 1 || images.Count > 16)
+                { error = "imageAssets requires schemaVersion 4 and 1-16 named images"; return null; }
+                foreach (var item in images.Properties())
+                {
+                    if (!ValidFieldArgumentName(item.Name) || !(item.Value is JObject spec) || spec.Count != 5 ||
+                        spec["path"]?.Type != JTokenType.String || !PEV.Loading.EventLoader.IsPackageRelativePath(spec.Value<string>("path")) ||
+                        spec["wrap"]?.Type != JTokenType.String || spec["filter"]?.Type != JTokenType.String ||
+                        spec["flipY"]?.Type != JTokenType.Boolean || spec["linear"]?.Type != JTokenType.Boolean)
+                    { error = "invalid image asset declaration"; return null; }
+                    string wrap = spec.Value<string>("wrap"), filter = spec.Value<string>("filter");
+                    if ((wrap != "clamp" && wrap != "repeat" && wrap != "mirror") || (filter != "point" && filter != "linear"))
+                    { error = "invalid image asset sampling"; return null; }
+                    m.ImageAssets.Add(item.Name, new ImageAssetSpec { Path = spec.Value<string>("path").Replace('\\', '/'),
+                        Wrap = wrap, Filter = filter, FlipY = spec.Value<bool>("flipY"), Linear = spec.Value<bool>("linear") });
+                }
+            }
             if (root["shaderBundle"] != null &&
                 (m.SchemaVersion < 2 || !PEV.Loading.EventLoader.IsPackageRelativePath(m.ShaderBundlePath)))
             {
@@ -455,17 +482,6 @@ namespace PEV.Model
                     }
                     m.FieldUniforms.Add(new FieldUniformSpec { Name = property.Name, Values = converted });
                 }
-            }
-
-            if (root["fieldTextures"] != null || root["fieldShaders"] != null ||
-                (m.HostPrimitive == "fx.field" && !string.IsNullOrEmpty(m.ShaderBundlePath)))
-            {
-                if (m.SchemaVersion < 3 || m.HostPrimitive != "fx.field" ||
-                    !ReadResourceMap(root["fieldTextures"], m.FieldTextures, new[] { "displacement", "spark", "noise", "touch" }) ||
-                    !(m.SchemaVersion >= 4
-                        ? ReadNamedResourceMap(root["fieldShaders"], m.FieldShaders) && m.FieldShaders.ContainsKey("compute")
-                        : ReadResourceMap(root["fieldShaders"], m.FieldShaders, new[] { "compute", "disabled", "activeCapture", "hoverCapture", "activeNoCapture", "hoverNoCapture", "disabledColored", "activeCaptureColored", "hoverCaptureColored", "activeNoCaptureColored", "hoverNoCaptureColored" })))
-                { error = "field shader providers require package-relative fieldTextures and fieldShaders for every role"; return null; }
             }
 
             if (root["fieldPreview"] != null)
@@ -573,19 +589,6 @@ namespace PEV.Model
                 }
             }
             return m;
-        }
-
-        private static bool ReadResourceMap(JToken token, Dictionary<string, string> target, string[] roles)
-        {
-            if (!(token is JObject map) || map.Count != roles.Length) return false;
-            foreach (var role in roles)
-            {
-                if (map[role]?.Type != JTokenType.String) return false;
-                string path = map.Value<string>(role);
-                if (!PEV.Loading.EventLoader.IsPackageRelativePath(path)) return false;
-                target[role] = path;
-            }
-            return true;
         }
 
         private static bool ReadNamedResourceMap(JToken token, Dictionary<string, string> target)

@@ -41,6 +41,7 @@ namespace PEV.Scripting
         internal readonly Dictionary<string, string> Outputs = new Dictionary<string, string>(StringComparer.Ordinal);
         internal readonly List<Uniform> Uniforms = new List<Uniform>();
         internal int Divisor, Multiplier;
+        internal string ShaderRole;
         private static readonly Regex Identifier = new Regex("^[A-Za-z_][A-Za-z0-9_]{0,63}$", RegexOptions.CultureInvariant);
         private static bool ValidName(string value) => !string.IsNullOrEmpty(value) && Identifier.IsMatch(value) &&
             value != "__proto__" && value != "constructor" && value != "prototype";
@@ -68,7 +69,8 @@ namespace PEV.Scripting
             }
             if (Int(root["version"], 1, 1) != 1 || !(root["resolution"] is JObject resolution))
                 throw new ArgumentException("invalid compute graph version or resolution");
-            var graph = new GpuGraphDefinition { Divisor = Int(resolution["divisor"], 1, 64), Multiplier = Int(resolution["multiplier"], 1, 8) };
+            var graph = new GpuGraphDefinition { Divisor = Int(resolution["divisor"], 1, 64), Multiplier = Int(resolution["multiplier"], 1, 8),
+                ShaderRole = Name(root["shader"]) };
             if (!(root["resources"] is JArray resources) || resources.Count < 1 || resources.Count > 16)
                 throw new ArgumentException("invalid compute graph resources");
             foreach (var token in resources)

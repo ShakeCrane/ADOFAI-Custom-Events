@@ -15,16 +15,14 @@ namespace PEV.Scripting
         internal static Texture2D Load(EventManifest manifest, string role, out string error)
         {
             error = null;
-            bool touch = role == "touch";
-            bool point = role == "spark";
             if (manifest == null || string.IsNullOrEmpty(manifest.SourcePath) ||
-                (role != "displacement" && role != "noise" && !point && !touch) ||
-                !manifest.FieldTextures.TryGetValue(role, out var path) || !EventLoader.IsPackageRelativePath(path))
+                !manifest.ImageAssets.TryGetValue(role, out var spec) || !EventLoader.IsPackageRelativePath(spec.Path))
             {
                 error = "unknown texture role, package or resource path";
                 return null;
             }
-            string key = manifest.SourcePath + "\n" + role + "\n" + path;
+            string path = spec.Path;
+            string key = PackageIdentity.Of(manifest) + "\n" + role + "\n" + path;
             if (Cache.TryGetValue(key, out var existing) && existing != null) return existing;
             Texture2D texture = null;
             try
@@ -38,7 +36,7 @@ namespace PEV.Scripting
                     return null;
                 }
                 // The decoder returns PNG top-down rows; Unity's first row is bottom-up.
-                for (int y = 0; y < height / 2; y++)
+                for (int y = 0; spec.FlipY && y < height / 2; y++)
                 {
                     int opposite = height - 1 - y;
                     for (int x = 0; x < width; x++)
@@ -47,11 +45,11 @@ namespace PEV.Scripting
                         var swap = pixels[a]; pixels[a] = pixels[b]; pixels[b] = swap;
                     }
                 }
-                texture = new Texture2D(width, height, TextureFormat.RGBA32, false, true)
+                texture = new Texture2D(width, height, TextureFormat.RGBA32, false, spec.Linear)
                 {
                     name = "PEV.Field." + role,
-                    wrapMode = touch ? TextureWrapMode.Clamp : point ? TextureWrapMode.Repeat : TextureWrapMode.Mirror,
-                    filterMode = touch ? FilterMode.Bilinear : FilterMode.Point
+                    wrapMode = spec.Wrap == "mirror" ? TextureWrapMode.Mirror : spec.Wrap == "repeat" ? TextureWrapMode.Repeat : TextureWrapMode.Clamp,
+                    filterMode = spec.Filter == "linear" ? FilterMode.Bilinear : FilterMode.Point
                 };
                 texture.SetPixels32(pixels);
                 texture.Apply(false, false);

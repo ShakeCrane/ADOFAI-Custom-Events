@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using PEV.Loading;
 using PEV.Model;
 using UnityEngine;
@@ -10,7 +12,9 @@ namespace PEV.Scripting
     internal static class ShaderBundleCache
     {
         private static readonly Dictionary<string, AssetBundle> Bundles =
-            new Dictionary<string, AssetBundle>(StringComparer.OrdinalIgnoreCase);
+            new Dictionary<string, AssetBundle>(StringComparer.Ordinal);
+        private sealed class Identity { internal string Hash; }
+        private static ConditionalWeakTable<EventManifest, Identity> Identities = new ConditionalWeakTable<EventManifest, Identity>();
 
         // Called on Unity's main thread. The caller owns materials created from the shader;
         // release those before Clear unloads the cached bundles.
@@ -45,25 +49,31 @@ namespace PEV.Scripting
                 error = "shader bundle, package or asset name is missing";
                 return null;
             }
-            string key = manifest.SourcePath + "\n" + manifest.ShaderBundlePath;
             try
             {
-                if (!Bundles.TryGetValue(key, out var bundle) || bundle == null)
+                if (!Identities.TryGetValue(manifest, out var identity))
                 {
-                    byte[] bytes = EventLoader.ReadResource(manifest.SourcePath, manifest.ShaderBundlePath);
+                    byte[] bytes = EventLoader.ReadResource(manifest.SourcePath, manifest.ShaderBundlePath, 64 * 1024 * 1024);
                     if (bytes == null || bytes.Length == 0)
                     {
                         error = $"bundle '{manifest.ShaderBundlePath}' is missing or empty";
                         return null;
                     }
-                    bundle = AssetBundle.LoadFromMemory(bytes);
-                    if (bundle == null)
+                    string hash;
+                    using (var sha = SHA256.Create()) hash = BitConverter.ToString(sha.ComputeHash(bytes));
+                    if (!Bundles.TryGetValue(hash, out var cached) || cached == null)
                     {
-                        error = $"bundle '{manifest.ShaderBundlePath}' could not be loaded";
-                        return null;
+                        cached = AssetBundle.LoadFromMemory(bytes);
+                        if (cached == null)
+                        {
+                            error = $"bundle '{manifest.ShaderBundlePath}' could not be loaded";
+                            return null;
+                        }
+                        Bundles[hash] = cached;
                     }
-                    Bundles[key] = bundle;
+                    identity = new Identity { Hash = hash }; Identities.Add(manifest, identity);
                 }
+                var bundle = Bundles[identity.Hash];
                 T asset = bundle.LoadAsset<T>(assetName);
                 if (asset == null) error = $"asset '{assetName}' is missing from '{manifest.ShaderBundlePath}'";
                 return asset;
@@ -80,6 +90,7 @@ namespace PEV.Scripting
             foreach (var bundle in Bundles.Values)
                 if (bundle != null) bundle.Unload(true);
             Bundles.Clear();
+            Identities = new ConditionalWeakTable<EventManifest, Identity>();
         }
     }
 }

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "id": "pev.noise-field",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
@@ -21,12 +21,6 @@
       "glitchRange": "glitch"
     }
   },
-  "fieldTextures": {
-    "displacement": "assets/BlockNoise1.png",
-    "spark": "assets/PointNoise.png",
-    "noise": "assets/FD_Noise_00000.png",
-    "touch": "assets/TouchHover.png"
-  },
   "fieldWaves": {
     "_TouchPosShine": {
       "base": 0.63,
@@ -34,19 +28,6 @@
       "frequency": 43,
       "scale": 2
     }
-  },
-  "fieldShaders": {
-    "compute": "assets/noisefieldcoverage.compute",
-    "disabled": "assets/generated/PEVNoise_100_disabled.shader",
-    "activeCapture": "assets/generated/PEVNoise_000_capture.shader",
-    "hoverCapture": "assets/generated/PEVNoise_010_capture.shader",
-    "activeNoCapture": "assets/generated/PEVNoise_000_nocapture.shader",
-    "hoverNoCapture": "assets/generated/PEVNoise_010_nocapture.shader",
-    "disabledColored": "assets/generated/PEVNoise_101_disabled.shader",
-    "activeCaptureColored": "assets/generated/PEVNoise_001_capture.shader",
-    "hoverCaptureColored": "assets/generated/PEVNoise_011_capture.shader",
-    "activeNoCaptureColored": "assets/generated/PEVNoise_001_nocapture.shader",
-    "hoverNoCaptureColored": "assets/generated/PEVNoise_011_nocapture.shader"
   },
   "decorationDefaults": {
     "color": "ff5454",
@@ -603,5 +584,48 @@
   "pixelResources": {
     "block": "assets/legacy/block.png",
     "point": "assets/legacy/point.png"
+  },
+  "shaderAssets": {
+    "compute": "assets/noisefieldcoverage.compute",
+    "disabled": "assets/generated/PEVNoise_100_disabled.shader",
+    "activeCapture": "assets/generated/PEVNoise_000_capture.shader",
+    "hoverCapture": "assets/generated/PEVNoise_010_capture.shader",
+    "activeNoCapture": "assets/generated/PEVNoise_000_nocapture.shader",
+    "hoverNoCapture": "assets/generated/PEVNoise_010_nocapture.shader",
+    "disabledColored": "assets/generated/PEVNoise_101_disabled.shader",
+    "activeCaptureColored": "assets/generated/PEVNoise_001_capture.shader",
+    "hoverCaptureColored": "assets/generated/PEVNoise_011_capture.shader",
+    "activeNoCaptureColored": "assets/generated/PEVNoise_001_nocapture.shader",
+    "hoverNoCaptureColored": "assets/generated/PEVNoise_011_nocapture.shader"
+  },
+  "imageAssets": {
+    "displacement": {
+      "path": "assets/BlockNoise1.png",
+      "wrap": "mirror",
+      "filter": "point",
+      "flipY": true,
+      "linear": true
+    },
+    "spark": {
+      "path": "assets/PointNoise.png",
+      "wrap": "repeat",
+      "filter": "point",
+      "flipY": true,
+      "linear": true
+    },
+    "noise": {
+      "path": "assets/FD_Noise_00000.png",
+      "wrap": "mirror",
+      "filter": "point",
+      "flipY": true,
+      "linear": true
+    },
+    "touch": {
+      "path": "assets/TouchHover.png",
+      "wrap": "clamp",
+      "filter": "linear",
+      "flipY": true,
+      "linear": true
+    }
   }
 }

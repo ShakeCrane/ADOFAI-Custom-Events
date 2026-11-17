@@ -44,7 +44,7 @@ namespace PEV.Scripting
         private readonly RegionModes _modes;
         private readonly CompositorDefinition _compositor;
         private readonly string _contactProgram;
-        private readonly Texture2D _displacement, _spark, _noise, _touch;
+        private Texture2D _displacement, _spark, _noise, _touch;
         private readonly NoiseFieldGpuPlan _plan = new NoiseFieldGpuPlan();
         private readonly NoiseFieldGroupStaging<NoiseFieldGpuPlan.Key, Group> _staging =
             new NoiseFieldGroupStaging<NoiseFieldGpuPlan.Key, Group>();
@@ -53,37 +53,40 @@ namespace PEV.Scripting
         internal NoiseFieldGpuCoordinator(EventManifest manifest)
         {
             _manifest = manifest ?? throw new ArgumentNullException(nameof(manifest));
-            if (!manifest.FieldShaders.TryGetValue("compute", out var computePath))
-                throw new InvalidOperationException("Field compute shader role is not declared");
-            _compute = ShaderBundleCache.LoadCompute(manifest, computePath, out string error);
-            if (_compute == null) throw new InvalidOperationException(error);
             if (!manifest.ComputeGraphs.TryGetValue("coverage", out var graphPath))
                 throw new InvalidOperationException("Field compute graph is not declared");
             var graphBytes = EventLoader.ReadResource(manifest.SourcePath, graphPath, 131072);
             _graph = GpuGraphDefinition.Parse(graphBytes);
             _modes = RegionModes.Parse(graphBytes);
             _compositor = CompositorDefinition.Parse(graphBytes);
+            if (!manifest.ShaderAssets.TryGetValue(_graph.ShaderRole, out var computePath))
+                throw new InvalidOperationException("Compute shader role is not declared");
+            _compute = ShaderBundleCache.LoadCompute(manifest, computePath, out string error);
+            if (_compute == null) throw new InvalidOperationException(error);
             if (!manifest.VectorPrograms.TryGetValue("contacts", out var contactPath))
                 throw new InvalidOperationException("Field contact controller is not declared");
             var contactBytes = EventLoader.ReadResource(manifest.SourcePath, contactPath, 262144);
             if (contactBytes == null) throw new InvalidOperationException("Field contact controller is missing");
             _contactProgram = new UTF8Encoding(false, true).GetString(contactBytes);
-            _displacement = RequireTexture(manifest, "displacement");
-            _spark = RequireTexture(manifest, "spark");
-            _noise = RequireTexture(manifest, "noise");
-            _touch = RequireTexture(manifest, "touch");
         }
 
-        private static Texture2D RequireTexture(EventManifest manifest, string name)
+        private bool EnsureTexture(string name, ref Texture2D texture)
         {
-            var texture = ReferenceNoiseTextures.Load(manifest, name, out string error);
-            return texture != null ? texture : throw new InvalidOperationException(error);
+            if (texture != null) return true;
+            bool ready = PackageImageCache.TryGet(_manifest, name, out texture, out string error);
+            if (error != null) throw new InvalidOperationException(error);
+            return ready;
         }
 
         internal bool Render(IReadOnlyList<NoiseFieldRenderer.Entry> entries, Camera camera, float songTime,
             bool captureScene, Color fallbackBackground)
         {
             if (camera == null || !camera.orthographic) throw new NotSupportedException("An orthographic camera is required");
+            bool assets = EnsureTexture("displacement", ref _displacement);
+            assets &= EnsureTexture("spark", ref _spark);
+            assets &= EnsureTexture("noise", ref _noise);
+            assets &= EnsureTexture("touch", ref _touch);
+            if (!assets) return _staging.Committed;
             float aspect = Mathf.Min(camera.aspect, 16f / 9f);
             _plan.Build(entries, camera, aspect, _modes, GameBridge.Values);
             NoiseFieldPlanetInputs.Collect(camera, _planets);

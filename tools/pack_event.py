@@ -106,6 +106,35 @@ def validate(root, manifest, _included=False):
                         not os.path.isfile(os.path.join(root, normalized))):
                     problems.append(f"invalid or missing {declaration} resource '{name}'")
 
+    if "shaderAssets" in manifest:
+        assets = manifest["shaderAssets"]
+        if (manifest.get("schemaVersion") != 4 or not manifest.get("shaderBundle") or not isinstance(assets, dict) or
+                not 1 <= len(assets) <= 32):
+            problems.append("shaderAssets requires schemaVersion 4 and a shader bundle")
+        else:
+            for name, path in assets.items():
+                if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name) or name.startswith("__") or
+                        not isinstance(path, str) or not path.strip() or path.replace("\\", "/").startswith("/") or
+                        ":" in path or ".." in PurePosixPath(path.replace("\\", "/")).parts):
+                    problems.append(f"invalid shader asset {name!r}")
+
+    if "imageAssets" in manifest:
+        images = manifest["imageAssets"]
+        if manifest.get("schemaVersion") != 4 or not isinstance(images, dict) or not 1 <= len(images) <= 16:
+            problems.append("imageAssets requires schemaVersion 4 and 1-16 named images")
+        else:
+            for name, spec in images.items():
+                if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name) or name.startswith("__") or
+                        not isinstance(spec, dict) or set(spec) != {"path", "wrap", "filter", "flipY", "linear"} or
+                        spec.get("wrap") not in ("clamp", "repeat", "mirror") or spec.get("filter") not in ("point", "linear") or
+                        type(spec.get("flipY")) is not bool or type(spec.get("linear")) is not bool or
+                        not isinstance(spec.get("path"), str)):
+                    problems.append(f"invalid image asset {name!r}")
+                    continue
+                path = spec["path"].replace("\\", "/")
+                if not path.strip() or path.startswith("/") or ":" in path or ".." in PurePosixPath(path).parts or not os.path.isfile(os.path.join(root, path)):
+                    problems.append(f"invalid or missing image asset {name!r}")
+
     for field in REQUIRED_FIELDS:
         if field not in manifest:
             problems.append(f"missing required field '{field}'")
@@ -231,7 +260,7 @@ def validate(root, manifest, _included=False):
                         not all(valid_uniform_number(v) for v in wave.values())):
                     problems.append(f"invalid field wave {name!r}")
 
-    if "fieldTextures" in manifest or "fieldShaders" in manifest or (primitive == "fx.field" and manifest.get("shaderBundle")):
+    if "fieldTextures" in manifest or "fieldShaders" in manifest or (manifest.get("schemaVersion") == 3 and primitive == "fx.field" and manifest.get("shaderBundle")):
         texture_roles = {"displacement", "spark", "noise", "touch"}
         shader_roles = {"compute", "disabled", "activeCapture", "hoverCapture", "activeNoCapture", "hoverNoCapture",
                         "disabledColored", "activeCaptureColored", "hoverCaptureColored", "activeNoCaptureColored", "hoverNoCaptureColored"}

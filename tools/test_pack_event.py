@@ -40,6 +40,18 @@ class PackageValidationTests(unittest.TestCase):
                 self.assertTrue(validate(self.root, dict(valid, pixelResources=resources)))
         self.assertTrue(validate(self.root, dict(valid, schemaVersion=3)))
 
+    def test_generic_shader_and_image_assets(self):
+        (self.root / "field.bundle").write_bytes(b"fixture")
+        (self.root / "texture.png").write_bytes(b"fixture")
+        image = {"path": "texture.png", "wrap": "mirror", "filter": "point", "flipY": True, "linear": True}
+        valid = dict(self.manifest, schemaVersion=4, shaderBundle="field.bundle",
+                     shaderAssets={"myShader": "assets/myShader"}, imageAssets={"myImage": image})
+        self.assertEqual([], validate(self.root, valid))
+        for bad in (dict(image, path="../escape"), dict(image, wrap="invalid"), dict(image, flipY="true"), {}):
+            self.assertTrue(validate(self.root, dict(valid, imageAssets={"myImage": bad})))
+        self.assertTrue(validate(self.root, dict(valid, shaderAssets={"myShader": "../escape"})))
+        self.assertTrue(validate(self.root, dict(valid, schemaVersion=3)))
+
     def test_non_object_manifest(self):
         for value in (None, [], "manifest", 1):
             with self.subTest(value=value):

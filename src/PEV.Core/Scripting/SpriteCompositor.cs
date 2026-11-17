@@ -32,7 +32,7 @@ namespace PEV.Scripting
                     foreach (var variant in layer.Variants)
                     {
                         if (_materials.ContainsKey(variant.Shader)) continue;
-                        if (!manifest.FieldShaders.TryGetValue(variant.Shader, out var path))
+                        if (!manifest.ShaderAssets.TryGetValue(variant.Shader, out var path))
                             throw new InvalidOperationException("Shader role is not declared: " + variant.Shader);
                         var shader = ShaderBundleCache.Load(manifest, path, out string error);
                         if (shader == null) throw new InvalidOperationException(error);

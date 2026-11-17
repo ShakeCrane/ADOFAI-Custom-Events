@@ -765,7 +765,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             if (!EventRegistry.TryGetById("pev.noise-field", out var manifest))
             { Row("GPU-real-bundle-assets", "FAIL", "event not registered"); yield break; }
             bool assets = true;
-            foreach (var item in manifest.FieldShaders)
+            foreach (var item in manifest.ShaderAssets)
             {
                 string error;
                 if (item.Key == "compute")
@@ -776,8 +776,18 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 else if (ShaderBundleCache.Load(manifest, item.Value, out error) == null)
                 { assets = false; Row("GPU-real-asset-" + item.Key, "FAIL", error); }
             }
-            Row("GPU-real-bundle-assets", assets && manifest.FieldShaders.Count == 11 ? "PASS" : "FAIL");
+            Row("GPU-real-bundle-assets", assets && manifest.ShaderAssets.Count == 11 ? "PASS" : "FAIL");
             if (!assets) yield break;
+            Check("GPU-identical-bundle-sharing", () =>
+            {
+                string json = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, "event.json"));
+                var clone = EventManifest.Parse(json, manifest.SourcePath, out _);
+                if (clone == null) return false;
+                var first = ShaderBundleCache.LoadCompute(manifest, manifest.ShaderAssets["compute"], out _);
+                var second = ShaderBundleCache.LoadCompute(clone, clone.ShaderAssets["compute"], out _);
+                return first != null && first == second;
+            });
+            yield return CheckPackageImages(manifest);
             Check("GPU-package-graph-parity", () => CheckGpuGraphParity(manifest));
             Check("GPU-package-graph-limits", () => CheckGpuGraphLimits(manifest));
             Check("GPU-package-region-modes", () => CheckRegionModes(manifest));
@@ -823,6 +833,53 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             yield return CheckRealFieldDepthSafe(manifest);
             yield return CheckRealFieldDriver(manifest);
             yield return CheckRealGpuFailureFallback(manifest);
+        }
+
+        private static IEnumerator CheckPackageImages(EventManifest manifest)
+        {
+            // Exercise cancellation before background decode finishes, then reload all assets.
+            foreach (var role in manifest.ImageAssets.Keys) PackageImageCache.TryGet(manifest, role, out _, out _);
+            PackageImageCache.Clear();
+            float deadline = Time.realtimeSinceStartup + 10f;
+            bool ready = false; string error = null;
+            while (!ready && error == null && Time.realtimeSinceStartup < deadline)
+            {
+                ready = true;
+                foreach (var role in manifest.ImageAssets.Keys)
+                {
+                    bool loaded = PackageImageCache.TryGet(manifest, role, out _, out var failure);
+                    if (failure != null) error = failure;
+                    ready &= loaded;
+                }
+                if (!ready && error == null) yield return null;
+            }
+            if (!ready) { Row("GPU-package-image-cache", "FAIL", error ?? "image load timed out"); yield break; }
+            foreach (var role in manifest.ImageAssets.Keys)
+            {
+                if (!PackageImageCache.TryGet(manifest, role, out var actual, out error))
+                { Row("GPU-package-image-cache", "FAIL", error); yield break; }
+                var reference = ReferenceNoiseTextures.Load(manifest, role, out error);
+                if (reference == null || actual.width != reference.width || actual.height != reference.height ||
+                    actual.wrapMode != reference.wrapMode || actual.filterMode != reference.filterMode ||
+                    !actual.GetPixels32().SequenceEqual(reference.GetPixels32()))
+                { Row("GPU-package-image-cache", "FAIL", "image mismatch: " + role + "; " + error); yield break; }
+            }
+            string json = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, "event.json"));
+            var clone = EventManifest.Parse(json, manifest.SourcePath, out error);
+            if (clone == null) { Row("GPU-package-image-cache", "FAIL", error); yield break; }
+            clone.ImageAssets["displacement"].FlipY = false;
+            Texture2D independent = null;
+            deadline = Time.realtimeSinceStartup + 10f;
+            while (!PackageImageCache.TryGet(clone, "displacement", out independent, out error) && error == null && Time.realtimeSinceStartup < deadline)
+                yield return null;
+            if (independent == null || !PackageImageCache.TryGet(manifest, "displacement", out var original, out error) || independent == original)
+            { Row("GPU-package-image-cache", "FAIL", "package instances did not retain independent sampling"); yield break; }
+            var firstPixels = original.GetPixels32(); var secondPixels = independent.GetPixels32();
+            for (int y = 0; y < original.height; y++)
+                for (int x = 0; x < original.width; x++)
+                    if (!firstPixels[y * original.width + x].Equals(secondPixels[(original.height - 1 - y) * original.width + x]))
+                    { Row("GPU-package-image-cache", "FAIL", "independent image orientation differs"); yield break; }
+            Row("GPU-package-image-cache", "PASS", "asynchronous decode, cancellation and byte-identical textures");
         }
 
         private static bool CheckBakePlan(EventManifest manifest)
@@ -931,7 +988,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 byte[] graphData = EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072);
                 var graph = GpuGraphDefinition.Parse(graphData);
                 var compositor = CompositorDefinition.Parse(graphData);
-                var shader = ShaderBundleCache.LoadCompute(manifest, manifest.FieldShaders["compute"], out string error);
+                var shader = ShaderBundleCache.LoadCompute(manifest, manifest.ShaderAssets["compute"], out string error);
                 if (shader == null) throw new InvalidOperationException(error);
                 var displacement = ReferenceNoiseTextures.Load(manifest, "displacement", out error);
                 var spark = ReferenceNoiseTextures.Load(manifest, "spark", out error);
@@ -1103,7 +1160,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
         private static bool CheckGpuGraphParity(EventManifest manifest)
         {
             var definition = GpuGraphDefinition.Parse(EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072));
-            var shader = ShaderBundleCache.LoadCompute(manifest, manifest.FieldShaders["compute"], out var error);
+            var shader = ShaderBundleCache.LoadCompute(manifest, manifest.ShaderAssets["compute"], out var error);
             if (shader == null) throw new InvalidOperationException(error);
             var noise = ReferenceNoiseTextures.Load(manifest, "displacement", out error);
             if (noise == null) throw new InvalidOperationException(error);
@@ -1546,20 +1603,20 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Check("FIELD-event-asset-roles", () =>
             {
                 if (!EventRegistry.TryGetById("pev.noise-field", out var manifest) || manifest.SchemaVersion < 3) return true;
-                if (!manifest.FieldTextures.ContainsKey("displacement") || !manifest.FieldShaders.ContainsKey("compute") ||
-                    manifest.FieldShaders.Count != 11 || manifest.FieldTextures.Count != 4) return false;
+                if (!manifest.ImageAssets.ContainsKey("displacement") || !manifest.ShaderAssets.ContainsKey("compute") ||
+                    manifest.ShaderAssets.Count != 11 || manifest.ImageAssets.Count != 4) return false;
                 var json = JObject.Parse(System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, "event.json")));
-                json["fieldTextures"]["touch"] = "../outside";
+                json["imageAssets"]["touch"]["path"] = "../outside";
                 return EventManifest.Parse(json.ToString(), "", out _) == null;
             });
             Check("FIELD-custom-shader-roles", () =>
             {
                 if (!EventRegistry.TryGetById("pev.noise-field", out var manifest)) return false;
                 var json = JObject.Parse(System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, "event.json")));
-                json["fieldShaders"] = new JObject { ["compute"] = "assets/compute", ["customLayer"] = "assets/layer" };
+                json["shaderAssets"] = new JObject { ["compute"] = "assets/compute", ["customLayer"] = "assets/layer" };
                 var parsed = EventManifest.Parse(json.ToString(), "", out _);
-                if (parsed == null || parsed.FieldShaders.Count != 2 || !parsed.FieldShaders.ContainsKey("customLayer")) return false;
-                json["fieldShaders"]["customLayer"] = "../escape";
+                if (parsed == null || parsed.ShaderAssets.Count != 2 || !parsed.ShaderAssets.ContainsKey("customLayer")) return false;
+                json["shaderAssets"]["customLayer"] = "../escape";
                 return EventManifest.Parse(json.ToString(), "", out _) == null;
             });
             Check("GLOBAL-settings-corrupt-file-preserved", () =>
@@ -1904,7 +1961,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     byte[] png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAGElEQVR4nGNkZGL+z8zMzMDCxsbGAGIAAA+dAS/kUtAIAAAAAElFTkSuQmCC");
                     File.WriteAllBytes(Path.Combine(assets, "BlockNoise1.png"), png);
                     var manifest = new EventManifest { SourcePath = root };
-                    manifest.FieldTextures["displacement"] = "assets/BlockNoise1.png";
+                    manifest.ImageAssets["displacement"] = new ImageAssetSpec { Path = "assets/BlockNoise1.png", Wrap = "mirror", Filter = "point", FlipY = true, Linear = true };
                     var texture = ReferenceNoiseTextures.Load(manifest, "displacement", out var error);
                     if (texture == null || error != null || texture.wrapMode != TextureWrapMode.Mirror ||
                         texture.filterMode != FilterMode.Point) return false;

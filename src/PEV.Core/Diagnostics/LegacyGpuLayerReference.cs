@@ -33,7 +33,7 @@ namespace PEV.Scripting
                                    "activeNoCaptureColored", "hoverNoCaptureColored" };
                 for (int i = 0; i < names.Length; i++)
                 {
-                    if (!manifest.FieldShaders.TryGetValue(names[i], out var path))
+                    if (!manifest.ShaderAssets.TryGetValue(names[i], out var path))
                         throw new InvalidOperationException("Field shader role is not declared: " + names[i]);
                     Shader shader = ShaderBundleCache.Load(manifest, path, out string error);
                     if (shader == null) throw new InvalidOperationException(error);

@@ -47,11 +47,12 @@ namespace PEV.Scripting
         {
 #if PEV_DIAGNOSTICS
             LegacyFieldTextureSet.Clear();
+            ReferenceNoiseTextures.Clear();
 #endif
-            if (_instance == null) { ShaderBundleCache.Clear(); ReferenceNoiseTextures.Clear(); return; }
+            if (_instance == null) { ShaderBundleCache.Clear(); PackageImageCache.Clear(); return; }
             _instance.Teardown();
             ShaderBundleCache.Clear();
-            ReferenceNoiseTextures.Clear();
+            PackageImageCache.Clear();
             UnityEngine.Object.Destroy(_instance.gameObject);
             _instance = null;
         }

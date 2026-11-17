@@ -74,6 +74,8 @@ CameraWarp.event
 | `vectorPrograms` | 否 | schema 4 的包内后台运算程序路径；目前是内部能力，接口尚未冻结 |
 | `computeGraphs` | 否 | schema 4 的包内计算和合成描述路径；目前是内部能力，接口尚未冻结 |
 | `pixelResources` | 否 | schema 4 的包内 PNG 路径；目前服务于内部后台运算，接口尚未冻结 |
+| `shaderAssets` | 否 | schema 4 的 bundle 内着色器角色；目前是内部渲染能力 |
+| `imageAssets` | 否 | schema 4 的包内图片及采样配置；目前是内部渲染能力 |
 
 `shaderBundle` 必须是包内相对路径；打包器会检查文件存在。旧版 Core 不认识 schema 2，使用它的包需要更新 Core。声明该字段不会赋予脚本额外的文件、材质或 shader 访问权限。
 
@@ -82,6 +84,8 @@ CameraWarp.event
 `vectorPrograms` 将程序名映射到包内 JavaScript 文件。它们在独立后台 Jint 沙箱执行，只能通过受限的通用批量运算接口处理输入，无法访问 CLR、Unity 对象或文件网络；运行有时间、内存、工作量和并发限制。当前噪域使用其中的 `palette` 程序；该内部绑定和接口尚未作为第三方稳定契约发布。
 
 `computeGraphs` 和 `pixelResources` 同样只接受包内相对路径。后台图像输入由 Core 在工作线程解码为只读快照，脚本只能通过受限句柄采样，不能借此访问文件或 Unity 对象。图像数量、解压尺寸和内存均有限制。上述后台计算与渲染接线仍在迁移，现阶段不属于稳定的第三方脚本接口。
+
+`shaderAssets` 的值是包内 bundle 的资源名；`imageAssets` 由包指定 PNG 路径、环绕方式、过滤方式、颜色空间和是否翻转行。图片在后台解码，纹理在主线程分帧创建；包路径不能越界。这些字段当前也属于内部接口。
 
 ### 事件级全局设置
 
