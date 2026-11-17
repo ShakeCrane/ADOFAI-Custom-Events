@@ -11,7 +11,6 @@ namespace PEV.Scripting
         private readonly EventManifest _provider;
         private readonly VectorTextureDefinition _definition;
         private readonly string _primary, _secondary;
-        private readonly int _defaultRgb;
         private VectorTextureSet<NoiseFieldColorOwnership.Zone, int> _textures;
 
         internal Texture Active => _textures?.Get(_primary);
@@ -22,10 +21,8 @@ namespace PEV.Scripting
             _provider = provider ?? throw new ArgumentNullException(nameof(provider));
             _definition = definition ?? throw new ArgumentNullException(nameof(definition));
             _primary = definition.Role("primary"); _secondary = definition.Role("secondary");
-            _defaultRgb = int.TryParse(provider.DecorationDefaultColor, System.Globalization.NumberStyles.HexNumber,
-                System.Globalization.CultureInfo.InvariantCulture, out int rgb) ? rgb : 0xffffff;
         }
-        internal bool Update(NoiseFieldGpuMasks masks, float aspect, NoiseFieldColorOwnership.Zone[] zones)
+        internal bool Update(IComputeFrame masks, float aspect, NoiseFieldColorOwnership.Zone[] zones, int defaultRgb)
         {
             if (_textures == null)
             {
@@ -35,7 +32,7 @@ namespace PEV.Scripting
                 if (bytes == null) throw new InvalidOperationException("Package color program is missing or too large");
                 _textures = new VectorTextureSet<NoiseFieldColorOwnership.Zone, int>(new System.Text.UTF8Encoding(false, true).GetString(bytes), _definition);
             }
-            return _textures.Update(masks.Width, masks.Height, aspect, zones, _defaultRgb, masks.RunExternal);
+            return _textures.Update(masks.Width, masks.Height, aspect, zones, defaultRgb, masks.RunExternal);
         }
         public void Dispose() { _textures?.Dispose(); _textures = null; }
     }

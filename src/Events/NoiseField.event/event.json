@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "id": "pev.noise-field",
-  "version": "1.26.0",
+  "version": "1.27.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
@@ -466,6 +466,7 @@
     "palette": "workers/palette.js",
     "contacts": "workers/contacts.js",
     "renderPlan": "workers/render-plan.js",
+    "renderGroup": "workers/render-group.js",
     "bake": "workers/legacy-bake.js",
     "bakePlan": "workers/legacy-plan.js"
   },
@@ -478,6 +479,7 @@
   "runtimeBindings": {
     "renderGraph": "coverage",
     "renderPlan": "renderPlan",
+    "renderGroup": "renderGroup",
     "inputController": "contacts",
     "colorProgram": "palette",
     "framePlan": "bakePlan",

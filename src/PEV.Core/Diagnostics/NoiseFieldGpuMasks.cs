@@ -6,7 +6,7 @@ using UnityEngine;
 namespace PEV.Scripting
 {
     // Transitional adapter: the dispatch sequence and resources live in the package graph.
-    internal sealed class NoiseFieldGpuMasks : IDisposable
+    internal sealed class NoiseFieldGpuMasks : IComputeFrame, IDisposable
     {
         [StructLayout(LayoutKind.Sequential)]
         internal struct Area
@@ -28,9 +28,9 @@ namespace PEV.Scripting
         internal RenderTexture Effect => _graph.Output("main");
         internal RenderTexture Auxiliary => _graph.Output("auxiliary");
 #endif
-        internal IEnumerable<KeyValuePair<string, RenderTexture>> Outputs => _graph.Outputs;
-        internal int Width => _graph.Width;
-        internal int Height => _graph.Height;
+        public IEnumerable<KeyValuePair<string, RenderTexture>> Outputs => _graph.Outputs;
+        public int Width => _graph.Width;
+        public int Height => _graph.Height;
         internal NoiseFieldGpuMasks(ComputeShader shader, GpuGraphDefinition definition)
         {
             if (!definition.Resources.TryGetValue("geometry", out var geometry) || !geometry.Buffer ||
@@ -92,7 +92,7 @@ namespace PEV.Scripting
             }
             _graph.Run("render", _inputs, _textures);
         }
-        internal void RunExternal(string entry, string inputName, Texture input, string outputName, RenderTexture output)
+        public void RunExternal(string entry, string inputName, Texture input, string outputName, RenderTexture output)
         {
             if (input == null || output == null || input.width != Width || input.height != Height ||
                 output.width != Width || output.height != Height)

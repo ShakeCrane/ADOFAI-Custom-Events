@@ -40,6 +40,7 @@ namespace PEV.Diagnostics
         private struct UnsafeSnapshotProbe { public GameObject SceneObject; }
         private struct GenericFrameProbe { public int Width, Height; public float Value; }
         private struct MutableRecordProbe { public int[] Values; }
+        private struct GroupProgramProbe { public float Time, Aspect; public int Capacity, ViewWidth, ViewHeight; public string DefaultColor; public ViewportPoint[] Points; }
         private const string GenericVectorSource = @"function computeVector(i){
 function run(x){return Number(__compute(JSON.stringify(x)));}
 var p=run({op:'pixelFill',width:i.width,height:i.height,value:i.request.Items[0].Value+i.request.Options/100});
@@ -1075,6 +1076,8 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Check("VECTOR-texture-declaration", () => CheckVectorTextureDefinition(manifest));
             yield return CheckVectorTextureRemapSafe(manifest);
             Check("GPU-package-render-plan", () => CheckRenderPlanProgram(manifest));
+            Check("GPU-package-group-commands", () => CheckGroupRenderCommands(manifest));
+            yield return CheckGroupRunnerScaleSafe(manifest);
             Check("GPU-package-compositor-limits", () => CheckCompositorLimits(manifest));
             Check("PIXEL-package-bake-plan-parity", () => CheckBakePlan(manifest));
             Check("GPU-package-contacts-parity", () => CheckContactControllerParity(manifest));
@@ -1389,7 +1392,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 bool readyFirst = false, readySecond = false; float deadline = Time.realtimeSinceStartup + 10f;
                 while ((!readyFirst || !readySecond) && Time.realtimeSinceStartup < deadline)
                 {
-                    readyFirst = first.Update(firstMasks, 1, zones); readySecond = second.Update(secondMasks, 1, zones);
+                    readyFirst = first.Update(firstMasks, 1, zones, 0xff5454); readySecond = second.Update(secondMasks, 1, zones, 0xff5454);
                     yield return null;
                 }
                 bool matches = readyFirst && readySecond && first.Active is RenderTexture a && second.Active is RenderTexture b &&
@@ -1538,10 +1541,126 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             var result = new JsonController(source).Update(new JObject { ["Items"] = items }.ToString(Newtonsoft.Json.Formatting.None));
             var groups = (JArray)result["groups"];
             if (groups.Count != 1 || !groups[0].Value<bool>("primary") || !groups[0].Value<bool>("secondary") || groups[0].Value<bool>("colored")) return false;
-            var rows = (JArray)groups[0]["items"];
-            return rows.Count == 4 && rows[0][1].Value<int>() == 1 && rows[0][2].Value<bool>() &&
-                rows[1][1].Value<int>() == 6 && !rows[1][2].Value<bool>() &&
-                rows[2][1].Value<int>() == 0 && !rows[2][4].Value<bool>() && rows[3][1].Value<int>() == 1;
+            var rows = (JArray)groups[0]["data"];
+            return rows.Count == 4 && rows[0][6].Value<int>() == 1 && rows[0][10].Value<bool>() &&
+                rows[1][6].Value<int>() == 6 && !rows[1][10].Value<bool>() &&
+                rows[2][6].Value<int>() == 0 && !rows[2][12].Value<bool>() && rows[3][6].Value<int>() == 1;
+        }
+
+        private static bool CheckGroupRenderCommands(EventManifest manifest)
+        {
+            if (!manifest.TryRuntimeResource("inputController", manifest.VectorPrograms, out var contactPath) ||
+                !manifest.TryRuntimeResource("renderGroup", manifest.VectorPrograms, out var groupPath)) return false;
+            string contacts = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, contactPath, 262144));
+            string groupSource = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, groupPath, 262144));
+            var expected = new FieldContactController(contacts, 10, 1024);
+            var actual = new JsonController(contacts + "\n" + groupSource);
+            var areas = new[] {
+                new FieldContactController.Area { Center = Vector2.zero, HalfSize = new Vector2(.9f,.7f), Angle = .2f, Active = true, Visible = true },
+                new FieldContactController.Area { Center = new Vector2(.15f,.05f), HalfSize = new Vector2(.12f,.15f), Angle = -.1f, Active = true, Visible = true, Inverted = true },
+                new FieldContactController.Area { Center = new Vector2(.15f,.05f), HalfSize = new Vector2(.04f,.06f), Active = true, Visible = true, Inverted = true },
+                new FieldContactController.Area { Center = Vector2.zero, HalfSize = new Vector2(2,2), Visible = true, Active = false }
+            };
+            var data = new JArray();
+            foreach (var a in areas)
+                data.Add(new JArray(a.Center.x, a.Center.y, a.HalfSize.x, a.HalfSize.y, a.Angle, 1f,
+                    (a.Active ? 1 : 0) | (a.Inverted ? 2 : 0), .2f, .4f, .6f, a.Active, a.Inverted, a.Active, a.Inverted));
+            var group = new JObject { ["data"] = data, ["primary"] = true, ["secondary"] = true, ["colored"] = true };
+            var random = new System.Random(8219);
+            var timing = new System.Diagnostics.Stopwatch(); double elapsed = 0;
+            for (int frame = 0; frame < 200; frame++)
+            {
+                float time = frame < 130 ? frame * .013f : (frame - 130) * .02f;
+                var points = Enumerable.Range(0, frame % 13).Select(i => new ViewportPoint {
+                    Id = i, Position = new Vector2((float)random.NextDouble(), (float)random.NextDouble()) }).ToArray();
+                expected.Update(areas, points, 16f / 9f, time);
+                timing.Restart();
+                var input = JObject.Parse(PublicFieldsSnapshot.Serialize(new GroupProgramProbe { Time = time, Aspect = 16f / 9f,
+                    Capacity = 10, ViewWidth = 1600, ViewHeight = 900, Points = points, DefaultColor = "ff5454" }));
+                if (frame == 0) input["Group"] = group.DeepClone();
+                var result = actual.Update(input.ToString(Newtonsoft.Json.Formatting.None));
+                timing.Stop(); elapsed += timing.Elapsed.TotalMilliseconds;
+                var slots = result["buffers"]?["contacts"] as JArray;
+                var positions = result["values"]?["contacts"] as JArray;
+                var geometry = result["buffers"]?["geometry"] as JArray;
+                if (slots == null || positions == null || geometry == null || geometry.Count != areas.Length ||
+                    slots.Count != expected.Slots.Count || positions.Count != expected.Contacts.Count ||
+                    result.Value<bool>("continuous") != expected.Visible || result["conditions"].Value<bool>("hover") != expected.Visible ||
+                    !result["conditions"].Value<bool>("colored") || result["compute"].Value<int>("geometryCount") != areas.Length ||
+                    result["values"].Value<int>("contactCount") != expected.Contacts.Count) return false;
+                for (int i = 0; i < slots.Count; i++)
+                    if (Mathf.Abs(slots[i][0].Value<float>() - expected.Slots[i].Position.x) > .00001f ||
+                        Mathf.Abs(slots[i][1].Value<float>() - expected.Slots[i].Position.y) > .00001f ||
+                        Mathf.Abs(slots[i][2].Value<float>() - expected.Slots[i].Scale) > .00001f) return false;
+                for (int i = 0; i < positions.Count; i++)
+                {
+                    var expectedPosition = NoiseFieldGpuLayer.TouchPosition(expected.Contacts[i].Position, 1600, 900);
+                    if (Mathf.Abs(positions[i][0].Value<float>() - expectedPosition.x) > .00001f ||
+                        Mathf.Abs(positions[i][1].Value<float>() - expectedPosition.y) > .00001f) return false;
+                }
+                if (!(result["vector"]?["Items"] is JArray colors) || colors.Count != areas.Length ||
+                    result["vector"].Value<int>("Options") != 0xff5454) return false;
+            }
+            Row("GPU-package-group-cost", "INFO", $"200 frames, four areas and up to twelve points: {elapsed / 200:F3} ms/frame");
+            return true;
+        }
+
+        private static IEnumerator CheckGroupRunnerScaleSafe(EventManifest manifest)
+        {
+            var probe = CheckGroupRunnerScale(manifest);
+            while (true)
+            {
+                bool next;
+                try { next = probe.MoveNext(); }
+                catch (Exception e) { Row("GPU-group-runner-scale", "FAIL", e.ToString()); yield break; }
+                if (!next) yield break;
+                yield return probe.Current;
+            }
+        }
+        private static IEnumerator CheckGroupRunnerScale(EventManifest manifest)
+        {
+            if (!manifest.TryRuntimeResource("inputController", manifest.VectorPrograms, out var contactPath) ||
+                !manifest.TryRuntimeResource("renderGroup", manifest.VectorPrograms, out var groupPath))
+            { Row("GPU-group-runner-scale", "FAIL", "missing package programs"); yield break; }
+            string source = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, contactPath, 262144)) + "\n" +
+                System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, groupPath, 262144));
+            var data = new JArray();
+            for (int i = 0; i < 1024; i++) data.Add(new JArray(0f, 0f, .5f, .5f, 0f, 1f, 1, .2f, .4f, .6f, true, false, true, false));
+            var group = new JObject { ["data"] = data, ["primary"] = true, ["secondary"] = false, ["colored"] = true };
+            var points = new[] { new ViewportPoint { Id = 1, Position = new Vector2(.5f, .5f) },
+                new ViewportPoint { Id = 2, Position = new Vector2(.51f, .5f) } };
+            var settings = new Dictionary<string, bool>();
+            using (var runner = new GroupScriptRunner(source))
+            {
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                bool ready = runner.Update(group, 0, 1, 10, 128, 128, "ff5454", points, settings, 1024, out var output);
+                watch.Stop(); double worstMain = watch.Elapsed.TotalMilliseconds; bool initiallyAsync = !ready;
+                float deadline = Time.realtimeSinceStartup + 10f;
+                while (!ready && Time.realtimeSinceStartup < deadline)
+                {
+                    yield return null;
+                    watch.Restart(); ready = runner.Update(group, 0, 1, 10, 128, 128, "ff5454", points, settings, 1024, out output); watch.Stop();
+                    worstMain = Math.Max(worstMain, watch.Elapsed.TotalMilliseconds);
+                }
+                bool ok = initiallyAsync && ready && (output?["buffers"]?["geometry"] as JArray)?.Count == 1024 &&
+                    (output?["vector"]?["Items"] as JArray)?.Count == 1024 && output["values"].Value<int>("contactCount") == 2;
+                if (ok)
+                {
+                    var changed = (JObject)group.DeepClone(); changed["data"][0][0] = .1f;
+                    ok &= runner.Update(changed, .2f, 1, 10, 128, 128, "ff5454", points, settings, 1024, out output) &&
+                        output["buffers"]["geometry"][0][0].Value<float>() == 0;
+                    deadline = Time.realtimeSinceStartup + 10f;
+                    while (output["buffers"]["geometry"][0][0].Value<float>() == 0 && Time.realtimeSinceStartup < deadline)
+                    {
+                        yield return null;
+                        watch.Restart(); runner.Update(changed, .2f, 1, 10, 128, 128, "ff5454", points, settings, 1024, out output); watch.Stop();
+                        worstMain = Math.Max(worstMain, watch.Elapsed.TotalMilliseconds);
+                    }
+                    ok &= Mathf.Abs(output["buffers"]["geometry"][0][0].Value<float>() - .1f) < .00001f;
+                }
+                Row("GPU-group-runner-scale-cost", "INFO", $"1024 areas, two points; worst observed main-thread update {worstMain:F1} ms");
+                Row("GPU-group-runner-scale", ok ? "PASS" : "FAIL", "background group commands retain the previous valid result");
+            }
         }
 
         private static bool CheckContactControllerParity(EventManifest manifest)
@@ -1664,6 +1783,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             var images = new Dictionary<string, Texture2D> { ["displacement"] = noise, ["touch"] = touchTexture };
             using (var legacy = new LegacyGpuMaskReference(shader, weights))
             using (var graph = new NoiseFieldGpuMasks(shader, definition))
+            using (var commands = new PackageComputeFrame(shader, definition))
             {
                 for (int i = 0; i < 8; i++)
                 {
@@ -1674,6 +1794,23 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     var oldMain = ReadGpuPixels(legacy.Effect); var oldAux = ReadGpuPixels(legacy.Auxiliary);
                     graph.Render(areas, count, width, height, 16f / 9f, time, images, touches, touchCount);
                     if (!oldMain.SequenceEqual(ReadGpuPixels(graph.Effect)) || !oldAux.SequenceEqual(ReadGpuPixels(graph.Auxiliary)))
+                        return false;
+                    var geometry = new JArray();
+                    for (int j = 0; j < count; j++)
+                    {
+                        var a = areas[j];
+                        geometry.Add(new JArray(a.Center.x, a.Center.y, a.HalfSize.x, a.HalfSize.y,
+                            a.AngleRadians, a.YScale, a.Opacity, a.Flags));
+                    }
+                    var contacts = new JArray();
+                    for (int j = 0; j < touchCount; j++)
+                        contacts.Add(new JArray(touches[j].Center.x, touches[j].Center.y, touches[j].Scale, touches[j].Padding));
+                    var buffers = new JObject { ["geometry"] = geometry, ["contacts"] = contacts };
+                    var inputs = new JObject { ["geometryCount"] = count, ["contactCount"] = touchCount,
+                        ["aspect"] = 16f / 9f, ["screenAspect"] = (float)width / height, ["hasContacts"] = touchCount > 0 };
+                    commands.Render(width, height, time, buffers, inputs, images);
+                    var outputs = commands.Outputs.ToDictionary(pair => pair.Key, pair => pair.Value);
+                    if (!oldMain.SequenceEqual(ReadGpuPixels(outputs["main"])) || !oldAux.SequenceEqual(ReadGpuPixels(outputs["auxiliary"])))
                         return false;
                 }
             }
@@ -2382,11 +2519,12 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     plan.Build(new[] { a, b, c }, camera, camera.aspect, values);
                     if (plan.Groups.Count != 2) return false;
                     var key = new NoiseFieldGpuPlan.Key { SortingOrder = 1, UnityLayer = 7 };
-                    if (!plan.Groups.TryGetValue(key, out var group) || group.Areas.Count != 2 ||
-                        group.Areas[0].Flags != 6 || group.Areas[1].Flags != 1 || !group.HasActive || !group.HasDisabled ||
-                        group.Colors[1].Red != 0f || group.Colors[1].Blue != 1f || !group.Colored) return false;
+                    if (!plan.Groups.TryGetValue(key, out var group) || group.Count != 2 ||
+                        group.Data["data"][0][6].Value<int>() != 6 || group.Data["data"][1][6].Value<int>() != 1 ||
+                        !group.Data.Value<bool>("primary") || !group.Data.Value<bool>("secondary") ||
+                        group.Data["data"][1][7].Value<float>() != 0f || group.Data["data"][1][9].Value<float>() != 1f || !group.Data.Value<bool>("colored")) return false;
                     plan.Build(new[] { a }, camera, camera.aspect, values);
-                    return plan.Groups.Count == 1 && plan.Groups[key].Areas.Count == 1;
+                    return plan.Groups.Count == 1 && plan.Groups[key].Count == 1;
                 }
                 finally { UnityEngine.Object.Destroy(go); }
             });
@@ -2552,18 +2690,20 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     for (int groupIndex = 0; groupIndex < 3; groupIndex++)
                     {
                         var key = new NoiseFieldGpuPlan.Key { SortingOrder = groupIndex, UnityLayer = 7 };
-                        if (!plan.Groups.TryGetValue(key, out var group) || group.Areas.Count != 4) return false;
+                        if (!plan.Groups.TryGetValue(key, out var group) || group.Count != 4) return false;
                         bool primary = false, secondary = false, colored = false; int row = 0;
                         for (int i = groupIndex; i < entries.Length; i += 3)
                         {
                             bool active = expectedStates[i] == "Active" || expectedStates[i] == "unknown";
                             bool ready = expectedStates[i] == "Ready";
                             uint flags = (uint)((active ? 1 : ready ? 4 : 0) | (entries[i].GpuInverted ? 2 : 0));
-                            if (group.Areas[row].Flags != flags || group.Colors[row].Active != active ||
-                                group.TouchAreas[row].Active != active || group.TouchAreas[row].Inverted != entries[i].GpuInverted) return false;
+                            var data = group.Data["data"][row];
+                            if (data[6].Value<uint>() != flags || data[10].Value<bool>() != active ||
+                                data[12].Value<bool>() != active || data[13].Value<bool>() != entries[i].GpuInverted) return false;
                             primary |= active || ready; secondary |= !active; colored |= entries[i].FillColor == Color.blue; row++;
                         }
-                        if (group.HasActive != primary || group.HasDisabled != secondary || group.Colored != colored) return false;
+                        if (group.Data.Value<bool>("primary") != primary || group.Data.Value<bool>("secondary") != secondary ||
+                            group.Data.Value<bool>("colored") != colored) return false;
                     }
                 }
                 watch.Stop();
@@ -2587,10 +2727,10 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 var entry = new NoiseFieldRenderer.Entry { Provider = provider, Visible = true, Renderable = true, Opacity = 1,
                     SortingOrder = 1, UnityLayer = 7, World = new Placement.Frame { Size = new Vector2(2, 2) } };
                 const string prefix = "function updateController(){return {groups:[{sorting:[0,";
-                const string middle = ",7],primary:true,secondary:false,colored:false,items:";
+                const string middle = ",7],members:";
                 foreach (string source in new[] {
-                    prefix + "1" + middle + "[[0,1,true,false,true,false],[0,1,true,false,true,false]]}]};}",
-                    prefix + "2" + middle + "[[0,1,true,false,true,false]]}]};}",
+                    prefix + "1" + middle + "[0,0],data:[[],[]]}]};}",
+                    prefix + "2" + middle + "[0],data:[[]]}]};}",
                     "function updateController(){return {groups:[]};}" })
                 {
                     using var plan = (NoiseFieldGpuPlan)ctor.Invoke(new object[] { "phase", source });
@@ -2640,21 +2780,21 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 }
                 var key = new NoiseFieldGpuPlan.Key { UnityLayer = 7 };
                 NoiseFieldGpuPlan.Group group = null;
-                bool ok = initiallyAsync && ready && plan.Groups.TryGetValue(key, out group) && group.Areas.Count == entries.Length;
+                bool ok = initiallyAsync && ready && plan.Groups.TryGetValue(key, out group) && group.Count == entries.Length;
                 if (ok)
                 {
-                    float old = group.Areas[0].Center.x;
+                    float old = group.Data["data"][0][0].Value<float>();
                     entries[0].World = new Placement.Frame { Center = new Vector3(1, 0, 0), Size = new Vector2(2, 2) };
                     ready = plan.Build(entries, camera, 1, values);
-                    ok &= ready && plan.Groups[key].Areas[0].Center.x == old;
+                    ok &= ready && plan.Groups[key].Data["data"][0][0].Value<float>() == old;
                     deadline = Time.realtimeSinceStartup + 8f;
-                    while (plan.Groups[key].Areas[0].Center.x == old && Time.realtimeSinceStartup < deadline)
+                    while (plan.Groups[key].Data["data"][0][0].Value<float>() == old && Time.realtimeSinceStartup < deadline)
                     {
                         yield return null;
                         watch.Restart(); plan.Build(entries, camera, 1, values); watch.Stop();
                         worstMain = Math.Max(worstMain, watch.Elapsed.TotalMilliseconds);
                     }
-                    ok &= plan.Groups[key].Areas[0].Center.x != old;
+                    ok &= plan.Groups[key].Data["data"][0][0].Value<float>() != old;
                 }
                 if (ok)
                 {
@@ -2666,7 +2806,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     deadline = Time.realtimeSinceStartup + 8f;
                     while (pending != null && !pending.IsCompleted && Time.realtimeSinceStartup < deadline) yield return null;
                     ok &= pending != null && pending.IsCompleted;
-                    ok &= plan.Build(new[] { entries[0] }, camera, 1, values) && plan.Groups.TryGetValue(key, out var single) && single.Areas.Count == 1;
+                    ok &= plan.Build(new[] { entries[0] }, camera, 1, values) && plan.Groups.TryGetValue(key, out var single) && single.Count == 1;
                 }
                 if (ok)
                 {

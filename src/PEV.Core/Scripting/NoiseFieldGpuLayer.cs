@@ -17,7 +17,7 @@ namespace PEV.Scripting
         {
             _compositor = new SpriteCompositor(manifest, definition, sortingLayer, sortingOrder, unityLayer);
         }
-        internal bool Draw(Camera camera, NoiseFieldGpuMasks masks, IReadOnlyDictionary<string, Texture2D> images,
+        internal bool Draw(Camera camera, IComputeFrame masks, IReadOnlyDictionary<string, Texture2D> images,
             float chartAspect, float songTime, IReadOnlyDictionary<string, bool> settings,
             bool hover, bool showDisabled, bool showActive, Color fallbackBackground,
             Vector4[] touchPositions, int touchCount, Texture activeColors, Texture disabledColors)

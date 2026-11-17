@@ -12,14 +12,16 @@ function updateController(input) {
     if (index === undefined) {
       index = groups.length; indices[key] = index;
       groups.push({sorting:[item.SortingLayer,item.SortingOrder,item.UnityLayer],
-        primary:false,secondary:false,colored:false,items:[]});
+        primary:false,secondary:false,colored:false,members:[],data:[]});
     }
     var group = groups[index];
     group.primary = group.primary || active || warning;
     group.secondary = group.secondary || disabled || warning;
     group.colored = group.colored || !item.HasDefault || item.Red !== item.DefaultRed ||
       item.Green !== item.DefaultGreen || item.Blue !== item.DefaultBlue;
-    group.items.push([i,flags,active,item.Inverted,active,item.Inverted]);
+    group.members.push(i);
+    group.data.push([item.X,item.Y,item.HalfX,item.HalfY,item.Angle,item.Opacity,flags,
+      item.Red,item.Green,item.Blue,active,item.Inverted,active,item.Inverted]);
   }
   return {groups:groups};
 }

@@ -23,11 +23,9 @@ namespace PEV.Scripting
         }
         internal sealed class Group
         {
-            public readonly List<NoiseFieldGpuMasks.Area> Areas = new List<NoiseFieldGpuMasks.Area>();
-            public readonly List<NoiseFieldColorOwnership.Zone> Colors = new List<NoiseFieldColorOwnership.Zone>();
-            public readonly List<FieldContactController.Area> TouchAreas = new List<FieldContactController.Area>();
-            public bool HasActive, HasDisabled, Colored;
-            internal void Clear() { Areas.Clear(); Colors.Clear(); TouchAreas.Clear(); HasActive = HasDisabled = Colored = false; }
+            internal int Count;
+            internal JObject Data;
+            internal void Clear() { Count = 0; Data = null; }
         }
         private struct Snapshot : IEquatable<Snapshot>
         {
@@ -168,36 +166,24 @@ namespace PEV.Scripting
             foreach (var token in groups)
             {
                 if (!(token is JObject item) || !(item["sorting"] is JArray sorting) || sorting.Count != 3 ||
-                    !(item["items"] is JArray rows) || rows.Count == 0 || item["primary"]?.Type != JTokenType.Boolean ||
-                    item["secondary"]?.Type != JTokenType.Boolean || item["colored"]?.Type != JTokenType.Boolean)
+                    !(item["members"] is JArray members) || !(item["data"] is JArray data) || data.Count != members.Count || members.Count == 0)
                     throw new ArgumentException("Invalid package render group");
                 var key = new Key { SortingLayer = Integer(sorting[0], int.MinValue, int.MaxValue),
                     SortingOrder = Integer(sorting[1], int.MinValue, int.MaxValue), UnityLayer = Integer(sorting[2], 0, 31) };
                 if (!_groups.TryGetValue(key, out var group)) _groups.Add(key, group = new Group());
-                else if (group.Areas.Count != 0) throw new ArgumentException("Duplicate package render group");
-                group.HasActive = item.Value<bool>("primary"); group.HasDisabled = item.Value<bool>("secondary"); group.Colored = item.Value<bool>("colored");
-                foreach (var rowToken in rows)
+                else if (group.Count != 0) throw new ArgumentException("Duplicate package render group");
+                group.Data = item; group.Count = members.Count;
+                foreach (var member in members)
                 {
-                    if (!(rowToken is JArray row) || row.Count != 6 || row[2].Type != JTokenType.Boolean || row[3].Type != JTokenType.Boolean ||
-                        row[4].Type != JTokenType.Boolean || row[5].Type != JTokenType.Boolean)
-                        throw new ArgumentException("Invalid package render row");
-                    int index = Integer(row[0], 0, items.Count - 1), flags = Integer(row[1], 0, 65535);
+                    int index = Integer(member, 0, items.Count - 1);
                     var snapshot = items[index];
                     if (_seen[index] || snapshot.SortingLayer != key.SortingLayer || snapshot.SortingOrder != key.SortingOrder || snapshot.UnityLayer != key.UnityLayer)
                         throw new ArgumentException("Invalid package render membership");
                     _seen[index] = true; count++;
-                    var center = new Vector2(snapshot.X, snapshot.Y); var half = new Vector2(snapshot.HalfX, snapshot.HalfY);
-                    group.Areas.Add(new NoiseFieldGpuMasks.Area { Center = center, HalfSize = half, AngleRadians = snapshot.Angle,
-                        YScale = 1f, Opacity = snapshot.Opacity, Flags = (uint)flags });
-                    group.Colors.Add(new NoiseFieldColorOwnership.Zone { CenterX = snapshot.X, CenterY = snapshot.Y, HalfX = snapshot.HalfX,
-                        HalfY = snapshot.HalfY, Angle = snapshot.Angle, YScale = 1f, Opacity = snapshot.Opacity,
-                        Red = snapshot.Red, Green = snapshot.Green, Blue = snapshot.Blue, Active = row[2].Value<bool>(), Inverted = row[3].Value<bool>() });
-                    group.TouchAreas.Add(new FieldContactController.Area { Center = center, HalfSize = half, Angle = snapshot.Angle,
-                        Active = row[4].Value<bool>(), Inverted = row[5].Value<bool>(), Visible = true });
                 }
             }
             if (count != items.Count) throw new ArgumentException("Package render plan omitted a decoration");
-            _stale.Clear(); foreach (var pair in _groups) if (pair.Value.Areas.Count == 0) _stale.Add(pair.Key);
+            _stale.Clear(); foreach (var pair in _groups) if (pair.Value.Count == 0) _stale.Add(pair.Key);
             foreach (var key in _stale) _groups.Remove(key);
         }
         private static int Integer(JToken token, int min, int max)

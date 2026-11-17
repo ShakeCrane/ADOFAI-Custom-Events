@@ -1,7 +1,7 @@
 // Phira-Pro block touch geometry and response. The host provides only JSON snapshots.
 var slots = [];
 var lastTime = null;
-function updateController(input) {
+function updateContacts(input) {
   var capacity = input.Capacity;
   var time = Math.fround(input.Time), contacts = [], i, j;
   if (lastTime !== null && time < lastTime) slots = [];
@@ -51,3 +51,4 @@ function updateController(input) {
   }
   return {visible:visible, contacts:contacts.slice(0, capacity), slots:drawn};
 }
+function updateController(input) { return updateContacts(input); }
