@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using Newtonsoft.Json.Linq;
 using PEV.Loading;
 using PEV.Model;
 using PEV.Registry;
@@ -7,84 +10,64 @@ using UnityEngine;
 
 namespace PEV.Scripting
 {
-    /// <summary>Immutable CPU texture samples loaded from an event's declared resources.</summary>
+    // Historical package inputs used only by the diagnostic reference implementation.
     internal sealed class LegacyFieldTextureSet
     {
         internal Color32[] Block, Point;
         internal int BlockWidth, BlockHeight, PointWidth, PointHeight;
         internal FieldBakeProfile Profile;
-        private static readonly Dictionary<string, LegacyFieldTextureSet> Cache =
-            new Dictionary<string, LegacyFieldTextureSet>(StringComparer.Ordinal);
-        private sealed class IdentityHolder { internal string Value; }
-        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<EventManifest, IdentityHolder> Identities =
-            new System.Runtime.CompilerServices.ConditionalWeakTable<EventManifest, IdentityHolder>();
-        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<EventManifest, IdentityHolder>.CreateValueCallback CreateIdentity =
-            manifest => new IdentityHolder { Value = ComputeIdentity(manifest,
-                manifest.LegacyFieldTextures["block"], manifest.LegacyFieldTextures["point"]) };
-
+        private sealed class Definition
+        {
+            internal string Block, Point;
+            internal Dictionary<string, float[]> Profile = new Dictionary<string, float[]>(StringComparer.Ordinal);
+        }
+        private static readonly ConditionalWeakTable<EventManifest, Definition> Definitions = new ConditionalWeakTable<EventManifest, Definition>();
+        private static readonly Dictionary<string, LegacyFieldTextureSet> Cache = new Dictionary<string, LegacyFieldTextureSet>(StringComparer.Ordinal);
+        private static Definition ReadDefinition(EventManifest manifest)
+        {
+            var bytes = EventLoader.ReadResource(manifest.SourcePath, "assets/legacy/reference.json", 131072);
+            if (bytes == null) throw new InvalidOperationException("diagnostic reference is missing");
+            var root = JObject.Parse(System.Text.Encoding.UTF8.GetString(bytes));
+            var definition = new Definition { Block = root["textures"]?.Value<string>("block"), Point = root["textures"]?.Value<string>("point") };
+            if (!(root["profile"] is JObject profile) || !EventLoader.IsPackageRelativePath(definition.Block) ||
+                !EventLoader.IsPackageRelativePath(definition.Point)) throw new InvalidOperationException("invalid diagnostic reference");
+            foreach (var property in profile.Properties())
+                definition.Profile.Add(property.Name, property.Value is JArray a ? a.Select(x => x.Value<float>()).ToArray() : new[] { property.Value.Value<float>() });
+            return definition;
+        }
+        private static Definition Data(EventManifest manifest) => Definitions.GetValue(manifest, ReadDefinition);
+        internal static void ConfigureForTest(EventManifest manifest, string block, string point, Dictionary<string, float[]> profile = null)
+        {
+            Definitions.Add(manifest, new Definition { Block = block, Point = point,
+                Profile = profile ?? new Dictionary<string, float[]>(StringComparer.Ordinal) });
+        }
+        internal static Dictionary<string, float[]> ProfileData(EventManifest manifest) => Data(manifest).Profile;
         internal static EventManifest ResolveProvider(EventManifest manifest)
         {
             if (manifest != null) return manifest;
-            EventManifest found = null;
-            foreach (var candidate in EventRegistry.All)
-            {
-                if (candidate.LegacyFieldTextures.Count == 0) continue;
-                if (found != null) return null;
-                found = candidate;
-            }
-            return found;
+            EventRegistry.TryGetById("pev.noise-field", out var result); return result;
         }
-
-        internal static string Identity(EventManifest manifest)
-        {
-            if (manifest == null || !manifest.LegacyFieldTextures.ContainsKey("block") ||
-                !manifest.LegacyFieldTextures.ContainsKey("point")) return "";
-            return Identities.GetValue(manifest, CreateIdentity).Value;
-        }
-
-        private static string ComputeIdentity(EventManifest manifest, string block, string point)
-        {
-            string source = manifest.SourcePath ?? "";
-            string version = manifest.Version ?? "";
-            string identity = source.Length + ":" + source + version.Length + ":" + version +
-                block.Length + ":" + block + point.Length + ":" + point;
-            // A package can be reloaded with the same version and different profile data.
-            // Its baked pixels must never reuse the previous profile's cache entry.
-            var keys = new List<string>(manifest.LegacyFieldProfile.Keys);
-            keys.Sort(StringComparer.Ordinal);
-            var profile = new System.Text.StringBuilder(identity);
-            foreach (var key in keys)
-            {
-                profile.Append(key.Length).Append(':').Append(key);
-                foreach (float value in manifest.LegacyFieldProfile[key])
-                    profile.Append(':').Append(value.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
-            }
-            using (var sha = System.Security.Cryptography.SHA256.Create())
-                return BitConverter.ToString(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(profile.ToString()))).Replace("-", "");
-        }
-
+        internal static string Identity(EventManifest manifest) => PackageIdentity.Of(manifest);
         internal static LegacyFieldTextureSet Load(EventManifest manifest, out string error)
         {
             error = null;
+            if (manifest == null || string.IsNullOrEmpty(manifest.SourcePath)) { error = "diagnostic package is missing"; return null; }
             string key = Identity(manifest);
-            if (string.IsNullOrEmpty(key) || string.IsNullOrEmpty(manifest?.SourcePath))
-            { error = "field package does not declare legacy textures; update the event package"; return null; }
             if (Cache.TryGetValue(key, out var samples)) return samples;
             try
             {
-                var block = EventLoader.ReadResource(manifest.SourcePath, manifest.LegacyFieldTextures["block"]);
-                var point = EventLoader.ReadResource(manifest.SourcePath, manifest.LegacyFieldTextures["point"]);
+                var definition = Data(manifest);
+                var block = EventLoader.ReadResource(manifest.SourcePath, definition.Block);
+                var point = EventLoader.ReadResource(manifest.SourcePath, definition.Point);
                 samples = new LegacyFieldTextureSet();
                 samples.Block = NoiseTextures.DecodePng(block, out samples.BlockWidth, out samples.BlockHeight);
                 samples.Point = NoiseTextures.DecodePng(point, out samples.PointWidth, out samples.PointHeight);
                 if (samples.Block == null || samples.Point == null) throw new InvalidOperationException("invalid or missing PNG");
-                if (manifest.LegacyFieldProfile.Count != 0) samples.Profile = new FieldBakeProfile(manifest.LegacyFieldProfile);
-                Cache.Add(key, samples);
-                return samples;
+                if (definition.Profile.Count != 0) samples.Profile = new FieldBakeProfile(definition.Profile);
+                Cache.Add(key, samples); return samples;
             }
-            catch (Exception e) { error = "field package textures could not be loaded: " + e.Message; return null; }
+            catch (Exception e) { error = "diagnostic reference could not be loaded: " + e.Message; return null; }
         }
-
         internal static void Clear() => Cache.Clear();
     }
 

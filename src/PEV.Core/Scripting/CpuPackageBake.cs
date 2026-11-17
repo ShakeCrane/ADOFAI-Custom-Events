@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using PEV.Loading;
 using UnityEngine;
 
@@ -13,17 +14,47 @@ namespace PEV.Scripting
     // All decoding, script execution and pixel conversion run on background workers.
     internal static class CpuPackageBake
     {
+        internal struct Plan { internal int Width, Height, Frames; }
+        internal static Plan Prepare(NoiseTextureFactory.Request req, CancellationToken cancellation)
+        {
+            var manifest = req.Provider ?? throw new ArgumentException("Missing package provider");
+            if (!manifest.VectorPrograms.TryGetValue("bakePlan", out var path)) throw new InvalidOperationException("Package bake plan is missing");
+            byte[] bytes = EventLoader.ReadResource(manifest.SourcePath, path, 262144);
+            if (bytes == null) throw new InvalidOperationException("Package bake plan is missing or too large");
+            cancellation.ThrowIfCancellationRequested();
+            var controller = new JsonController(new UTF8Encoding(false, true).GetString(bytes), 500);
+            string input = JsonConvert.SerializeObject(new { widthWorld = req.WidthWorld, heightWorld = req.HeightWorld,
+                margin = req.Margin, targetPixelWidth = req.TargetPixelWidth, frameCount = req.FrameCount, sampleRate = req.SampleRate });
+            var result = controller.Update(input);
+            var plan = ValidatePlan(result);
+            cancellation.ThrowIfCancellationRequested();
+            return plan;
+        }
+        internal static Plan ValidatePlan(JObject result)
+        {
+            if (result == null) throw new ArgumentException("Invalid package bake plan");
+            int Integer(string key, int max)
+            {
+                if (result[key]?.Type != JTokenType.Integer) throw new ArgumentException("Invalid package bake plan");
+                long n = result.Value<long>(key);
+                if (n < 1 || n > max) throw new ArgumentException("Package bake plan exceeds host limits");
+                return (int)n;
+            }
+            var plan = new Plan { Width = Integer("width", 4096), Height = Integer("height", 4096), Frames = Integer("frames", 128) };
+            if (plan.Frames < 2 || (long)plan.Width * plan.Height > 1048576 ||
+                (long)plan.Width * plan.Height * plan.Frames > 4200000)
+                throw new ArgumentException("Package bake plan exceeds host limits");
+            return plan;
+        }
         internal static void Render(NoiseTextureFactory.Request req, Color32[][] frames, int width, int height, CancellationToken cancellation)
         {
             var manifest = req.Provider ?? throw new ArgumentException("Missing package provider");
-            if (!manifest.VectorPrograms.TryGetValue("legacyBake", out var path))
+            if (!manifest.VectorPrograms.TryGetValue("bake", out var path))
                 throw new InvalidOperationException("Package does not declare its CPU program; update the event package");
             byte[] sourceBytes = EventLoader.ReadResource(manifest.SourcePath, path, 262144);
             if (sourceBytes == null) throw new InvalidOperationException("Package CPU program is missing or too large");
             string source = new UTF8Encoding(false, true).GetString(sourceBytes);
             var resources = PixelResourceLoader.Load(manifest, cancellation);
-            var profile = manifest.LegacyFieldProfile.ToDictionary(p => p.Key,
-                p => p.Value.Length == 1 ? (object)p.Value[0] : p.Value);
             var pieces = (req.Pieces ?? Array.Empty<NoiseTextureFactory.Piece>()).Select(p => new
             {
                 x = p.Offset.x, y = p.Offset.y, hx = p.Half.x, hy = p.Half.y,
@@ -54,7 +85,7 @@ namespace PEV.Scripting
                         {
                             stage = "frame", width, height, screenPixelWidth = req.ScreenPixelWidth > 0 ? req.ScreenPixelWidth : width,
                             time = k / speed, loopPeriod = period, frameCount = frames.Length, frameIndex = k, seed = req.Seed,
-                            totalWidth, totalHeight, profile, options, pieces
+                            totalWidth, totalHeight, options, pieces
                         });
                         var output = programs.Value.Execute(width, height, 1f, input);
                         if (output.Length != 1 || output[0].Length != width * height * 4)

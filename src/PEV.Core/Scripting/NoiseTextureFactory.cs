@@ -28,13 +28,6 @@ namespace PEV.Scripting
     /// </summary>
     public static class NoiseTextureFactory
     {
-        public const int MaxSide = 1024;
-        public const int MinCells = 8;
-        public const int MaxTexelsPerSet = 4_200_000;
-
-        /// <summary>Floor for the budget's resolution trade. Below this the grains read as blocks.</summary>
-        public const int MinPxWidth = 192;
-
         /// <summary>
         /// Pixel widths are quantised to this step before they enter the structure key.
         /// The camera zooms on the beat, so a continuous width would invalidate the key on
@@ -347,19 +340,10 @@ namespace PEV.Scripting
                 return hit;
             }
 
-            if (req.Provider == null || !req.Provider.VectorPrograms.ContainsKey("legacyBake") ||
-                !req.Provider.LegacyFieldProfile.TryGetValue("grainPixels", out var grain) || grain.Length != 1)
-            { error = "field package does not declare its CPU program and profile; update the event package"; return null; }
+            if (req.Provider == null || !req.Provider.VectorPrograms.ContainsKey("bake") ||
+                !req.Provider.VectorPrograms.ContainsKey("bakePlan"))
+            { error = "package does not declare its CPU bake program and plan; update the event package"; return null; }
             var frames = new Frames { Key = key, Refs = 1 };
-            try
-            {
-                Prepare(req, frames);
-            }
-            catch (Exception e)
-            {
-                error = "noise texture generation failed: " + e.Message;
-                return null;
-            }
 
             Generations++;
             Bakes++;
@@ -471,20 +455,26 @@ namespace PEV.Scripting
 
         private static void DestroyFrames(Frames frames)
         {
-            frames.Cancelled = true;
-            frames.Cancellation.Cancel();
-            frames.Pixels = null;
-            if (frames.Sprites != null)
+            Sprite[] sprites;
+            Texture2D[] textures;
+            lock (frames)
             {
-                foreach (var s in frames.Sprites)
-                    if (s != null) UnityEngine.Object.Destroy(s);
-                frames.Sprites = null;
+                frames.Cancelled = true;
+                frames.PixelsReady = false;
+                frames.Pixels = null;
+                sprites = frames.Sprites; frames.Sprites = null;
+                textures = frames.Textures; frames.Textures = null;
             }
-            if (frames.Textures != null)
+            frames.Cancellation.Cancel();
+            if (sprites != null)
             {
-                foreach (var t in frames.Textures)
+                foreach (var s in sprites)
+                    if (s != null) UnityEngine.Object.Destroy(s);
+            }
+            if (textures != null)
+            {
+                foreach (var t in textures)
                     if (t != null) UnityEngine.Object.Destroy(t);
-                frames.Textures = null;
             }
         }
 
@@ -560,62 +550,6 @@ namespace PEV.Scripting
         private static string C(Color c) => F(c.r) + "," + F(c.g) + "," + F(c.b);
 
         /// <summary>
-        /// Main-thread half of a bake: sizes the set, allocates the pixel buffers, and parks
-        /// the results on <paramref name="outFrames"/> for the worker to fill.
-        ///
-        /// Sizing happens here rather than on the worker because it decides how much memory
-        /// the worker will touch, and a mis-sized set should fail on the frame that asked for
-        /// it rather than silently on a background thread.
-        /// </summary>
-        private static void Prepare(Request req, Frames outFrames)
-        {
-            int frames = Mathf.Clamp(req.FrameCount, 2, 128);
-            float sampleRate = Mathf.Clamp(req.SampleRate, 0.1f, 8f);
-            int block = Mathf.Clamp(Mathf.RoundToInt(req.Provider.LegacyFieldProfile["grainPixels"][0] / sampleRate), 1, 16);
-
-            // The quad is the geometry box grown by the margin on every side. Geometry
-            // size stays the reference for the coastline band and feature size, so padding
-            // the quad does not change the shape — only how much of it survives clipping.
-            float margin = Mathf.Max(0f, req.Margin);
-            float totalW = req.WidthWorld + margin * 2f;
-            float totalH = req.HeightWorld + margin * 2f;
-            if (totalW < 1e-3f) totalW = 1e-3f;
-            if (totalH < 1e-3f) totalH = 1e-3f;
-
-            int pxW = ResolutionBucket(req.TargetPixelWidth);
-            float aspect = totalH / totalW;
-            int pxH = Mathf.Max(16, Mathf.RoundToInt(pxW * aspect));
-
-            int maxCells = Mathf.Max(MinCells, MaxSide / block);
-            int cellsX = Mathf.Clamp(Mathf.RoundToInt(pxW / (float)block), MinCells, maxCells);
-            int cellsY = Mathf.Clamp(Mathf.RoundToInt(pxH / (float)block), MinCells, maxCells);
-
-            // Over budget, trade resolution before frame count.
-            //
-            // Temporal resolution is what the eye reads as flow: a short cycle played at the
-            // script's frame rate either strobes or loops visibly, and neither reads as the
-            // reference's continuous drift. A slightly coarser texture costs nothing visible —
-            // the reference's own mask is 1/8 of the screen — while dropping frames costs the
-            // motion. So the width shrinks first, and only a still-too-large set loses frames.
-            while (cellsX * block * cellsY * block * frames > MaxTexelsPerSet && pxW > MinPxWidth)
-            {
-                pxW = Mathf.Max(MinPxWidth, Mathf.RoundToInt(pxW * 0.8f));
-                pxH = Mathf.Max(16, Mathf.RoundToInt(pxW * aspect));
-                cellsX = Mathf.Clamp(Mathf.RoundToInt(pxW / (float)block), MinCells, maxCells);
-                cellsY = Mathf.Clamp(Mathf.RoundToInt(pxH / (float)block), MinCells, maxCells);
-            }
-            while (cellsX * block * cellsY * block * frames > MaxTexelsPerSet && frames > 2)
-                frames--;
-
-            outFrames.TexW = cellsX * block;
-            outFrames.TexH = cellsY * block;
-            outFrames.Textures = new Texture2D[frames];
-            outFrames.Sprites = new Sprite[frames];
-            outFrames.Pixels = new Color32[frames][];
-            outFrames.NaturalSize = new Vector2(outFrames.TexW / PixelsPerUnit, outFrames.TexH / PixelsPerUnit);
-        }
-
-        /// <summary>
         /// Worker half of a bake: renders every frame's pixels, then hands them back.
         ///
         /// Nothing here touches UnityEngine objects. Texture creation is the one thing that
@@ -630,11 +564,22 @@ namespace PEV.Scripting
             {
                 BakeGate.Wait(f.Cancellation.Token); entered = true;
                 f.Cancellation.Token.ThrowIfCancellationRequested();
-                var pixels = f.Pixels;
                 var watch = System.Diagnostics.Stopwatch.StartNew();
-                CpuPackageBake.Render(req, pixels, f.TexW, f.TexH, f.Cancellation.Token);
-                f.WorkerMs = (float)watch.Elapsed.TotalMilliseconds;
-                if (!f.Cancelled) f.PixelsReady = true;
+                var plan = CpuPackageBake.Prepare(req, f.Cancellation.Token);
+                var pixels = new Color32[plan.Frames][];
+                lock (f)
+                {
+                    if (f.Cancelled) return;
+                    f.TexW = plan.Width; f.TexH = plan.Height;
+                    f.Textures = new Texture2D[plan.Frames]; f.Sprites = new Sprite[plan.Frames]; f.Pixels = pixels;
+                    f.NaturalSize = new Vector2(plan.Width / PixelsPerUnit, plan.Height / PixelsPerUnit);
+                }
+                CpuPackageBake.Render(req, pixels, plan.Width, plan.Height, f.Cancellation.Token);
+                lock (f)
+                {
+                    f.WorkerMs = (float)watch.Elapsed.TotalMilliseconds;
+                    if (!f.Cancelled) f.PixelsReady = true;
+                }
             }
             catch (OperationCanceledException) { }
             catch (Exception e)

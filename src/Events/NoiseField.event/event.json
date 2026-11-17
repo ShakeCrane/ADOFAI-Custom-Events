@@ -1,60 +1,13 @@
 {
   "schemaVersion": 4,
   "id": "pev.noise-field",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
   "category": "DecorationFx",
   "decoration": true,
   "hostPrimitive": "fx.field",
-  "legacyFieldTextures": {
-    "block": "assets/legacy/block.png",
-    "point": "assets/legacy/point.png"
-  },
-  "legacyFieldProfile": {
-    "composeScale": 0.125,
-    "composeDisplaceSpeed": 2.5899999141693115,
-    "composeDisplaceStrength": 0.10000000149011612,
-    "composeDisplaceDirection": [
-      0.5,
-      0.5
-    ],
-    "composeDisplaceMapScale": [
-      2.13,
-      1.02
-    ],
-    "displaceBlendIntensity": 0.41100001335144043,
-    "activeDisplaceDirection": [
-      1,
-      1
-    ],
-    "activeDisplaceMapScale": [
-      0.8,
-      0.3
-    ],
-    "activeSparkMapScale": [
-      3,
-      1.2
-    ],
-    "activeSparkDisplaceIntensity": 2.390000104904175,
-    "activeSparkHueShiftAmount": 0.20000000298023224,
-    "fillStrength": 0.667,
-    "activeDisplaceSpeed": 1.5,
-    "activeDisplaceStrength": 0.15,
-    "sparkMapOpacity": 5.69,
-    "fillValue": 0.713207483291626,
-    "glowSaturation": 1.2253520800891937,
-    "sparkSaturation": 1.0676054460523543,
-    "grainPixels": 1.5,
-    "glowWeights": [
-      0.458567970132,
-      0.282861223139,
-      0.156589227109,
-      0.07305908496,
-      0.024947807942
-    ]
-  },
   "fieldPreview": {
     "key": "noisefield",
     "parameterMap": {
@@ -641,7 +594,8 @@
   "vectorPrograms": {
     "palette": "workers/palette.js",
     "contacts": "workers/contacts.js",
-    "legacyBake": "workers/legacy-bake.js"
+    "bake": "workers/legacy-bake.js",
+    "bakePlan": "workers/legacy-plan.js"
   },
   "computeGraphs": {
     "coverage": "pipelines/coverage.json"

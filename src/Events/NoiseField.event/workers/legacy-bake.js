@@ -1,5 +1,8 @@
+// Package-owned defaults from the reference CPU fallback.
+var bakeProfile = {"composeScale":0.125,"composeDisplaceSpeed":2.5899999141693115,"composeDisplaceStrength":0.10000000149011612,"composeDisplaceDirection":[0.5,0.5],"composeDisplaceMapScale":[2.13,1.02],"displaceBlendIntensity":0.41100001335144043,"activeDisplaceDirection":[1,1],"activeDisplaceMapScale":[0.8,0.3],"activeSparkMapScale":[3,1.2],"activeSparkDisplaceIntensity":2.390000104904175,"activeSparkHueShiftAmount":0.20000000298023224,"fillStrength":0.667,"activeDisplaceSpeed":1.5,"activeDisplaceStrength":0.15,"sparkMapOpacity":5.69,"fillValue":0.713207483291626,"glowSaturation":1.2253520800891937,"sparkSaturation":1.0676054460523543,"grainPixels":1.5,"glowWeights":[0.458567970132,0.282861223139,0.156589227109,0.07305908496,0.024947807942]};
 // CPU fallback stages. This program owns the effect formula; Core only executes bounded pixel instructions.
 function computeVector(input) {
+  input.profile = bakeProfile;
   if (input.stage !== 'coverage' && input.stage !== 'effects' && input.stage !== 'frame') throw Error('unknown bake stage');
   var f = Math.fround, pi = f(Math.PI);
   function roundEven(value) {

@@ -93,6 +93,7 @@ namespace PEV.Diagnostics
                 yield return CheckCpuGlitchProgram();
                 yield return CheckCpuBakePerformance();
                 yield return CheckCpuBakeCancellation();
+                yield return CheckCpuBakePlanCancellation();
                 if (Environment.GetEnvironmentVariable("PEV_TEST_BIG_CPU") == "1") yield return CheckCpuBakeLarge();
             }
             if (Environment.GetEnvironmentVariable("PEV_TEST_REAL_FIELD_BUNDLE") == "1")
@@ -100,6 +101,25 @@ namespace PEV.Diagnostics
             yield return ProbeGlobalSettingsGui();
             CheckEditorPlacement(editor);
             Row("DONE", "ok");
+        }
+
+        private static IEnumerator CheckCpuBakePlanCancellation()
+        {
+            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest)) yield break;
+            var request = Request(); request.Provider = manifest; request.FrameCount = 96;
+            var released = new List<NoiseTextureFactory.Frames>();
+            for (int i = 0; i < 20; i++)
+            {
+                request.Seed = i;
+                var frames = NoiseTextureFactory.Begin(request, out string error);
+                if (frames == null) { Row("PIXEL-package-plan-cancellation", "FAIL", error); yield break; }
+                released.Add(frames); NoiseTextureFactory.Release(frames);
+            }
+            float deadline = Time.realtimeSinceStartup + 5f;
+            while (released.Any(f => f.Worker.IsAlive) && Time.realtimeSinceStartup < deadline) yield return null;
+            bool clean = NoiseTextureFactory.CachedFrameSets == 0 && released.All(f => !f.Worker.IsAlive &&
+                f.Cancelled && !f.PixelsReady && f.Pixels == null && f.Textures == null && f.Sprites == null);
+            Row("PIXEL-package-plan-cancellation", clean ? "PASS" : "FAIL", "20 immediate release races");
         }
 
         private static IEnumerator CheckCpuBakeCancellation()
@@ -178,7 +198,7 @@ namespace PEV.Diagnostics
 
         private static IEnumerator CheckCpuGlitchProgram()
         {
-            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest) || !manifest.VectorPrograms.TryGetValue("legacyBake", out var path))
+            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest) || !manifest.VectorPrograms.TryGetValue("bake", out var path))
             { Row("PIXEL-package-glitch-parity", "FAIL", "package CPU program is missing"); yield break; }
             var samples = LegacyFieldTextureSet.Load(manifest, out string error);
             if (samples?.Profile == null) { Row("PIXEL-package-glitch-parity", "FAIL", error); yield break; }
@@ -203,7 +223,7 @@ namespace PEV.Diagnostics
             bool bakeMatches = Enumerable.Range(0, frameCount).All(i => baked[i] != null && baked[i].SequenceEqual(expected[i]));
             Row("PIXEL-package-bake-scheduler", bakeMatches ? "PASS" : "FAIL", $"{frameCount} frames {texW}x{texH}, {bakeTime.Elapsed.TotalMilliseconds:F0} ms");
             string source = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, path, 262144));
-            var profile = manifest.LegacyFieldProfile;
+            var profile = LegacyFieldTextureSet.ProfileData(manifest);
             int cw = Mathf.Clamp(Mathf.RoundToInt(req.ScreenPixelWidth * samples.Profile.ComposeScale), 1, texW);
             int ch = Mathf.Clamp(Mathf.RoundToInt(cw * (float)texH / texW), 1, texH);
             int ew = Mathf.Clamp(Mathf.Max(2, cw * 2), 1, texW), eh = Mathf.Clamp(Mathf.Max(2, ch * 2), 1, texH);
@@ -251,7 +271,7 @@ namespace PEV.Diagnostics
 
         private static IEnumerator CheckCpuCoverageProgram()
         {
-            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest) || !manifest.VectorPrograms.TryGetValue("legacyBake", out var path))
+            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest) || !manifest.VectorPrograms.TryGetValue("bake", out var path))
             { Row("PIXEL-package-coverage-parity", "FAIL", "package CPU program is missing"); yield break; }
             byte[] script = EventLoader.ReadResource(manifest.SourcePath, path, 262144);
             var load = System.Threading.Tasks.Task.Run(() => PixelResourceLoader.Load(manifest, System.Threading.CancellationToken.None));
@@ -261,7 +281,7 @@ namespace PEV.Diagnostics
             { Row("PIXEL-package-coverage-parity", "FAIL", load.Exception?.ToString()); yield break; }
             var samples = LegacyFieldTextureSet.Load(manifest, out string error);
             if (samples?.Profile == null) { Row("PIXEL-package-coverage-parity", "FAIL", error); yield break; }
-            var profile = manifest.LegacyFieldProfile;
+            var profile = LegacyFieldTextureSet.ProfileData(manifest);
             var random = new System.Random(3127);
             using (var worker = new VectorWorker<string>(System.Text.Encoding.UTF8.GetString(script), x => x, (a,b) => a == b,
                 (w,h,a,x) => x, load.Result))
@@ -762,6 +782,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Check("GPU-package-graph-limits", () => CheckGpuGraphLimits(manifest));
             Check("GPU-package-region-modes", () => CheckRegionModes(manifest));
             Check("GPU-package-compositor-limits", () => CheckCompositorLimits(manifest));
+            Check("PIXEL-package-bake-plan-parity", () => CheckBakePlan(manifest));
             Check("GPU-package-contacts-parity", () => CheckContactControllerParity(manifest));
             Check("GPU-contact-controller-sandbox", CheckControllerSandbox);
             yield return CheckCompositorParitySafe(manifest);
@@ -802,6 +823,39 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             yield return CheckRealFieldDepthSafe(manifest);
             yield return CheckRealFieldDriver(manifest);
             yield return CheckRealGpuFailureFallback(manifest);
+        }
+
+        private static bool CheckBakePlan(EventManifest manifest)
+        {
+            var bytes = EventLoader.ReadResource(manifest.SourcePath, manifest.VectorPrograms["bakePlan"], 262144);
+            var controller = new JsonController(System.Text.Encoding.UTF8.GetString(bytes));
+            var random = new System.Random(937);
+            var request = Request(); request.Provider = manifest;
+            for (int i = 0; i < 250; i++)
+            {
+                request.WidthWorld = .01f + (float)random.NextDouble() * 20;
+                request.HeightWorld = .01f + (float)random.NextDouble() * 20;
+                request.Margin = (float)random.NextDouble() * 2f;
+                request.TargetPixelWidth = i % 3 == 0 ? (i % 13) * 96 + 48 : (float)random.NextDouble() * 1200;
+                request.FrameCount = 1 + random.Next(140);
+                request.SampleRate = .1f + (float)random.NextDouble() * 9f;
+                var expected = LegacyBakePlanReference.Prepare(request);
+                var input = Newtonsoft.Json.JsonConvert.SerializeObject(new { widthWorld = request.WidthWorld, heightWorld = request.HeightWorld,
+                    margin = request.Margin, targetPixelWidth = request.TargetPixelWidth, frameCount = request.FrameCount, sampleRate = request.SampleRate });
+                var actual = CpuPackageBake.ValidatePlan(controller.Update(input));
+                if (actual.Width != expected.Width || actual.Height != expected.Height || actual.Frames != expected.Frames)
+                    throw new InvalidOperationException($"case {i}: {actual.Width}x{actual.Height}x{actual.Frames} vs {expected.Width}x{expected.Height}x{expected.Frames}");
+            }
+            var integrated = CpuPackageBake.Prepare(request, System.Threading.CancellationToken.None);
+            var last = LegacyBakePlanReference.Prepare(request);
+            if (integrated.Width != last.Width || integrated.Height != last.Height || integrated.Frames != last.Frames) return false;
+            foreach (var invalid in new[] { "{}", "{\"width\":4096,\"height\":4096,\"frames\":2}",
+                "{\"width\":1,\"height\":1,\"frames\":1}", "{\"width\":1.5,\"height\":1,\"frames\":2}" })
+            {
+                try { CpuPackageBake.ValidatePlan(JObject.Parse(invalid)); return false; }
+                catch (ArgumentException) { }
+            }
+            return true;
         }
 
         private static IEnumerator CheckRealGpuFailureFallback(EventManifest manifest)
@@ -1055,7 +1109,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             if (noise == null) throw new InvalidOperationException(error);
             var touchTexture = ReferenceNoiseTextures.Load(manifest, "touch", out error);
             if (touchTexture == null) throw new InvalidOperationException(error);
-            manifest.LegacyFieldProfile.TryGetValue("glowWeights", out var weights);
+            LegacyFieldTextureSet.ProfileData(manifest).TryGetValue("glowWeights", out var weights);
             var areas = new[] {
                 new NoiseFieldGpuMasks.Area { Center = new Vector2(-.15f,.05f), HalfSize = new Vector2(.55f,.3f), AngleRadians = .35f, YScale = 1f, Opacity = .75f, Flags = 1 },
                 new NoiseFieldGpuMasks.Area { Center = new Vector2(.32f,-.12f), HalfSize = new Vector2(.25f,.4f), AngleRadians = -.17f, YScale = 1f, Opacity = 1f, Flags = 3 },
@@ -1875,8 +1929,8 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     File.WriteAllBytes(Path.Combine(b, "tex.png"), NoiseTextures.EncodePng(blue, 1, 1));
                     var first = new EventManifest { Id = "example.a", SourcePath = a };
                     var second = new EventManifest { Id = "example.b", SourcePath = b };
-                    first.LegacyFieldTextures["block"] = first.LegacyFieldTextures["point"] = "tex.png";
-                    second.LegacyFieldTextures["block"] = second.LegacyFieldTextures["point"] = "tex.png";
+                    LegacyFieldTextureSet.ConfigureForTest(first, "tex.png", "tex.png");
+                    LegacyFieldTextureSet.ConfigureForTest(second, "tex.png", "tex.png");
                     var x = LegacyFieldTextureSet.Load(first, out _);
                     var y = LegacyFieldTextureSet.Load(second, out _);
                     if (x == null || y == null || x.Block[0].r != 255 || y.Block[0].b != 255 ||
@@ -1892,10 +1946,8 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             {
                 var a = new EventManifest { SourcePath = "same", Version = "1" };
                 var b = new EventManifest { SourcePath = "same", Version = "1" };
-                a.LegacyFieldTextures["block"] = b.LegacyFieldTextures["block"] = "block.png";
-                a.LegacyFieldTextures["point"] = b.LegacyFieldTextures["point"] = "point.png";
-                a.LegacyFieldProfile["sample"] = new[] { 1f };
-                b.LegacyFieldProfile["sample"] = new[] { 2f };
+                LegacyFieldTextureSet.ConfigureForTest(a, "block.png", "point.png", new Dictionary<string, float[]> { ["sample"] = new[] { 1f } });
+                LegacyFieldTextureSet.ConfigureForTest(b, "block.png", "point.png", new Dictionary<string, float[]> { ["sample"] = new[] { 2f } });
                 return LegacyFieldTextureSet.Identity(a) != LegacyFieldTextureSet.Identity(b);
             });
             Check("CORE-package-identity-isolation", () =>
@@ -2190,8 +2242,6 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             NoiseFieldRenderer.SetGpuRendering(false);
             Check("FIELD-gpu-failure-restores-legacy", () => NoiseFieldRenderer.LayerCount == 1 && NoiseFieldRenderer.LiveCount == 1);
             var other = new EventManifest { Id = "example.other", SourcePath = first.SourcePath, Version = "other" };
-            foreach (var item in first.LegacyFieldTextures) other.LegacyFieldTextures[item.Key] = item.Value;
-            foreach (var item in first.LegacyFieldProfile) other.LegacyFieldProfile[item.Key] = item.Value;
             foreach (var item in first.VectorPrograms) other.VectorPrograms[item.Key] = item.Value;
             foreach (var item in first.PixelResources) other.PixelResources[item.Key] = item.Value;
             var otherArgs = new Dictionary<string, object>(args) { ["__instance"] = "review/other", ["__manifest"] = other };

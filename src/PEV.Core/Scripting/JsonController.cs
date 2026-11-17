@@ -8,13 +8,13 @@ namespace PEV.Scripting
     internal sealed class JsonController
     {
         private readonly Engine _engine;
-        internal JsonController(string source)
+        internal JsonController(string source, int timeoutMilliseconds = 50)
         {
-            if (string.IsNullOrWhiteSpace(source) || source.Length > 262144)
+            if (string.IsNullOrWhiteSpace(source) || source.Length > 262144 || timeoutMilliseconds < 1 || timeoutMilliseconds > 500)
                 throw new ArgumentException("Invalid controller program");
             _engine = new Engine(options =>
             {
-                options.TimeoutInterval(TimeSpan.FromMilliseconds(50));
+                options.TimeoutInterval(TimeSpan.FromMilliseconds(timeoutMilliseconds));
                 options.MaxStatements(30000); options.LimitRecursion(64);
                 options.LimitMemory(8L * 1024 * 1024); options.Strict();
                 options.Interop.Enabled = false; options.Interop.AllowWrite = false;

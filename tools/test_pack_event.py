@@ -156,8 +156,8 @@ class PackageValidationTests(unittest.TestCase):
         self.assertTrue(validate(self.root, dict(valid, fieldUniforms={"shine": 1})))
 
     def test_legacy_field_texture_roles(self):
-        profile_path = Path(__file__).resolve().parents[1] / "src/Events/NoiseField.event/event.json"
-        profile = json.loads(profile_path.read_text(encoding="utf-8"))["legacyFieldProfile"]
+        profile_path = Path(__file__).resolve().parents[1] / "src/Events/NoiseField.event/assets/legacy/reference.json"
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))["profile"]
         valid = dict(self.manifest, schemaVersion=3, hostPrimitive="fx.field",
                      legacyFieldTextures={"block": "main.js", "point": "main.js"}, legacyFieldProfile=profile)
         self.assertEqual([], validate(self.root, valid))

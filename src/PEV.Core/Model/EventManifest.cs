@@ -187,8 +187,6 @@ namespace PEV.Model
         public readonly List<FieldWaveSpec> FieldWaves = new List<FieldWaveSpec>();
         public readonly Dictionary<string, string> FieldTextures = new Dictionary<string, string>(StringComparer.Ordinal);
         public readonly Dictionary<string, string> FieldShaders = new Dictionary<string, string>(StringComparer.Ordinal);
-        public readonly Dictionary<string, string> LegacyFieldTextures = new Dictionary<string, string>(StringComparer.Ordinal);
-        public readonly Dictionary<string, float[]> LegacyFieldProfile = new Dictionary<string, float[]>(StringComparer.Ordinal);
         public string FieldPreviewKey;
         public readonly Dictionary<string, string> FieldParameterBindings = new Dictionary<string, string>(StringComparer.Ordinal);
         public readonly List<DecorationMigrationBinding> DecorationMigration = new List<DecorationMigrationBinding>();
@@ -197,7 +195,7 @@ namespace PEV.Model
         public string Description = "";
         public List<ParamSpec> Params = new List<ParamSpec>();
 
-        /// <summary>Where the package came from (zip path or directory). Diagnostics only.</summary>
+        /// <summary>Host-owned package path (ZIP or directory); never exposed directly to scripts.</summary>
         public string SourcePath;
 
         /// <summary>Per-locale display name and description, keyed by SystemLanguage name.</summary>
@@ -468,42 +466,6 @@ namespace PEV.Model
                         ? ReadNamedResourceMap(root["fieldShaders"], m.FieldShaders) && m.FieldShaders.ContainsKey("compute")
                         : ReadResourceMap(root["fieldShaders"], m.FieldShaders, new[] { "compute", "disabled", "activeCapture", "hoverCapture", "activeNoCapture", "hoverNoCapture", "disabledColored", "activeCaptureColored", "hoverCaptureColored", "activeNoCaptureColored", "hoverNoCaptureColored" })))
                 { error = "field shader providers require package-relative fieldTextures and fieldShaders for every role"; return null; }
-            }
-
-            if (root["legacyFieldTextures"] != null &&
-                (m.SchemaVersion < 3 || m.HostPrimitive != "fx.field" ||
-                 !ReadResourceMap(root["legacyFieldTextures"], m.LegacyFieldTextures, new[] { "block", "point" })))
-            { error = "legacyFieldTextures requires package-relative block and point roles on a schema 3 fx.field event"; return null; }
-
-            if (root["legacyFieldProfile"] != null || m.LegacyFieldTextures.Count != 0)
-            {
-                var scalarNames = new[] { "composeScale", "composeDisplaceSpeed", "composeDisplaceStrength", "displaceBlendIntensity",
-                    "activeSparkDisplaceIntensity", "activeSparkHueShiftAmount", "fillStrength", "activeDisplaceSpeed",
-                    "activeDisplaceStrength", "sparkMapOpacity", "fillValue", "glowSaturation", "sparkSaturation", "grainPixels" };
-                var vectorNames = new[] { "composeDisplaceDirection", "composeDisplaceMapScale", "activeDisplaceDirection",
-                    "activeDisplaceMapScale", "activeSparkMapScale" };
-                if (m.SchemaVersion < 3 || m.HostPrimitive != "fx.field" || !(root["legacyFieldProfile"] is JObject profile) ||
-                    profile.Count != scalarNames.Length + vectorNames.Length + 1)
-                { error = "legacyFieldProfile requires all declared scalar, vector and glow weight roles"; return null; }
-                foreach (string name in scalarNames.Concat(vectorNames).Concat(new[] { "glowWeights" }))
-                {
-                    var token = profile[name];
-                    var values = token is JArray array ? array.ToArray() : token == null ? Array.Empty<JToken>() : new[] { token };
-                    int expected = scalarNames.Contains(name) ? 1 : vectorNames.Contains(name) ? 2 : 5;
-                    if (values.Length != expected || (expected == 1 && token is JArray) ||
-                        values.Any(v => v.Type != JTokenType.Float && v.Type != JTokenType.Integer))
-                    { error = "invalid legacyFieldProfile value '" + name + "'"; return null; }
-                    var converted = new float[expected];
-                    for (int i = 0; i < expected; i++)
-                    {
-                        double value = values[i].Value<double>(); converted[i] = (float)value;
-                        if (double.IsNaN(value) || double.IsInfinity(value) || Math.Abs(value) > 1024)
-                        { error = "legacyFieldProfile values must be finite and bounded"; return null; }
-                    }
-                    if (name == "composeScale" && (converted[0] <= 0 || converted[0] > 1))
-                    { error = "legacyFieldProfile composeScale must be in (0,1]"; return null; }
-                    m.LegacyFieldProfile.Add(name, converted);
-                }
             }
 
             if (root["fieldPreview"] != null)
