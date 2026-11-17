@@ -38,6 +38,7 @@ namespace PEV.Diagnostics
             public int HiddenProperty => 42;
         }
         private struct UnsafeSnapshotProbe { public GameObject SceneObject; }
+        private struct GenericFrameProbe { public int Width, Height; public float Value; }
 
         private static bool CheckPlainSnapshot()
         {
@@ -161,6 +162,7 @@ namespace PEV.Diagnostics
             Check("PIXEL-package-resource-limits", CheckPackagePixelResourceLimits);
             Check("PIXEL-kernel-mono-performance", CheckPixelKernelPerformance);
             CheckKeys();
+            yield return CheckGenericFrameProgramSafe();
             yield return CheckGenericBakedFrameCacheSafe();
             yield return CheckTextures();
             yield return CheckFieldsWithoutGpuDriver();
@@ -183,6 +185,54 @@ namespace PEV.Diagnostics
             yield return ProbeGlobalSettingsGui();
             CheckEditorPlacement(editor);
             Row("DONE", "ok");
+        }
+
+        private static IEnumerator CheckGenericFrameProgramSafe()
+        {
+            var probe = CheckGenericFrameProgram();
+            while (true)
+            {
+                bool next;
+                try { next = probe.MoveNext(); }
+                catch (Exception e) { Row("FRAME-package-program-generic", "FAIL", e.ToString()); yield break; }
+                if (!next) yield break;
+                yield return probe.Current;
+            }
+        }
+
+        private static IEnumerator CheckGenericFrameProgram()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "pev-frame-program-" + Guid.NewGuid().ToString("N"));
+            string planPath = Path.Combine(root, "plan.js"), drawPath = Path.Combine(root, "draw.js");
+            Directory.CreateDirectory(root);
+            try
+            {
+                File.WriteAllText(planPath, "function updateController(i){return {width:i.request.Width,height:i.request.Height,frames:1};}");
+                File.WriteAllText(drawPath, @"function computeVector(i){
+function run(x){return Number(__compute(JSON.stringify(x)));}
+var p=run({op:'pixelFill',width:i.width,height:i.height,value:i.request.Value});
+return [run({op:'pixelPack',channels:[p,p,p,p]})];}");
+                var manifest = new EventManifest { SourcePath = root };
+                manifest.VectorPrograms.Add("customPlan", "plan.js"); manifest.VectorPrograms.Add("customDraw", "draw.js");
+                manifest.RuntimeBindings.Add("planSlot", "customPlan"); manifest.RuntimeBindings.Add("drawSlot", "customDraw");
+                var data = new GenericFrameProbe { Width = 4, Height = 3, Value = .25f };
+                var task = System.Threading.Tasks.Task.Run(() =>
+                {
+                    var plan = PackageFrameProgram.Prepare(manifest, data, "planSlot", System.Threading.CancellationToken.None);
+                    var frames = new Color32[plan.Frames][];
+                    PackageFrameProgram.Render(manifest, data, "drawSlot", frames, plan.Width, plan.Height, System.Threading.CancellationToken.None);
+                    return plan.Width == 4 && plan.Height == 3 && plan.Frames == 1 && frames[0].Length == 12 && frames[0][0].r == 64;
+                });
+                float deadline = Time.realtimeSinceStartup + 5f;
+                while (!task.IsCompleted && Time.realtimeSinceStartup < deadline) yield return null;
+                Row("FRAME-package-program-generic", task.IsCompleted && !task.IsFaulted && task.Result ? "PASS" : "FAIL", task.Exception?.ToString());
+            }
+            finally
+            {
+                if (File.Exists(planPath)) File.Delete(planPath);
+                if (File.Exists(drawPath)) File.Delete(drawPath);
+                Directory.Delete(root);
+            }
         }
 
         private static IEnumerator CheckGenericBakedFrameCacheSafe()
@@ -289,7 +339,7 @@ namespace PEV.Diagnostics
             using (var cancellation = new System.Threading.CancellationTokenSource())
             {
                 var watch = System.Diagnostics.Stopwatch.StartNew();
-                var task = System.Threading.Tasks.Task.Run(() => CpuPackageBake.Render(request, frames, 1024, 1024, cancellation.Token));
+                var task = System.Threading.Tasks.Task.Run(() => PackageFrameProgram.Render(request.Provider, request, "frameProgram", frames, 1024, 1024, cancellation.Token));
                 float deadline = Time.realtimeSinceStartup + 30f;
                 while (!task.IsCompleted && Time.realtimeSinceStartup < deadline) yield return null;
                 if (!task.IsCompleted) cancellation.Cancel();
@@ -323,7 +373,7 @@ namespace PEV.Diagnostics
             request.Pieces = new[] { new NoiseTextureFactory.Piece { Half = new Vector2(.8f,.6f), Rotation = 27f } };
             var frames = new Color32[96][];
             var watch = System.Diagnostics.Stopwatch.StartNew();
-            var task = System.Threading.Tasks.Task.Run(() => CpuPackageBake.Render(request, frames, 192, 132, System.Threading.CancellationToken.None));
+            var task = System.Threading.Tasks.Task.Run(() => PackageFrameProgram.Render(request.Provider, request, "frameProgram", frames, 192, 132, System.Threading.CancellationToken.None));
             float deadline = Time.realtimeSinceStartup + 20f, previous = Time.realtimeSinceStartup, worstFrame = 0;
             while (!task.IsCompleted && Time.realtimeSinceStartup < deadline)
             {
@@ -354,7 +404,7 @@ namespace PEV.Diagnostics
                 LegacyCpuBakeReference.RenderPixels(req, expected, texW, texH, () => false));
             var load = System.Threading.Tasks.Task.Run(() => PixelResourceLoader.Load(manifest, System.Threading.CancellationToken.None));
             var bakeTime = System.Diagnostics.Stopwatch.StartNew();
-            var bake = System.Threading.Tasks.Task.Run(() => CpuPackageBake.Render(req, baked, texW, texH, System.Threading.CancellationToken.None));
+            var bake = System.Threading.Tasks.Task.Run(() => PackageFrameProgram.Render(req.Provider, req, "frameProgram", baked, texW, texH, System.Threading.CancellationToken.None));
             float deadline = Time.realtimeSinceStartup + 15f;
             while ((!reference.IsCompleted || !load.IsCompleted || !bake.IsCompleted) && Time.realtimeSinceStartup < deadline) yield return null;
             bakeTime.Stop();
@@ -1005,9 +1055,9 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             var request = Request(); request.Provider = manifest; request.EvolveSpeed = 24f;
             var task = System.Threading.Tasks.Task.Run(() =>
             {
-                var plan = CpuPackageBake.Prepare(request, System.Threading.CancellationToken.None);
+                var plan = PackageFrameProgram.Prepare(request.Provider, request, "framePlan", System.Threading.CancellationToken.None);
                 var frames = new Color32[2][];
-                CpuPackageBake.Render(request, frames, 32, 32, System.Threading.CancellationToken.None);
+                PackageFrameProgram.Render(request.Provider, request, "frameProgram", frames, 32, 32, System.Threading.CancellationToken.None);
                 return plan.Frames == 2 && frames.All(f => f != null && f.Length == 1024) && NoiseTextureFactory.Key(request).Length > 0;
             });
             var go = new GameObject("PEV.ReviewRenamedBindings");
@@ -1120,17 +1170,17 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 var expected = LegacyBakePlanReference.Prepare(request);
                 var input = Newtonsoft.Json.JsonConvert.SerializeObject(new { widthWorld = request.WidthWorld, heightWorld = request.HeightWorld,
                     margin = request.Margin, targetPixelWidth = request.TargetPixelWidth, frameCount = request.FrameCount, sampleRate = request.SampleRate });
-                var actual = CpuPackageBake.ValidatePlan(controller.Update(input));
+                var actual = PackageFrameProgram.ValidatePlan(controller.Update(input));
                 if (actual.Width != expected.Width || actual.Height != expected.Height || actual.Frames != expected.Frames)
                     throw new InvalidOperationException($"case {i}: {actual.Width}x{actual.Height}x{actual.Frames} vs {expected.Width}x{expected.Height}x{expected.Frames}");
             }
-            var integrated = CpuPackageBake.Prepare(request, System.Threading.CancellationToken.None);
+            var integrated = PackageFrameProgram.Prepare(request.Provider, request, "framePlan", System.Threading.CancellationToken.None);
             var last = LegacyBakePlanReference.Prepare(request);
             if (integrated.Width != last.Width || integrated.Height != last.Height || integrated.Frames != last.Frames) return false;
             foreach (var invalid in new[] { "{}", "{\"width\":4096,\"height\":4096,\"frames\":2}",
-                "{\"width\":1,\"height\":1,\"frames\":1}", "{\"width\":1.5,\"height\":1,\"frames\":2}" })
+                "{\"width\":1,\"height\":1,\"frames\":0}", "{\"width\":1.5,\"height\":1,\"frames\":2}" })
             {
-                try { CpuPackageBake.ValidatePlan(JObject.Parse(invalid)); return false; }
+                try { PackageFrameProgram.ValidatePlan(JObject.Parse(invalid)); return false; }
                 catch (ArgumentException) { }
             }
             return true;

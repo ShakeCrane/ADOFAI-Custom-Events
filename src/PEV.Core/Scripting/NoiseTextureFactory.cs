@@ -241,9 +241,9 @@ namespace PEV.Scripting
             if (!TryKey(req, out var key, out error)) return null;
             return FrameCache.Begin(key, cancellation =>
             {
-                var plan = CpuPackageBake.Prepare(req, cancellation);
+                var plan = PackageFrameProgram.Prepare(req.Provider, req, "framePlan", cancellation);
                 return new BakedFrameCache.Plan { Width = plan.Width, Height = plan.Height, Count = plan.Frames };
-            }, (pixels, width, height, cancellation) => CpuPackageBake.Render(req, pixels, width, height, cancellation));
+            }, (pixels, width, height, cancellation) => PackageFrameProgram.Render(req.Provider, req, "frameProgram", pixels, width, height, cancellation));
         }
 
         public static void Pump(float budgetMs) => FrameCache.Pump(budgetMs);

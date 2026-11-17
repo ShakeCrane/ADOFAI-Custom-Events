@@ -7,7 +7,7 @@ namespace PEV.Scripting
     {
         private const int MaxSide=1024, MinCells=8, MaxTexelsPerSet=4200000, MinPxWidth=192;
         private static int ResolutionBucket(float px) => Mathf.Clamp(Mathf.RoundToInt(px / 96f), 1, 12) * 96;
-        internal static CpuPackageBake.Plan Prepare(NoiseTextureFactory.Request req)
+        internal static PackageFrameProgram.Plan Prepare(NoiseTextureFactory.Request req)
         {
             int frames = Mathf.Clamp(req.FrameCount, 2, 128);
             float sampleRate = Mathf.Clamp(req.SampleRate, 0.1f, 8f);
@@ -47,7 +47,7 @@ namespace PEV.Scripting
             while (cellsX * block * cellsY * block * frames > MaxTexelsPerSet && frames > 2)
                 frames--;
 
-            return new CpuPackageBake.Plan { Width = cellsX * block, Height = cellsY * block, Frames = frames };
+            return new PackageFrameProgram.Plan { Width = cellsX * block, Height = cellsY * block, Frames = frames };
         }
     }
 }
