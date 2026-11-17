@@ -1422,7 +1422,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Texture2D read = null, activeColors = null, auxiliaryColors = null;
             NoiseFieldGpuMasks masks = null, genericMasks = null;
             LegacyGpuLayerReference legacy = null;
-            NoiseFieldGpuLayer current = null;
+            PackageSpriteLayer current = null;
             var prior = RenderTexture.active;
             try
             {
@@ -1487,7 +1487,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 auxiliaryColors.SetPixels32(Enumerable.Repeat(new Color32(30, 70, 220, 255), masks.Width * masks.Height).ToArray());
                 activeColors.Apply(false, false); auxiliaryColors.Apply(false, false);
                 legacy = new LegacyGpuLayerReference(manifest, CompositorDefinition.Parse(graphData), 0, 0, 30);
-                current = new NoiseFieldGpuLayer(manifest, compositor, 0, 0, 31);
+                current = new PackageSpriteLayer(manifest, compositor, 0, 0, 31, 10);
                 var positions = new Vector4[10];
                 positions[0] = NoiseFieldGpuLayer.TouchPosition(new Vector2(.5f, .5f), 128, 128);
                 Func<int, Color32[]> capture = layer =>
@@ -1505,9 +1505,15 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     var first = colored ? activeColors : null; var second = colored ? auxiliaryColors : null;
                     legacy.Draw(camera, masks, displacement, spark, noise, 1f, 1f, captureScene, hover,
                         showDisabled, showActive, Color.black, positions, hover ? 1 : 0, first, second);
+                    var conditions = new JObject { ["colored"] = colored, ["hover"] = hover,
+                        ["showSecondary"] = showDisabled, ["showPrimary"] = showActive, ["hasContacts"] = hover };
+                    var contactValues = new JArray();
+                    if (hover) contactValues.Add(new JArray(positions[0].x, positions[0].y, positions[0].z, positions[0].w));
+                    var values = new JObject { ["contactCount"] = hover ? 1 : 0, ["contacts"] = contactValues };
+                    var textures = new Dictionary<string, Texture>();
+                    if (colored) { textures["primaryColors"] = first; textures["secondaryColors"] = second; }
                     current.Draw(camera, genericMasks, renamedImages, 1f, 1f,
-                        new Dictionary<string, bool> { ["customOption"] = captureScene }, hover,
-                        showDisabled, showActive, Color.black, positions, hover ? 1 : 0, first, second);
+                        new Dictionary<string, bool> { ["customOption"] = captureScene }, conditions, values, Color.black, textures);
                     yield return null;
                     var before = capture(30); var after = capture(31);
                     if (!before.SequenceEqual(backgroundOnly)) visibleScenarios++;

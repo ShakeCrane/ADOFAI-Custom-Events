@@ -17,9 +17,9 @@ namespace PEV.Scripting
         private sealed class Group : IDisposable
         {
             internal readonly PackageComputeFrame Masks;
-            internal readonly NoiseFieldGpuLayer Layer;
+            internal readonly PackageSpriteLayer Layer;
             internal readonly NoiseFieldGpuPalette Palette;
-            internal readonly Vector4[] TouchPositions;
+            internal readonly Dictionary<string, Texture> Textures = new Dictionary<string, Texture>(StringComparer.Ordinal);
             internal NoiseFieldColorOwnership.Zone[] Colors = Array.Empty<NoiseFieldColorOwnership.Zone>();
             internal int ViewWidth, ViewHeight;
             internal bool Colored, ShowDisabled, ShowActive;
@@ -27,10 +27,9 @@ namespace PEV.Scripting
             internal Group(ComputeShader shader, GpuGraphDefinition graph, CompositorDefinition compositor, VectorTextureDefinition textures,
                 GpuGraphDefinition.ControllerLimits limits, EventManifest manifest, NoiseFieldGpuPlan.Key key)
             {
-                TouchPositions = new Vector4[limits.Capacity];
                 Palette = new NoiseFieldGpuPalette(manifest, textures);
                 Masks = new PackageComputeFrame(shader, graph);
-                try { Layer = new NoiseFieldGpuLayer(manifest, compositor, key.SortingLayer, key.SortingOrder, key.UnityLayer); }
+                try { Layer = new PackageSpriteLayer(manifest, compositor, key.SortingLayer, key.SortingOrder, key.UnityLayer, limits.Capacity); }
                 catch { Masks.Dispose(); throw; }
             }
             public void Dispose() { Layer.Dispose(); Palette.Dispose(); Masks.Dispose(); }
@@ -129,7 +128,7 @@ namespace PEV.Scripting
                     !(commands["values"] is JObject values) || !(commands["compute"] is JObject compute))
                     throw new ArgumentException("Invalid package group commands");
                 bool showActive = Flag(conditions, "showPrimary"), showDisabled = Flag(conditions, "showSecondary");
-                bool colored = Flag(conditions, "colored"), hover = Flag(conditions, "hover");
+                bool colored = Flag(conditions, "colored");
                 var geometry = Rows(buffers["geometry"], 1024, 8);
                 var touches = Rows(buffers["contacts"], _inputLimits.Capacity, 4);
                 var positions = Rows(values["contacts"], _inputLimits.Capacity, 4);
@@ -156,11 +155,6 @@ namespace PEV.Scripting
                     _staging.SetPending(pair.Key, replacement);
                     group = replacement;
                 }
-                for (int i = 0; i < positions.Count; i++)
-                {
-                    var row = (JArray)positions[i];
-                    group.TouchPositions[i] = new Vector4(Number(row[0]), Number(row[1]), Number(row[2]), Number(row[3]));
-                }
                 group.Masks.Render(camera.pixelWidth, camera.pixelHeight, songTime, buffers, compute, _images);
                 if (colored)
                 {
@@ -178,10 +172,14 @@ namespace PEV.Scripting
                         continue;
                     }
                 }
+                group.Textures.Clear();
+                if (colored)
+                {
+                    group.Textures.Add("primaryColors", group.Palette.Active);
+                    group.Textures.Add("secondaryColors", group.Palette.Disabled);
+                }
                 ready &= group.Layer.Draw(camera, group.Masks, _images, aspect, songTime,
-                    settings, hover, showDisabled, showActive,
-                    fallbackBackground, group.TouchPositions, positions.Count,
-                    colored ? group.Palette.Active : null, colored ? group.Palette.Disabled : null);
+                    settings, conditions, values, fallbackBackground, group.Textures);
             }
             if (!ready)
             {

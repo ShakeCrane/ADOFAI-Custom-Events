@@ -21,6 +21,8 @@ namespace PEV.Scripting
         private readonly Dictionary<string, GpuRecordBuffer> _buffers = new Dictionary<string, GpuRecordBuffer>(StringComparer.Ordinal);
         private readonly Dictionary<string, object> _inputs = new Dictionary<string, object>(StringComparer.Ordinal);
         private readonly Dictionary<string, Texture> _images = new Dictionary<string, Texture>(StringComparer.Ordinal);
+        private readonly Dictionary<string, int[]> _imageDimensions = new Dictionary<string, int[]>(StringComparer.Ordinal);
+        private readonly int[] _dimensions = new int[2];
         public int Width => _graph.Width;
         public int Height => _graph.Height;
         public IEnumerable<KeyValuePair<string, RenderTexture>> Outputs => _graph.Outputs;
@@ -84,13 +86,16 @@ namespace PEV.Scripting
             foreach (var uniform in _definition.Uniforms) ConvertUniform(uniform);
             foreach (var entry in _definition.Entries.Values)
                 foreach (var pass in entry) foreach (var uniform in pass.Uniforms) ConvertUniform(uniform);
-            _inputs["dimensions"] = new[] { Width, Height };
+            _dimensions[0] = Width; _dimensions[1] = Height;
+            _inputs["dimensions"] = _dimensions;
             _inputs["time"] = time;
             foreach (var image in images)
             {
                 if (image.Value == null || image.Value.width <= 0 || image.Value.height <= 0) throw new ArgumentException("Invalid package image");
                 _images[image.Key] = image.Value;
-                _inputs[image.Key + "Dimensions"] = new[] { image.Value.width, image.Value.height };
+                if (!_imageDimensions.TryGetValue(image.Key, out var size)) _imageDimensions.Add(image.Key, size = new int[2]);
+                size[0] = image.Value.width; size[1] = image.Value.height;
+                _inputs[image.Key + "Dimensions"] = size;
             }
             _graph.Run("render", _inputs, _images);
         }
