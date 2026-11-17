@@ -117,7 +117,6 @@ namespace PEV.Scripting
 
             public float Opacity;
             public bool Visible;
-            internal bool GpuInverted;
 
             /// <summary>
             /// The sorting the carrier renders at, read from the decoration itself.
@@ -144,13 +143,14 @@ namespace PEV.Scripting
             // Geometry as reported by the script, kept per field so the layer can be
             // recomposited when any member changes.
             public Placement.Frame World;
+            public Color FillColor;
+#if PEV_DIAGNOSTICS
             public NoiseFieldShape Shape;
             public float Feather;
             // The reference effect composes four layers from one mask: a translucent fill,
             // an opaque edge traced around it, outer glow ridges, and sparse spark grains.
             // Keeping them separate is what makes the region read as a cut-out rather than
             // a smear.
-            public Color FillColor;
             public Color EdgeColor;
             public Color GlowColor;
             public Color SparkColor;
@@ -197,6 +197,7 @@ namespace PEV.Scripting
             public bool Ready;
 
             public int FrameCount;
+#endif
             public float PxWidthHint;
             public Vector2 Tiling = Vector2.one;
 
@@ -242,6 +243,7 @@ namespace PEV.Scripting
             new Dictionary<string, Entry>(StringComparer.Ordinal);
         private static long _nextGpuSequence;
 
+#if PEV_DIAGNOSTICS
         /// <summary>
         /// Neutral defaults for fields that omit edge controls.
         /// </summary>
@@ -250,6 +252,7 @@ namespace PEV.Scripting
         public const int DefaultEdgeThickness = 1;
         public const float DefaultEdgeMargin = 0f;
         public const float DefaultEdgeFragment = 0f;
+#endif
 
         /// <summary>
         /// One quad per overlapping cluster of same-depth fields, keyed "depth#cluster".
@@ -513,9 +516,6 @@ namespace PEV.Scripting
             entry.FrameIndex = 0;
             entry.Uv = Vector2.zero;
             entry.ScriptActive = false;
-            // Old charts predate the invert parameter. Do not retain a script-owned
-            // inversion when resetting an old row that has no stored value for it.
-            entry.GpuInverted = false;
             try { Apply(entry, entry.DescriptionArgs ?? EmptyArgs); }
             catch (Exception e) { PEV.Core.Plugin.Log("field reset failed: " + e.Message); }
         }
@@ -757,9 +757,10 @@ namespace PEV.Scripting
             bool mirrored = TryReadDecoration(entry, args, out var live);
             entry.World = mirrored ? live.Frame : Placement.Compute(BuildInput(args, entry, cam));
 
+#if PEV_DIAGNOSTICS
             entry.Shape = ParseEnum(args, "shape", NoiseFieldShape.Rect);
-            entry.GpuInverted = ParseBool(args, "invert", entry.GpuInverted);
             entry.Feather = Mathf.Max(0f, ParseFloat(args, "feather", 0f));
+#endif
             // The decoration's own colour wins when there is one: an author who recolours the
             // decoration expects the field to follow, and MoveDecorations tweens colour on the
             // component rather than in the event data.
@@ -767,6 +768,7 @@ namespace PEV.Scripting
                 ? live.Color
                 : ParseColor(args, "color", Color.white);
             entry.FillColor = baseColor;
+#if PEV_DIAGNOSTICS
             entry.EdgeColor = ParseColor(args, "edgeColor", baseColor);
             entry.GlowColor = ParseColor(args, "glowColor", baseColor);
             entry.SparkColor = ParseColor(args, "sparkColor", baseColor);
@@ -793,6 +795,7 @@ namespace PEV.Scripting
             entry.EdgeFragment = Mathf.Clamp01(ParseFloat(args, "edgeFragment", DefaultEdgeFragment));
 
             entry.FrameCount = Mathf.Clamp(ParseInt(args, "frameCount", 2), 2, 128);
+#endif
 
             // When mirrored, visibility, opacity, tag and depth are the decoration's. That is
             // the whole point of the mapping: an author hides the decoration or retags it and
@@ -963,13 +966,14 @@ namespace PEV.Scripting
         private static readonly ConditionalWeakTable<PEV.Model.EventManifest, JsonController> FrameRequests =
             new ConditionalWeakTable<PEV.Model.EventManifest, JsonController>();
 
-        private static JObject PlainParameters(Dictionary<string, object> arguments)
+        internal static JObject PlainParameters(Dictionary<string, object> arguments, string[] allowed = null)
         {
             var result = new JObject();
             if (arguments == null) return result;
             foreach (var pair in arguments)
             {
-                if (pair.Key.StartsWith("__", StringComparison.Ordinal) || pair.Key.Length > 128 || result.Count >= 128) continue;
+                if (pair.Key.StartsWith("__", StringComparison.Ordinal) || pair.Key.Length > 128 || result.Count >= 128 ||
+                    (allowed != null && Array.IndexOf(allowed, pair.Key) < 0)) continue;
                 var value = pair.Value;
                 if (value is JValue token && (token.Type == JTokenType.String || token.Type == JTokenType.Boolean ||
                     token.Type == JTokenType.Integer || token.Type == JTokenType.Float)) result[pair.Key] = token.DeepClone();

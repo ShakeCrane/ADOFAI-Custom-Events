@@ -4,9 +4,11 @@ function updateController(input) {
   var groups = [], indices = Object.create(null), items = input.Items;
   for (var i = 0; i < items.length; i++) {
     var item = items[i], value = (item.State || 'Active').toLowerCase();
+    var params = item.Parameters ? JSON.parse(item.Parameters) : item;
+    var inverted = params.invert === true || (typeof params.invert === 'string' && params.invert.toLowerCase() === 'true') || item.Inverted === true;
     var active = value !== 'disabled' && value !== 'ready';
     var warning = value === 'ready', disabled = value === 'disabled';
-    var flags = (active ? 1 : warning ? 4 : 0) | (item.Inverted ? 2 : 0);
+    var flags = (active ? 1 : warning ? 4 : 0) | (inverted ? 2 : 0);
     var key = item.SortingLayer + ':' + item.SortingOrder + ':' + item.UnityLayer;
     var index = indices[key];
     if (index === undefined) {
@@ -21,7 +23,7 @@ function updateController(input) {
       item.Green !== item.DefaultGreen || item.Blue !== item.DefaultBlue;
     group.members.push(i);
     group.data.push([item.X,item.Y,item.HalfX,item.HalfY,item.Angle,item.Opacity,flags,
-      item.Red,item.Green,item.Blue,active,item.Inverted,active,item.Inverted]);
+      item.Red,item.Green,item.Blue,active,inverted,active,inverted]);
   }
   return {groups:groups};
 }

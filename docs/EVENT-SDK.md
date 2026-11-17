@@ -336,7 +336,7 @@ function create(ctx, params) {
 
 ### 按 tag 控制别的实例
 
-`fx.field` 创建的对象可以带 `tag`，另一个事件用 `fx.fieldMove` / `fx.fieldState` 按 tag 改它。
+`fx.field` 创建的对象可以带 `tag`，另一个事件用 `fx.fieldMove` 按 tag 改它。
 这在「先摆好区域，再按节奏改它」的分层编排里是必需的——移动事件不该知道区域是怎么创建的。
 
 ```js
@@ -345,7 +345,7 @@ fx.field("key", { tag: "wave", /* ... */ });
 
 // 在控制方：写的是绝对值，脚本每帧按 t 重新算，暂停和跳转自动正确
 fx.fieldMove({ tag: "wave", offset: [2 * k, 0], rotation: 15 * k, scale: 1 + 0.5 * k, alpha: 1 });
-fx.fieldState({ tag: "wave", alpha: 0.5, visibility: 1 });
+fx.fieldMove({ tag: "wave", alpha: 0.5, visibility: 1 });
 
 // 事件结束时还原，否则区域会停在最后一个位置
 fx.fieldMove({ tag: "wave", clear: true });

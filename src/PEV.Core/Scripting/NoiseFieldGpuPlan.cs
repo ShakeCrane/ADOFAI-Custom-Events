@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using Newtonsoft.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
@@ -31,12 +32,12 @@ namespace PEV.Scripting
         {
             public int SortingLayer, SortingOrder, UnityLayer;
             public float X, Y, HalfX, HalfY, Angle, Opacity, Red, Green, Blue, DefaultRed, DefaultGreen, DefaultBlue;
-            public bool Inverted, HasDefault;
-            public string State;
+            public bool HasDefault;
+            public string State, Parameters;
             public bool Equals(Snapshot x) => SortingLayer == x.SortingLayer && SortingOrder == x.SortingOrder && UnityLayer == x.UnityLayer &&
                 X == x.X && Y == x.Y && HalfX == x.HalfX && HalfY == x.HalfY && Angle == x.Angle && Opacity == x.Opacity &&
                 Red == x.Red && Green == x.Green && Blue == x.Blue && DefaultRed == x.DefaultRed && DefaultGreen == x.DefaultGreen &&
-                DefaultBlue == x.DefaultBlue && Inverted == x.Inverted && HasDefault == x.HasDefault && State == x.State;
+                DefaultBlue == x.DefaultBlue && HasDefault == x.HasDefault && State == x.State && Parameters == x.Parameters;
         }
         private struct Input { public Snapshot[] Items; }
         private readonly Dictionary<Key, Group> _groups = new Dictionary<Key, Group>();
@@ -47,6 +48,7 @@ namespace PEV.Scripting
         private readonly string _source;
         private JsonController _controller, _backgroundController;
         private readonly string _tagKey;
+        private readonly string[] _snapshotValues;
         private Snapshot[] _previous;
         private bool[] _seen = Array.Empty<bool>();
         private const int BackgroundThreshold = 32;
@@ -68,11 +70,21 @@ namespace PEV.Scripting
                 throw new ArgumentException("Package render plan is not declared");
             byte[] source = EventLoader.ReadResource(manifest.SourcePath, path, 262144);
             if (source == null) throw new ArgumentException("Package render plan is missing or too large");
-            return new NoiseFieldGpuPlan(tagKey, new UTF8Encoding(false, true).GetString(source));
+            if (!(graph["snapshotValues"] is JArray values) || values.Count > 32)
+                throw new ArgumentException("Invalid package snapshot values");
+            var names = new List<string>();
+            foreach (var item in values)
+            {
+                string name = item.Type == JTokenType.String ? item.Value<string>() : null;
+                if (string.IsNullOrWhiteSpace(name) || name.Length > 128 || name.StartsWith("__", StringComparison.Ordinal) || names.Contains(name))
+                    throw new ArgumentException("Invalid package snapshot value");
+                names.Add(name);
+            }
+            return new NoiseFieldGpuPlan(tagKey, new UTF8Encoding(false, true).GetString(source), names.ToArray());
         }
-        private NoiseFieldGpuPlan(string tagKey, string source)
+        private NoiseFieldGpuPlan(string tagKey, string source, string[] snapshotValues)
         {
-            _tagKey = tagKey; _source = source;
+            _tagKey = tagKey; _source = source; _snapshotValues = snapshotValues;
         }
 
         internal bool Build(IReadOnlyList<NoiseFieldRenderer.Entry> entries, Camera camera, float aspect, TaggedValues values)
@@ -101,11 +113,13 @@ namespace PEV.Scripting
                     _defaultColors.Add(provider, expected);
                 }
                 var color = entry.FillColor;
+                string parameters = entry.Arguments == null || _snapshotValues.Length == 0 ? "{}" :
+                    NoiseFieldRenderer.PlainParameters(entry.Arguments, _snapshotValues).ToString(Formatting.None);
                 _items.Add(new Snapshot { SortingLayer = entry.SortingLayerID, SortingOrder = entry.SortingOrder, UnityLayer = entry.UnityLayer,
                     X = projected.Center.x, Y = projected.Center.y, HalfX = projected.HalfSize.x, HalfY = projected.HalfSize.y,
                     Angle = projected.AngleRadians, Opacity = Mathf.Clamp01(opacity), Red = color.r, Green = color.g, Blue = color.b,
                     HasDefault = expected.HasValue, DefaultRed = expected?.r ?? 0, DefaultGreen = expected?.g ?? 0, DefaultBlue = expected?.b ?? 0,
-                    Inverted = entry.GpuInverted, State = values.At(provider?.SourcePath, _tagKey, entry.Tag) });
+                    Parameters = parameters, State = values.At(provider?.SourcePath, _tagKey, entry.Tag) });
                 if (_items.Count > 1024) throw new ArgumentException("Too many projected decorations");
             }
             if (_items.Count == 0)

@@ -2078,7 +2078,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 Row("GPU-real-two-depths", !both[0].Equals(higherOnly[0]) && both[1].Equals(before[1]) ? "PASS" : "FAIL",
                     $"both {both[0]}; upper only {higherOnly[0]}; foreground {both[1]}");
                 entry.Visible = true;
-                entry.GpuInverted = true;
+                entry.Arguments = new Dictionary<string, object> { ["invert"] = true };
                 var outer = new NoiseFieldRenderer.Entry
                 {
                     Provider = manifest, Visible = true, Renderable = true, Opacity = 1f,
@@ -2446,19 +2446,6 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     }
                     finally { first?.Dispose(); second?.Dispose(); }
                 });
-                Check("FIELD-legacy-state-script-compatibility", () =>
-                {
-                    const string oldScript = "function create(){return {update:function(){fx.fieldState({tag:'legacy',phase:'Ready'});}};}";
-                    var host = ScriptHost.Create(oldScript, "review/legacy-state", out _, stateManifest);
-                    try
-                    {
-                        var context = new EventContext { EventTime = 1, EventOrder = 0 };
-                        if (host == null || !host.Initialize(context, new Dictionary<string, object>(), out _)) return false;
-                        host.Update(0, context.ToStateJson());
-                        return GameBridge.Values.At(stateManifest.SourcePath, "phase", "legacy") == "Ready";
-                    }
-                    finally { host?.Dispose(); }
-                });
             }
             Check("FIELD-touch-history", () =>
             {
@@ -2584,7 +2571,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                         FillColor = Color.blue, EdgeColor = Color.red };
                     var b = new NoiseFieldRenderer.Entry { Provider = provider, Tag = "test-b", GpuSequence = 1, Visible = true, Renderable = true,
                         Opacity = 0.5f, World = new Placement.Frame { Size = new Vector2(2, 2) },
-                        SortingOrder = 1, UnityLayer = 7, GpuInverted = true };
+                        SortingOrder = 1, UnityLayer = 7, Arguments = new Dictionary<string, object> { ["invert"] = true } };
                     var c = new NoiseFieldRenderer.Entry { Provider = provider, Tag = "test-c", GpuSequence = 3, Visible = true, Renderable = true,
                         Opacity = 1, World = new Placement.Frame { Size = new Vector2(2, 2) },
                         SortingOrder = 1, UnityLayer = 9,
@@ -2743,6 +2730,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 var states = new[] { "Active", "Ready", "Disabled", "unknown" };
                 var entries = new NoiseFieldRenderer.Entry[12];
                 var expectedStates = new string[entries.Length];
+                var expectedInverted = new bool[entries.Length];
                 for (int i = 0; i < entries.Length; i++)
                     entries[i] = new NoiseFieldRenderer.Entry { Provider = provider, Tag = "plan-" + i, GpuSequence = i,
                         Visible = true, Renderable = true, Opacity = 1, SortingOrder = i % 3, UnityLayer = 7,
@@ -2753,7 +2741,8 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     for (int i = 0; i < entries.Length; i++)
                     {
                         var entry = entries[i]; string state = expectedStates[i] = states[random.Next(states.Length)];
-                        entry.GpuInverted = random.Next(2) == 0;
+                        expectedInverted[i] = random.Next(2) == 0;
+                        entry.Arguments = new Dictionary<string, object> { ["invert"] = expectedInverted[i] };
                         entry.FillColor = i == frame % entries.Length ? Color.blue : (Color)new Color32(255, 84, 84, 255);
                         entry.World = new Placement.Frame { Center = new Vector3(i * .03f, frame * .0001f, 0), Size = new Vector2(2, 2) };
                         values.Set("plan-state-" + i, provider.SourcePath, "phase", entry.Tag, state, frame, i);
@@ -2769,10 +2758,10 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                         {
                             bool active = expectedStates[i] == "Active" || expectedStates[i] == "unknown";
                             bool ready = expectedStates[i] == "Ready";
-                            uint flags = (uint)((active ? 1 : ready ? 4 : 0) | (entries[i].GpuInverted ? 2 : 0));
+                            uint flags = (uint)((active ? 1 : ready ? 4 : 0) | (expectedInverted[i] ? 2 : 0));
                             var data = group.Data["data"][row];
                             if (data[6].Value<uint>() != flags || data[10].Value<bool>() != active ||
-                                data[12].Value<bool>() != active || data[13].Value<bool>() != entries[i].GpuInverted) return false;
+                                data[12].Value<bool>() != active || data[13].Value<bool>() != expectedInverted[i]) return false;
                             primary |= active || ready; secondary |= !active; colored |= entries[i].FillColor == Color.blue; row++;
                         }
                         if (group.Data.Value<bool>("primary") != primary || group.Data.Value<bool>("secondary") != secondary ||
@@ -2790,7 +2779,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
         {
             if (!EventRegistry.TryGetById("pev.noise-field", out var provider)) return false;
             var ctor = typeof(NoiseFieldGpuPlan).GetConstructor(BindingFlags.Instance | BindingFlags.NonPublic, null,
-                new[] { typeof(string), typeof(string) }, null);
+                new[] { typeof(string), typeof(string), typeof(string[]) }, null);
             if (ctor == null) return false;
             var go = new GameObject("PEV.ReviewInvalidPlan");
             try
@@ -2806,7 +2795,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     prefix + "2" + middle + "[0],data:[[]]}]};}",
                     "function updateController(){return {groups:[]};}" })
                 {
-                    using var plan = (NoiseFieldGpuPlan)ctor.Invoke(new object[] { "phase", source });
+                    using var plan = (NoiseFieldGpuPlan)ctor.Invoke(new object[] { "phase", source, Array.Empty<string>() });
                     try { plan.Build(new[] { entry }, camera, 1, new TaggedValues()); return false; }
                     catch (ArgumentException) { }
                 }
@@ -3365,7 +3354,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             NoiseFieldRenderer.Destroy("noisefield", new Dictionary<string, object> { ["__instance"] = "review/description" }, out _);
             Check("FIELD-description-reset-params", () =>
                 Mathf.Abs(NoiseFieldRenderer.AllEntries().Single().FillOpacity - 0.23f) < 0.001f &&
-                !NoiseFieldRenderer.AllEntries().Single().GpuInverted);
+                !NoiseFieldRenderer.PlainParameters(NoiseFieldRenderer.AllEntries().Single().Arguments).Value<bool?>("invert").GetValueOrDefault());
             NoiseFieldRenderer.DestroyAll();
             NoiseFieldRenderer.UnbindAll();
         }

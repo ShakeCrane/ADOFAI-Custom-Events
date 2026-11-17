@@ -107,8 +107,7 @@ namespace PEV.Scripting
                 // public contract is the .event package format, so this surface may change.
                 case "field": return NoiseFieldRenderer.Set(Str(args, "key"), args, out error);
                 case "fielddestroy": return NoiseFieldRenderer.Destroy(Str(args, "key"), args, out error);
-                case "fieldmove":
-                case "fieldstate": return FieldOverride(args, effectName, out error);
+                case "fieldmove": return FieldOverride(args, effectName, out error);
                 default:
                     error = $"unsupported effect '{effectName}'";
                     return false;
@@ -144,14 +143,6 @@ namespace PEV.Scripting
             error = null;
             string tag = Str(args, "tag");
             if (string.IsNullOrEmpty(tag)) { error = name + " needs a tag"; return false; }
-
-            // Compatibility for older packages using the internal field state API.
-            if (string.Equals(name, "fieldstate", StringComparison.OrdinalIgnoreCase) && args.ContainsKey("phase"))
-            {
-                args["key"] = "phase";
-                args["value"] = args["phase"];
-                return SetTaggedValue(args, out error);
-            }
 
             bool clear = Bool(args, "clear", false);
             var offset = Vec2(args, "offset", Vector2.zero);

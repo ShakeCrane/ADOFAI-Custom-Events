@@ -48,9 +48,6 @@ var fx = {
   fieldMove: function (o) {
     return JSON.parse(__hostFx('fieldmove', JSON.stringify(o || {})));
   },
-  fieldState: function (o) {
-    return JSON.parse(__hostFx('fieldstate', JSON.stringify(o || {})));
-  },
   tagValue: function (o) {
     return JSON.parse(__hostFx('tagvalue', JSON.stringify(o || {})));
   }
