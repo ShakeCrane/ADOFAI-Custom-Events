@@ -28,6 +28,15 @@ namespace PEV.Scripting
             if (type.IsArray) return type.GetArrayRank() == 1 && IsDataType(type.GetElementType());
             return type == typeof(string) || (type.IsValueType && !type.IsPointer && !type.IsByRef);
         }
+        internal static void RequireImmutableRecord(Type type) => CheckImmutableRecord(type, 0);
+        private static void CheckImmutableRecord(Type type, int depth)
+        {
+            if (depth > 8) throw new ArgumentException("Snapshot record nesting is too deep");
+            if (type == typeof(string) || type.IsPrimitive || type.IsEnum || type == typeof(decimal)) return;
+            if (!type.IsValueType || type.IsPointer || type.IsByRef) throw new ArgumentException("Snapshot record contains a mutable reference");
+            foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                CheckImmutableRecord(field.FieldType, depth + 1);
+        }
         private static readonly JsonSerializerSettings Settings = new JsonSerializerSettings
         {
             ContractResolver = new FieldsOnlyResolver(), MaxDepth = 32,

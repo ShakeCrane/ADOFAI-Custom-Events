@@ -7,7 +7,7 @@ namespace PEV.Scripting
     /// <summary>Draft per-group palette upload and warp; all Unity calls are main-thread-only.</summary>
     internal sealed class NoiseFieldGpuPalette : IDisposable
     {
-        private NoiseFieldColorWorker _worker;
+        private StructuredVectorWorker<NoiseFieldColorOwnership.Zone, int> _worker;
         private readonly PEV.Model.EventManifest _provider;
         private readonly int _defaultRgb;
         private Texture2D _rawActive, _disabled;
@@ -34,7 +34,7 @@ namespace PEV.Scripting
                 if (bytes == null || bytes.Length == 0 || bytes.Length > 262144)
                     throw new InvalidOperationException("field package palette vector program is missing or too large");
                 string source = new System.Text.UTF8Encoding(false, true).GetString(bytes);
-                _worker = new NoiseFieldColorWorker(source);
+                _worker = new StructuredVectorWorker<NoiseFieldColorOwnership.Zone, int>(source, 2);
             }
             int width = masks.Width, height = masks.Height;
             bool updated = _worker.Update(width, height, aspect, zones, _defaultRgb);
@@ -46,8 +46,8 @@ namespace PEV.Scripting
             {
                 // Animated colors and geometry must not create three Unity textures on
                 // every completed worker result. Reuse the existing same-sized resources.
-                Upload(_rawActive, _worker.Latest.Active);
-                Upload(_disabled, _worker.Latest.Disabled);
+                Upload(_rawActive, _worker.Latest[0]);
+                Upload(_disabled, _worker.Latest[1]);
             }
             else if (updated)
             {
@@ -55,8 +55,8 @@ namespace PEV.Scripting
                 RenderTexture active = null;
                 try
                 {
-                    raw = MakeTexture(width, height, "PEV.RawActivePalette", _worker.Latest.Active);
-                    disabled = MakeTexture(width, height, "PEV.DisabledPalette", _worker.Latest.Disabled);
+                    raw = MakeTexture(width, height, "PEV.RawActivePalette", _worker.Latest[0]);
+                    disabled = MakeTexture(width, height, "PEV.DisabledPalette", _worker.Latest[1]);
                     var desc = new RenderTextureDescriptor(width, height)
                     {
                         graphicsFormat = GraphicsFormat.R8G8B8A8_UNorm,

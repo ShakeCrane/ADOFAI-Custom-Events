@@ -39,6 +39,7 @@ namespace PEV.Diagnostics
         }
         private struct UnsafeSnapshotProbe { public GameObject SceneObject; }
         private struct GenericFrameProbe { public int Width, Height; public float Value; }
+        private struct MutableRecordProbe { public int[] Values; }
 
         private static bool CheckPlainSnapshot()
         {
@@ -163,6 +164,7 @@ namespace PEV.Diagnostics
             Check("PIXEL-kernel-mono-performance", CheckPixelKernelPerformance);
             CheckKeys();
             yield return CheckGenericFrameProgramSafe();
+            yield return CheckGenericStructuredWorkerSafe();
             yield return CheckGenericBakedFrameCacheSafe();
             yield return CheckTextures();
             yield return CheckFieldsWithoutGpuDriver();
@@ -185,6 +187,49 @@ namespace PEV.Diagnostics
             yield return ProbeGlobalSettingsGui();
             CheckEditorPlacement(editor);
             Row("DONE", "ok");
+        }
+
+        private static IEnumerator CheckGenericStructuredWorkerSafe()
+        {
+            var probe = CheckGenericStructuredWorker();
+            while (true)
+            {
+                bool next;
+                try { next = probe.MoveNext(); }
+                catch (Exception e) { Row("VECTOR-structured-generic", "FAIL", e.ToString()); yield break; }
+                if (!next) yield break;
+                yield return probe.Current;
+            }
+        }
+
+        private static IEnumerator CheckGenericStructuredWorker()
+        {
+            const string source = @"function computeVector(i){
+function run(x){return Number(__compute(JSON.stringify(x)));}
+var p=run({op:'pixelFill',width:i.width,height:i.height,value:i.request.Items[0].Value+i.request.Options/100});
+return [run({op:'pixelPack',channels:[p,p,p,p]})];}";
+            var mutable = new MutableRecordProbe { Values = Array.Empty<int>() };
+            bool rejected = false;
+            try { using (new StructuredVectorWorker<MutableRecordProbe, int>(source, 1)) { } }
+            catch (ArgumentException) { rejected = true; }
+            if (!rejected || mutable.Values.Length != 0) { Row("VECTOR-structured-generic", "FAIL", "mutable record accepted"); yield break; }
+            using (var worker = new StructuredVectorWorker<GenericFrameProbe, int>(source, 1))
+            {
+                var items = new[] { new GenericFrameProbe { Width = 4, Height = 3, Value = .25f } };
+                float deadline = Time.realtimeSinceStartup + 5f;
+                while (worker.Latest == null && worker.LastError == null && Time.realtimeSinceStartup < deadline)
+                { worker.Update(4, 3, 1, items, 0); yield return null; }
+                if (worker.Latest == null || worker.Latest[0][0] != 64)
+                { Row("VECTOR-structured-generic", "FAIL", worker.LastError?.ToString()); yield break; }
+                items[0].Value = .5f; deadline = Time.realtimeSinceStartup + 5f;
+                while (worker.LastError == null && Time.realtimeSinceStartup < deadline)
+                {
+                    worker.Update(4, 3, 1, items, 25);
+                    if (worker.Latest != null && worker.Latest[0][0] == 191) break;
+                    yield return null;
+                }
+                Row("VECTOR-structured-generic", worker.LastError == null && worker.Latest?[0]?[0] == 191 ? "PASS" : "FAIL");
+            }
         }
 
         private static IEnumerator CheckGenericFrameProgramSafe()
@@ -2742,7 +2787,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 if (script != null) paletteSource = System.Text.Encoding.UTF8.GetString(script);
             }
             if (paletteSource == null) Row("FIELD-color-worker-runtime", "SKIP", "package has no vector program");
-            else using (var worker = new NoiseFieldColorWorker(paletteSource))
+            else using (var worker = new StructuredVectorWorker<NoiseFieldColorOwnership.Zone, int>(paletteSource, 2))
             {
                 var zones = new[] { new NoiseFieldColorOwnership.Zone {
                     CenterX = 0, CenterY = 0, HalfX = 0.5f, HalfY = 0.5f, YScale = 1f,
@@ -2755,7 +2800,13 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     yield return null;
                 }
                 Check("FIELD-color-worker-runtime", () => worker.LastError == null && worker.Latest != null &&
-                    worker.Latest.Active[0] == 0 && worker.Latest.Active[1] == 255 && worker.Latest.Active[2] == 0);
+                    worker.Latest[0][0] == 0 && worker.Latest[0][1] == 255 && worker.Latest[0][2] == 0);
+                var many = new[] { zones[0], zones[0], zones[0], zones[0] };
+                var timing = System.Diagnostics.Stopwatch.StartNew();
+                for (int i = 0; i < 5000; i++) worker.Update(16, 8, 2f, many, 0xff5454);
+                timing.Stop();
+                double cost = timing.Elapsed.TotalMilliseconds / 5000;
+                Row("VECTOR-structured-snapshot-performance", cost < .1 ? "PASS" : "FAIL", $"four records, 5000 updates: {cost:F4} ms/update");
             }
             Check("FIELD-color-texture-upload", () =>
             {

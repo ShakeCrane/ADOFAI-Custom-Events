@@ -5,6 +5,14 @@ var PALETTE_RANGE=[['in',0],['c',23],['ge'],['in',0],['c',30],['le'],['mul']];
 var PALETTE_ACTIVE=PALETTE_RANGE.concat([['c',255],['mul']]);
 var PALETTE_DISABLED=PALETTE_RANGE.concat([['set',0],['in',1],['c',255],['div'],['set',1],['get',1],['c',0.2],['sub'],['c',-10],['mul'],['clamp'],['set',2],['get',0],['get',2],['get',2],['mul'],['c',3],['c',2],['get',2],['mul'],['sub'],['mul'],['add'],['set',3],['get',3],['unorm'],['c',255],['div'],['get',1],['get',3],['mul'],['c',10],['mul'],['unorm'],['c',255],['div'],['mul'],['unorm']]);
 function computeVector(input) {
+  if (input.request) {
+    input.defaultRgb=input.request.Options;
+    input.zones=input.request.Items.map(function(z) { return {
+      centerX:z.CenterX,centerY:z.CenterY,halfX:z.HalfX,halfY:z.HalfY,angle:z.Angle,
+      yScale:z.YScale,opacity:z.Opacity,red:z.Red,green:z.Green,blue:z.Blue,
+      active:z.Active,inverted:z.Inverted
+    }; });
+  }
   var zones=input.zones, colors=zones.map(function(z){return [z.red,z.green,z.blue]});
   function run(x){return Number(__compute(JSON.stringify(x)));}
   function shapes(active,inverted,green){

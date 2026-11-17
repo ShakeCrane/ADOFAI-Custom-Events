@@ -6,20 +6,12 @@ namespace PEV.Scripting
     {
         internal struct Zone
         {
-            internal float CenterX { get; set; }
-            internal float CenterY { get; set; }
-            internal float HalfX { get; set; }
-            internal float HalfY { get; set; }
-            internal float Angle { get; set; }
-            internal float YScale { get; set; }
-            internal float Opacity { get; set; }
-            internal float Red { get; set; }
-            internal float Green { get; set; }
-            internal float Blue { get; set; }
-            internal bool Active { get; set; }
-            internal bool Inverted { get; set; }
+            public float CenterX, CenterY, HalfX, HalfY, Angle, YScale, Opacity, Red, Green, Blue;
+            public bool Active, Inverted;
         }
 
+#if PEV_DIAGNOSTICS
         internal sealed class Result { internal byte[] Active, Disabled; }
+#endif
     }
 }
