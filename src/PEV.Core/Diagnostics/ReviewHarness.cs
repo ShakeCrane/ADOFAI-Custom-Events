@@ -1092,17 +1092,19 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
         {
             var bytes = EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072);
             var root = JObject.Parse(System.Text.Encoding.UTF8.GetString(bytes));
-            var spec = (JObject)root["regionModes"];
+            var spec = (JObject)root["tagValues"];
             var values = (JObject)spec["values"];
             values["Custom"] = new JObject { ["shaderFlags"] = 8, ["mainLayer"] = false,
                 ["auxLayer"] = true, ["palette"] = true, ["contacts"] = false };
             spec["default"] = "Custom"; spec["tagKey"] = "myMode";
-            var modes = RegionModes.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString()));
+            values["Custom"]["unrelatedName"] = "arbitrary package data";
+            var modes = TaggedValueTable.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString()));
             var custom = modes.Resolve("unknown");
-            if (modes.TagKey != "myMode" || custom.ShaderFlags != 8 || custom.MainLayer || !custom.AuxiliaryLayer ||
-                !custom.Palette || custom.Contacts || modes.Resolve("ready").ShaderFlags != 4) return false;
-            values["Custom"]["shaderFlags"] = 2;
-            try { RegionModes.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString())); return false; }
+            if (modes.TagKey != "myMode" || custom.Unsigned("shaderFlags", 65535) != 8 || custom.Boolean("mainLayer") || !custom.Boolean("auxLayer") ||
+                !custom.Boolean("palette") || custom.Boolean("contacts") || custom.Text("unrelatedName") != "arbitrary package data" ||
+                modes.Resolve("ready").Unsigned("shaderFlags", 65535) != 4) return false;
+            values["Custom"]["shaderFlags"] = new JArray(1, 2);
+            try { TaggedValueTable.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString())); return false; }
             catch (ArgumentException) { }
             return true;
         }
@@ -1901,7 +1903,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 try
                 {
                     if (!EventRegistry.TryGetById("pev.noise-field", out var provider) || !provider.ComputeGraphs.TryGetValue("coverage", out var graphPath)) return false;
-                    var modes = RegionModes.Parse(EventLoader.ReadResource(provider.SourcePath, graphPath, 131072));
+                    var modes = TaggedValueTable.Parse(EventLoader.ReadResource(provider.SourcePath, graphPath, 131072));
                     var values = new TaggedValues();
                     values.Set("mode-b", provider.SourcePath, "phase", "test-b", "Ready", 0, 0);
                     values.Set("mode-c", provider.SourcePath, "phase", "test-c", "Disabled", 0, 0);

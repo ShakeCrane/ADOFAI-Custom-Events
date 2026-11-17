@@ -260,10 +260,10 @@
     "main": "mainOut",
     "auxiliary": "auxOut"
   },
-  "regionModes": {
+  "tagValues": {
     "tagKey": "phase",
     "default": "Active",
-    "invertFlag": 2,
+    "metadata": { "invertFlag": 2 },
     "values": {
       "Disabled": {
         "shaderFlags": 0,

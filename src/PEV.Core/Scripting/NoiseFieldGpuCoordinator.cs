@@ -41,7 +41,7 @@ namespace PEV.Scripting
         private readonly EventManifest _manifest;
         private readonly ComputeShader _compute;
         private readonly GpuGraphDefinition _graph;
-        private readonly RegionModes _modes;
+        private readonly TaggedValueTable _modes;
         private readonly CompositorDefinition _compositor;
         private readonly string _contactProgram;
         private readonly Dictionary<string, Texture2D> _images = new Dictionary<string, Texture2D>(StringComparer.Ordinal);
@@ -57,7 +57,7 @@ namespace PEV.Scripting
                 throw new InvalidOperationException("Field compute graph is not declared");
             var graphBytes = EventLoader.ReadResource(manifest.SourcePath, graphPath, 131072);
             _graph = GpuGraphDefinition.Parse(graphBytes);
-            _modes = RegionModes.Parse(graphBytes);
+            _modes = TaggedValueTable.Parse(graphBytes);
             _compositor = CompositorDefinition.Parse(graphBytes);
             if (!manifest.ShaderAssets.TryGetValue(_graph.ShaderRole, out var computePath))
                 throw new InvalidOperationException("Compute shader role is not declared");

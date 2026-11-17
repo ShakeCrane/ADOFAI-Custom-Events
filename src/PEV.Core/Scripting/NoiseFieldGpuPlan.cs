@@ -38,7 +38,7 @@ namespace PEV.Scripting
         internal IReadOnlyDictionary<Key, Group> Groups => _groups;
 
         internal void Build(IReadOnlyList<NoiseFieldRenderer.Entry> entries, Camera camera, float aspect,
-            RegionModes modes, TaggedValues values)
+            TaggedValueTable modes, TaggedValues values)
         {
             if (modes == null || values == null) throw new ArgumentNullException("region modes");
             foreach (var group in _groups.Values) group.Clear();
@@ -61,7 +61,9 @@ namespace PEV.Scripting
                     throw new NotSupportedException("Field cannot be projected without shear or perspective");
                 area.Opacity = Mathf.Clamp01(opacity);
                 var mode = modes.Resolve(values.At(entry.Provider?.SourcePath, modes.TagKey, entry.Tag));
-                area.Flags = mode.ShaderFlags | (entry.GpuInverted ? modes.InvertFlag : 0u);
+                uint shaderFlags = mode.Unsigned("shaderFlags", 65535), invertFlag = modes.Metadata.Unsigned("invertFlag", 65535);
+                if ((shaderFlags & invertFlag) != 0) throw new ArgumentException("Mode and inversion flags overlap");
+                area.Flags = shaderFlags | (entry.GpuInverted ? invertFlag : 0u);
                 var key = new Key { SortingLayer = entry.SortingLayerID, SortingOrder = entry.SortingOrder, UnityLayer = entry.UnityLayer };
                 if (!_groups.TryGetValue(key, out var group)) _groups.Add(key, group = new Group());
                 group.Areas.Add(area);
@@ -73,7 +75,7 @@ namespace PEV.Scripting
                     CenterX = area.Center.x, CenterY = area.Center.y, HalfX = area.HalfSize.x, HalfY = area.HalfSize.y,
                     Angle = area.AngleRadians, YScale = area.YScale, Opacity = area.Opacity,
                     Red = color.r, Green = color.g, Blue = color.b,
-                    Active = mode.Palette, Inverted = entry.GpuInverted
+                    Active = mode.Boolean("palette"), Inverted = entry.GpuInverted
                 });
                 // The non-palette shader uses the package's own declared default color.
                 // A missing default is conservatively treated as custom, so no event's
@@ -96,11 +98,11 @@ namespace PEV.Scripting
                 {
                     Center = area.Center, HalfSize = area.HalfSize,
                     Angle = area.AngleRadians,
-                    Active = mode.Contacts,
+                    Active = mode.Boolean("contacts"),
                     Inverted = entry.GpuInverted, Visible = true
                 });
-                group.HasActive |= mode.MainLayer;
-                group.HasDisabled |= mode.AuxiliaryLayer;
+                group.HasActive |= mode.Boolean("mainLayer");
+                group.HasDisabled |= mode.Boolean("auxLayer");
             }
             _stale.Clear();
             foreach (var pair in _groups) if (pair.Value.Areas.Count == 0) _stale.Add(pair.Key);
