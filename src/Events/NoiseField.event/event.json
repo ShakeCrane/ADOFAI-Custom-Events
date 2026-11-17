@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "id": "pev.noise-field",
-  "version": "1.19.0",
+  "version": "1.20.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
@@ -471,12 +471,16 @@
   "computeGraphs": {
     "coverage": "pipelines/coverage.json"
   },
+  "keySpecs": {
+    "frames": "pipelines/cpu-key.json"
+  },
   "runtimeBindings": {
     "renderGraph": "coverage",
     "inputController": "contacts",
     "colorProgram": "palette",
     "framePlan": "bakePlan",
-    "frameProgram": "bake"
+    "frameProgram": "bake",
+    "frameKey": "frames"
   },
   "pixelResources": {
     "block": "assets/legacy/block.png",

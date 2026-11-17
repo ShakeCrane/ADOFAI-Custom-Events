@@ -89,7 +89,7 @@ def validate(root, manifest, _included=False):
                         ids.add(child_id)
                 problems.extend(f"included event '{normalized}': {p}" for p in validate(root, child, _included=True))
 
-    for declaration in ("vectorPrograms", "computeGraphs", "pixelResources"):
+    for declaration in ("vectorPrograms", "computeGraphs", "pixelResources", "keySpecs"):
         if declaration not in manifest:
             continue
         programs = manifest[declaration]
@@ -113,7 +113,9 @@ def validate(root, manifest, _included=False):
         else:
             programs = manifest.get("vectorPrograms")
             graphs = manifest.get("computeGraphs")
-            roles = set(programs if isinstance(programs, dict) else ()) | set(graphs if isinstance(graphs, dict) else ())
+            specs = manifest.get("keySpecs")
+            roles = (set(programs if isinstance(programs, dict) else ()) | set(graphs if isinstance(graphs, dict) else ()) |
+                     set(specs if isinstance(specs, dict) else ()))
             for name, role in bindings.items():
                 if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name) or
                         name in ("__proto__", "constructor", "prototype") or not isinstance(role, str) or role not in roles):

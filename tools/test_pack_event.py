@@ -40,6 +40,14 @@ class PackageValidationTests(unittest.TestCase):
                 self.assertTrue(validate(self.root, dict(valid, runtimeBindings=bindings)))
         self.assertTrue(validate(self.root, dict(valid, schemaVersion=3)))
 
+    def test_key_specs_are_package_relative_and_bindable(self):
+        (self.root / "key.json").write_text("{}", encoding="utf-8")
+        valid = dict(self.manifest, schemaVersion=4, keySpecs={"key": "key.json"}, runtimeBindings={"frameKey": "key"})
+        self.assertEqual([], validate(self.root, valid))
+        for specs in ({}, {"key": "../key.json"}, {"key": "missing.json"}, {"__proto__": "key.json"}, []):
+            with self.subTest(specs=specs):
+                self.assertTrue(validate(self.root, dict(valid, keySpecs=specs)))
+
     def test_pixel_resources_are_package_local(self):
         (self.root / "texture.png").write_bytes(b"png fixture")
         valid = dict(self.manifest, schemaVersion=4, pixelResources={"texture": "texture.png"})

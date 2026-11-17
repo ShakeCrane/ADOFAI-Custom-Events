@@ -982,9 +982,9 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             string json = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(original.SourcePath, "event.json"));
             var manifest = EventManifest.Parse(json, original.SourcePath, out string error);
             if (manifest == null) throw new InvalidOperationException(error);
-            foreach (string binding in new[] { "renderGraph", "inputController", "colorProgram", "framePlan", "frameProgram" })
+            foreach (string binding in new[] { "renderGraph", "inputController", "colorProgram", "framePlan", "frameProgram", "frameKey" })
             {
-                var resources = binding == "renderGraph" ? manifest.ComputeGraphs : manifest.VectorPrograms;
+                var resources = binding == "renderGraph" ? manifest.ComputeGraphs : binding == "frameKey" ? manifest.KeySpecs : manifest.VectorPrograms;
                 string old = manifest.RuntimeBindings[binding], renamed = "custom_" + binding;
                 string path = resources[old]; resources.Remove(old); resources.Add(renamed, path);
                 manifest.RuntimeBindings[binding] = renamed;
@@ -995,7 +995,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 var plan = CpuPackageBake.Prepare(request, System.Threading.CancellationToken.None);
                 var frames = new Color32[2][];
                 CpuPackageBake.Render(request, frames, 32, 32, System.Threading.CancellationToken.None);
-                return plan.Frames == 2 && frames.All(f => f != null && f.Length == 1024);
+                return plan.Frames == 2 && frames.All(f => f != null && f.Length == 1024) && NoiseTextureFactory.Key(request).Length > 0;
             });
             var go = new GameObject("PEV.ReviewRenamedBindings");
             RenderTexture target = null;
@@ -1017,7 +1017,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     yield return null;
                 }
                 Row("GPU-runtime-binding-renames", ready && task.IsCompleted && !task.IsFaulted && task.Result ? "PASS" : "FAIL",
-                    "renamed graph, input controller, color worker, CPU plan and CPU program; " + task.Exception);
+                    "renamed graph, input controller, color worker, CPU plan, CPU program and cache key; " + task.Exception);
             }
             finally
             {
@@ -2487,6 +2487,41 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Check("CACHE-glow-opacity", () => { var r = req; r.GlowOpacity = 0.4f; return NoiseTextureFactory.Key(r) != key; });
             Check("CACHE-scene-colour", () => { var r = req; r.SceneColor = Color.white; return NoiseTextureFactory.Key(r) != key; });
             Check("CACHE-screen-density", () => { var r = req; r.ScreenPixelWidth = 384; return NoiseTextureFactory.Key(r) != key; });
+            Check("CACHE-evolve-speed", () => { var r = req; r.EvolveSpeed = 24; return NoiseTextureFactory.Key(r) != key; });
+            Check("CACHE-rounded-stability", () => { var r = req; r.WidthWorld += .0001f; return NoiseTextureFactory.Key(r) == key; });
+            Check("CACHE-resolution-bucket-stability", () => { var r = req; r.TargetPixelWidth += 2f; return NoiseTextureFactory.Key(r) == key; });
+            Check("CACHE-ready-state", () => { var r = req; r.Ready = !r.Ready; return NoiseTextureFactory.Key(r) != key; });
+            Check("CACHE-piece-geometry", () =>
+            {
+                var r = req; r.Pieces = new[] { new NoiseTextureFactory.Piece { Half = Vector2.one } };
+                string rectangle = NoiseTextureFactory.Key(r);
+                r.Pieces[0].Circle = true;
+                return NoiseTextureFactory.Key(r) != rectangle;
+            });
+            Check("CACHE-key-sandbox", () =>
+            {
+                try { DeclarativeCacheKey<NoiseTextureFactory.Request>.Parse(System.Text.Encoding.UTF8.GetBytes(
+                    "{\"version\":1,\"values\":[{\"path\":\"Provider\"}]}")); return false; }
+                catch (ArgumentException) { }
+                var missing = new EventManifest { SourcePath = req.Provider.SourcePath };
+                var bad = req; bad.Provider = missing;
+                return !NoiseTextureFactory.TryKey(bad, out _, out var error) && !string.IsNullOrEmpty(error);
+            });
+            var timed = req;
+            timed.Pieces = Enumerable.Range(0, 4).Select(i => new NoiseTextureFactory.Piece {
+                Offset = new Vector2(i * .2f, 0), Half = new Vector2(.5f, .5f), Rotation = i * 9f }).ToArray();
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            for (int i = 0; i < 500; i++) NoiseTextureFactory.Key(timed);
+            watch.Stop();
+            double millisecondsPerKey = watch.Elapsed.TotalMilliseconds / 500;
+            Row("CACHE-key-mono-performance", millisecondsPerKey < .5 ? "PASS" : "FAIL",
+                $"four regions, 500 warm keys: {millisecondsPerKey:F3} ms/key");
+            string manifestJson = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(req.Provider.SourcePath, "event.json"));
+            var coldProvider = EventManifest.Parse(manifestJson, req.Provider.SourcePath, out _);
+            var cold = timed; cold.Provider = coldProvider;
+            watch.Restart(); NoiseTextureFactory.Key(cold); watch.Stop();
+            Row("CACHE-key-cold-load", watch.Elapsed.TotalMilliseconds < 100 ? "PASS" : "FAIL",
+                $"package resource and specification: {watch.Elapsed.TotalMilliseconds:F1} ms");
             try
             {
                 var piece = new NoiseTextureFactory.Piece { Half = new Vector2(1f, 0.7f),
@@ -2555,6 +2590,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Check("FIELD-gpu-failure-restores-legacy", () => NoiseFieldRenderer.LayerCount == 1 && NoiseFieldRenderer.LiveCount == 1);
             var other = new EventManifest { Id = "example.other", SourcePath = first.SourcePath, Version = "other" };
             foreach (var item in first.VectorPrograms) other.VectorPrograms[item.Key] = item.Value;
+            foreach (var item in first.KeySpecs) other.KeySpecs[item.Key] = item.Value;
             foreach (var item in first.RuntimeBindings) other.RuntimeBindings[item.Key] = item.Value;
             foreach (var item in first.PixelResources) other.PixelResources[item.Key] = item.Value;
             var otherArgs = new Dictionary<string, object>(args) { ["__instance"] = "review/other", ["__manifest"] = other };

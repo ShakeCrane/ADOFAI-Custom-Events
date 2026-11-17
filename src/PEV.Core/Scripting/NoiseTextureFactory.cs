@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
-using System.Text;
+using System.Runtime.CompilerServices;
 using UnityEngine;
 
 namespace PEV.Scripting
@@ -247,7 +246,8 @@ namespace PEV.Scripting
             if (req.Provider == null || !req.Provider.TryRuntimeResource("frameProgram", req.Provider.VectorPrograms, out _) ||
                 !req.Provider.TryRuntimeResource("framePlan", req.Provider.VectorPrograms, out _))
             { error = "package does not declare its CPU bake program and plan; update the event package"; return null; }
-            return FrameCache.Begin(Fingerprint(req), cancellation =>
+            if (!TryKey(req, out var key, out error)) return null;
+            return FrameCache.Begin(key, cancellation =>
             {
                 var plan = CpuPackageBake.Prepare(req, cancellation);
                 return new BakedFrameCache.Plan { Width = plan.Width, Height = plan.Height, Count = plan.Frames };
@@ -272,49 +272,28 @@ namespace PEV.Scripting
         /// </summary>
         public static string Key(Request req)
         {
-            return Fingerprint(req);
+            if (!TryKey(req, out var key, out var error)) throw new ArgumentException(error);
+            return key;
         }
-
-        private static string Fingerprint(Request r)
+        private static readonly ConditionalWeakTable<PEV.Model.EventManifest, DeclarativeCacheKey<Request>> KeySpecs =
+            new ConditionalWeakTable<PEV.Model.EventManifest, DeclarativeCacheKey<Request>>();
+        internal static bool TryKey(Request req, out string key, out string error)
         {
-            var sb = new StringBuilder(240);
-            sb.Append(PackageIdentity.Of(r.Provider)).Append('|');
-            sb.Append(F(r.WidthWorld)).Append('|').Append(F(r.HeightWorld)).Append('|')
-              .Append(C(r.FillColor)).Append('|').Append(C(r.EdgeColor)).Append('|')
-              .Append(C(r.SparkColor)).Append('|')
-              .Append(F(r.FillOpacity)).Append('|').Append(F(r.Exposure)).Append('|')
-              .Append(F(r.EdgeOpacity)).Append('|')
-              .Append(F(r.SparkOpacity)).Append('|')
-              .Append(C(r.GlowColor)).Append('|').Append(F(r.GlowOpacity)).Append('|')
-              .Append(F(r.GlowPasses)).Append('|').Append(F(r.FillStrength)).Append('|')
-              .Append(C(r.SceneColor)).Append('|').Append(r.Ready).Append('|')
-              .Append(F(r.Brightness)).Append('|').Append(F(r.Saturation)).Append('|')
-              .Append(F(r.SampleRate)).Append('|').Append(F(r.LineOpacity)).Append('|')
-              .Append(F(r.Displace)).Append('|')
-              .Append(F(r.Glitch)).Append('|')
-              .Append(F(r.EdgeDistance)).Append('|').Append(F(r.EdgeDetail)).Append('|')
-              .Append(r.EdgeThickness).Append('|')
-              .Append(F(r.EdgeMargin)).Append('|').Append(F(r.EdgeFragment)).Append('|')
-              .Append(r.FrameCount).Append('|').Append(r.Seed).Append('|')
-              .Append(F(r.Margin)).Append('|')
-              .Append(ResolutionBucket(r.TargetPixelWidth)).Append('|')
-              .Append(r.ScreenPixelWidth).Append('|');
-
-            if (r.Pieces != null)
+            key = null; error = null;
+            try
             {
-                foreach (var p in r.Pieces)
+                if (req.Provider == null) throw new ArgumentException("Missing package provider");
+                var spec = KeySpecs.GetValue(req.Provider, provider =>
                 {
-                    sb.Append(F(p.Offset.x)).Append(',').Append(F(p.Offset.y)).Append(',')
-                      .Append(F(p.Half.x)).Append(',').Append(F(p.Half.y)).Append(',')
-                      .Append(F(p.Rotation)).Append(',').Append(F(p.Feather)).Append(',')
-                      .Append(p.Circle ? 'c' : 'r').Append(';');
-                }
+                    if (!provider.TryRuntimeResource("frameKey", provider.KeySpecs, out var path))
+                        throw new ArgumentException("Package frame cache key is not declared");
+                    return DeclarativeCacheKey<Request>.Parse(PEV.Loading.EventLoader.ReadResource(provider.SourcePath, path, 32768));
+                });
+                key = PackageIdentity.Of(req.Provider) + "|" + spec.Build(req);
+                return true;
             }
-            return sb.ToString();
+            catch (Exception e) { error = "frame cache key: " + e.Message; return false; }
         }
-
-        private static string F(float v) => v.ToString("F3", CultureInfo.InvariantCulture);
-        private static string C(Color c) => F(c.r) + "," + F(c.g) + "," + F(c.b);
 
     }
 }

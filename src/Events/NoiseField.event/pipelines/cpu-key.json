@@ -1,0 +1,164 @@
+{
+  "version": 1,
+  "values": [
+    {
+      "path": "WidthWorld"
+    },
+    {
+      "path": "HeightWorld"
+    },
+    {
+      "path": "FillColor.r"
+    },
+    {
+      "path": "FillColor.g"
+    },
+    {
+      "path": "FillColor.b"
+    },
+    {
+      "path": "EdgeColor.r"
+    },
+    {
+      "path": "EdgeColor.g"
+    },
+    {
+      "path": "EdgeColor.b"
+    },
+    {
+      "path": "SparkColor.r"
+    },
+    {
+      "path": "SparkColor.g"
+    },
+    {
+      "path": "SparkColor.b"
+    },
+    {
+      "path": "FillOpacity"
+    },
+    {
+      "path": "Exposure"
+    },
+    {
+      "path": "EdgeOpacity"
+    },
+    {
+      "path": "SparkOpacity"
+    },
+    {
+      "path": "GlowColor.r"
+    },
+    {
+      "path": "GlowColor.g"
+    },
+    {
+      "path": "GlowColor.b"
+    },
+    {
+      "path": "GlowOpacity"
+    },
+    {
+      "path": "GlowPasses"
+    },
+    {
+      "path": "FillStrength"
+    },
+    {
+      "path": "SceneColor.r"
+    },
+    {
+      "path": "SceneColor.g"
+    },
+    {
+      "path": "SceneColor.b"
+    },
+    {
+      "path": "Ready"
+    },
+    {
+      "path": "Brightness"
+    },
+    {
+      "path": "Saturation"
+    },
+    {
+      "path": "SampleRate"
+    },
+    {
+      "path": "LineOpacity"
+    },
+    {
+      "path": "Displace"
+    },
+    {
+      "path": "Glitch"
+    },
+    {
+      "path": "EdgeDistance"
+    },
+    {
+      "path": "EdgeDetail"
+    },
+    {
+      "path": "EdgeThickness"
+    },
+    {
+      "path": "EdgeMargin"
+    },
+    {
+      "path": "EdgeFragment"
+    },
+    {
+      "path": "FrameCount"
+    },
+    {
+      "path": "Seed"
+    },
+    {
+      "path": "Margin"
+    },
+    {
+      "path": "EvolveSpeed"
+    },
+    {
+      "path": "TargetPixelWidth",
+      "bucket": {
+        "step": 96,
+        "min": 1,
+        "max": 12
+      }
+    },
+    {
+      "path": "ScreenPixelWidth"
+    }
+  ],
+  "sequences": [
+    {
+      "path": "Pieces",
+      "values": [
+        {
+          "path": "Offset.x"
+        },
+        {
+          "path": "Offset.y"
+        },
+        {
+          "path": "Half.x"
+        },
+        {
+          "path": "Half.y"
+        },
+        {
+          "path": "Rotation"
+        },
+        {
+          "path": "Feather"
+        },
+        {
+          "path": "Circle"
+        }
+      ]
+    }
+  ]
+}

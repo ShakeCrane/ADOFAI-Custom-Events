@@ -164,6 +164,7 @@ namespace PEV.Model
         public readonly List<string> IncludedEvents = new List<string>();
         public readonly Dictionary<string, string> VectorPrograms = new Dictionary<string, string>(StringComparer.Ordinal);
         public readonly Dictionary<string, string> ComputeGraphs = new Dictionary<string, string>(StringComparer.Ordinal);
+        public readonly Dictionary<string, string> KeySpecs = new Dictionary<string, string>(StringComparer.Ordinal);
         public readonly Dictionary<string, string> RuntimeBindings = new Dictionary<string, string>(StringComparer.Ordinal);
         public readonly Dictionary<string, string> PixelResources = new Dictionary<string, string>(StringComparer.Ordinal);
         public string Id;
@@ -339,6 +340,19 @@ namespace PEV.Model
                     m.ComputeGraphs.Add(entry.Name, entry.Value.Value<string>().Replace('\\', '/'));
                 }
             }
+            if (root["keySpecs"] != null)
+            {
+                if (m.SchemaVersion < 4 || !(root["keySpecs"] is JObject specs) || specs.Count < 1 || specs.Count > 16)
+                { error = "keySpecs requires schemaVersion 4 and 1-16 package-relative resources"; return null; }
+                foreach (var entry in specs.Properties())
+                {
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(entry.Name, "^[A-Za-z_][A-Za-z0-9_]{0,63}$") ||
+                        entry.Name == "__proto__" || entry.Name == "constructor" || entry.Name == "prototype" ||
+                        entry.Value.Type != JTokenType.String || !PEV.Loading.EventLoader.IsPackageRelativePath(entry.Value.Value<string>()))
+                    { error = "invalid key specification declaration"; return null; }
+                    m.KeySpecs.Add(entry.Name, entry.Value.Value<string>().Replace('\\', '/'));
+                }
+            }
             if (root["runtimeBindings"] != null)
             {
                 if (m.SchemaVersion < 4 || !(root["runtimeBindings"] is JObject bindings) || bindings.Count < 1 || bindings.Count > 16)
@@ -348,7 +362,7 @@ namespace PEV.Model
                     string role = entry.Value.Type == JTokenType.String ? entry.Value.Value<string>() : null;
                     if (!System.Text.RegularExpressions.Regex.IsMatch(entry.Name, "^[A-Za-z_][A-Za-z0-9_]{0,63}$") ||
                         entry.Name == "__proto__" || entry.Name == "constructor" || entry.Name == "prototype" ||
-                        role == null || (!m.VectorPrograms.ContainsKey(role) && !m.ComputeGraphs.ContainsKey(role)))
+                        role == null || (!m.VectorPrograms.ContainsKey(role) && !m.ComputeGraphs.ContainsKey(role) && !m.KeySpecs.ContainsKey(role)))
                     { error = "invalid runtime resource binding"; return null; }
                     m.RuntimeBindings.Add(entry.Name, role);
                 }

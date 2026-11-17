@@ -1065,7 +1065,11 @@ namespace PEV.Scripting
 
             // One key, owned by the factory: a second copy in the renderer is how a
             // structure that never changes still manages to regenerate every frame.
-            string structureKey = NoiseTextureFactory.Key(request);
+            if (!NoiseTextureFactory.TryKey(request, out string structureKey, out string keyError))
+            {
+                PEV.Core.Plugin.Log("frame cache: " + keyError);
+                return false;
+            }
 
             if ((layer.Frames == null && layer.PendingFrames == null) || layer.StructureKey != structureKey)
             {
