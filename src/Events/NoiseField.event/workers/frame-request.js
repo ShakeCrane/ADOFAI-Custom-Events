@@ -26,6 +26,8 @@ function updateController(input) {
       Half:{x:f(f(f(m.width*.5)*scale)),y:f(f(f(m.height*.5)*scale))},
       Rotation:f(m.rotation+m.offsetRotation),Circle:String((m.parameters||{}).shape||'Rect').toLowerCase()==='circle'};
   });
+  var alpha=0;
+  members.forEach(function(m){alpha=Math.max(alpha,f(number(m.opacity,1)*clamp(number(m.alpha,1),0,1)));});
   var base={r:f(lead.color[0]),g:f(lead.color[1]),b:f(lead.color[2])};
   var opacity=clamp(number(p.fillOpacity,1),0,1);
   var request={WidthWorld:input.width,HeightWorld:input.height,Margin:margin,Pieces:pieces,
@@ -42,5 +44,5 @@ function updateController(input) {
     if (value && typeof value==='object') { var o={}; Object.keys(value).forEach(function(k){o[k]=stable(value[k]);}); return o; }
     return value;
   }
-  return {request:request,key:JSON.stringify(stable(request)),margin:margin,bucket:bucket};
+  return {request:request,key:JSON.stringify(stable(request)),margin:margin,bucket:bucket,alpha:alpha};
 }

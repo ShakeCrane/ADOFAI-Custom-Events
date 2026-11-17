@@ -1,6 +1,7 @@
 {
   "version": 1,
   "snapshotValues": ["invert"],
+  "aspectLimit": 1.7777778,
   "resolution": {
     "divisor": 8,
     "multiplier": 2

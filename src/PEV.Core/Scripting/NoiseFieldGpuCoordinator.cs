@@ -105,7 +105,7 @@ namespace PEV.Scripting
             if (camera == null || !camera.orthographic) throw new NotSupportedException("An orthographic camera is required");
             if (settings == null) throw new ArgumentNullException(nameof(settings));
             if (!EnsureImages()) return _staging.Committed;
-            float aspect = Mathf.Min(camera.aspect, 16f / 9f);
+            float aspect = _graph.AspectLimit > 0 ? Mathf.Min(camera.aspect, _graph.AspectLimit) : camera.aspect;
             if (!_plan.Build(entries, camera, aspect, GameBridge.Values)) return _staging.Committed;
             LivePlanetPositions.Collect(camera, _planets);
             _staging.DiscardPendingExcept(_plan.Groups);

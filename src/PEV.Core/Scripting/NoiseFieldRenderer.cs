@@ -1007,6 +1007,7 @@ namespace PEV.Scripting
                     ["width"] = member.World.Size.x, ["height"] = member.World.Size.y, ["rotation"] = member.World.Rotation,
                     ["offsetX"] = member.OverrideOffset.x, ["offsetY"] = member.OverrideOffset.y,
                     ["offsetRotation"] = member.OverrideRotation, ["scale"] = member.OverrideScale,
+                    ["opacity"] = member.Opacity, ["alpha"] = member.OverrideAlpha,
                     ["color"] = new JArray(member.FillColor.r, member.FillColor.g, member.FillColor.b),
                     ["parameters"] = PlainParameters(member.Arguments) });
             var scene = SceneBackground();
@@ -1051,13 +1052,16 @@ namespace PEV.Scripting
             catch (Exception e) { PEV.Core.Plugin.Log("package frame request: " + e.Message); return false; }
             if (!(prepared["request"] is JObject request) || prepared["key"]?.Type != JTokenType.String ||
                 prepared["bucket"]?.Type != JTokenType.Integer ||
-                (prepared["margin"]?.Type != JTokenType.Integer && prepared["margin"]?.Type != JTokenType.Float))
+                (prepared["margin"]?.Type != JTokenType.Integer && prepared["margin"]?.Type != JTokenType.Float) ||
+                (prepared["alpha"]?.Type != JTokenType.Integer && prepared["alpha"]?.Type != JTokenType.Float))
                 throw new ArgumentException("Invalid package frame request");
             int pixelBucket = prepared.Value<int>("bucket");
             float margin = prepared.Value<float>("margin");
+            float alpha = prepared.Value<float>("alpha");
             string requestKey = prepared.Value<string>("key");
             if (pixelBucket < 1 || pixelBucket > 16384 || float.IsNaN(margin) || float.IsInfinity(margin) ||
-                margin < 0 || margin > 100000 || string.IsNullOrEmpty(requestKey) || requestKey.Length > 131072)
+                margin < 0 || margin > 100000 || float.IsNaN(alpha) || float.IsInfinity(alpha) || alpha < 0 || alpha > 1 ||
+                string.IsNullOrEmpty(requestKey) || requestKey.Length > 131072)
                 throw new ArgumentException("Package frame request exceeds limits");
             layer.PixelBucket = pixelBucket;
             string structureKey = PackageIdentity.Of(lead.Provider) + "|" + requestKey;
@@ -1139,16 +1143,6 @@ namespace PEV.Scripting
                 mat.mainTextureScale = lead.Tiling;
             }
 
-            // One pre-multiplied texture cannot vary alpha per region, so visibility and
-            // opacity collapse to the strongest member of the cluster.
-            float alpha = 0f;
-            foreach (var m in members)
-            {
-                bool visible = m.OverrideVisibility == 0 ? m.Visible : m.OverrideVisibility == 1;
-                if (!visible) continue;
-                float a = m.Opacity * Mathf.Clamp01(m.OverrideAlpha);
-                if (a > alpha) alpha = a;
-            }
             layer.Alpha = alpha;
             layer.Renderer.color = new Color(1f, 1f, 1f, alpha);
 
