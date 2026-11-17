@@ -91,6 +91,18 @@ namespace PEV.Diagnostics
             return groups.Count == 2 && groups[0].Count == 4 && groups[1].Count == 1 && groups[1][0] == items[4];
         }
 
+        private static bool CheckStickyQuantization()
+        {
+            if (StickyQuantization.Update(22, 0, 10, 1, 5, 12) != 20 ||
+                StickyQuantization.Update(29, 20, 10, 1, 5, 12) != 20 ||
+                StickyQuantization.Update(32, 20, 10, 1, 5, 12) != 30 ||
+                StickyQuantization.Update(-5, 0, 10, 1, 5, 12) != 10 ||
+                StickyQuantization.Update(999, 0, 10, 1, 5, 12) != 50) return false;
+            try { StickyQuantization.Update(2, 0, float.NaN, 1, 5, 1); return false; }
+            catch (ArgumentException) { }
+            return true;
+        }
+
         public static void Configure(string modDir)
         {
             if (!File.Exists(Path.Combine(modDir, "review-test.txt"))) return;
@@ -145,6 +157,7 @@ namespace PEV.Diagnostics
             Check("SANDBOX-plain-data-snapshot", CheckPlainSnapshot);
             Check("GPU-record-layouts-and-limits", CheckGpuRecordLayouts);
             Check("GEOMETRY-rectangle-cluster-bridges", CheckRectangleClusters);
+            Check("RESOURCE-sticky-quantization", CheckStickyQuantization);
             Check("PIXEL-package-resource-limits", CheckPackagePixelResourceLimits);
             Check("PIXEL-kernel-mono-performance", CheckPixelKernelPerformance);
             CheckKeys();
@@ -2490,6 +2503,9 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Check("CACHE-evolve-speed", () => { var r = req; r.EvolveSpeed = 24; return NoiseTextureFactory.Key(r) != key; });
             Check("CACHE-rounded-stability", () => { var r = req; r.WidthWorld += .0001f; return NoiseTextureFactory.Key(r) == key; });
             Check("CACHE-resolution-bucket-stability", () => { var r = req; r.TargetPixelWidth += 2f; return NoiseTextureFactory.Key(r) == key; });
+            Check("CACHE-package-sticky-bucket", () =>
+                NoiseTextureFactory.TryStickyBucket(req.Provider, 197, 192, out int held, out _) && held == 192 &&
+                NoiseTextureFactory.TryStickyBucket(req.Provider, 300, 192, out int moved, out _) && moved == 288);
             Check("CACHE-ready-state", () => { var r = req; r.Ready = !r.Ready; return NoiseTextureFactory.Key(r) != key; });
             Check("CACHE-piece-geometry", () =>
             {

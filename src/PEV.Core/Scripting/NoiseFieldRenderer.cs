@@ -1020,6 +1020,14 @@ namespace PEV.Scripting
             layer.Renderer.sortingOrder = lead.SortingOrder;
             layer.GameObject.layer = lead.UnityLayer;
 
+            float requestedWidth = lead.PxWidthHint * (size.x / Mathf.Max(1e-4f, lead.World.Size.x));
+            if (!NoiseTextureFactory.TryStickyBucket(lead.Provider, requestedWidth, layer.PixelBucket, out int pixelBucket, out string bucketError))
+            {
+                PEV.Core.Plugin.Log("frame resolution: " + bucketError);
+                return false;
+            }
+            layer.PixelBucket = pixelBucket;
+
             var request = new NoiseTextureFactory.Request
             {
                 Provider = lead.Provider,
@@ -1056,7 +1064,7 @@ namespace PEV.Scripting
                 Seed = StableSeed(lead.Scope),
                 // The cluster box is wider than the lead field, so scale the hint by area
                 // ratio to keep grains at a constant on-screen size.
-                TargetPixelWidth = StickyBucket(layer, lead.PxWidthHint * (size.x / Mathf.Max(1e-4f, lead.World.Size.x))),
+                TargetPixelWidth = pixelBucket,
                 // How wide the quad actually is on screen. The composer sizes its grids from
                 // this, because the reference's mask and effects targets are fractions of the
                 // screen — not of the texture the effect happens to be baked into.
@@ -1175,15 +1183,6 @@ namespace PEV.Scripting
         /// hysteresis is one full bucket: the layer only moves once the request lands a bucket
         /// away from where it was baked, which a pulse can never do.
         /// </summary>
-        private static float StickyBucket(Layer layer, float px)
-        {
-            int wanted = NoiseTextureFactory.ResolutionBucket(px);
-            if (layer.PixelBucket <= 0) { layer.PixelBucket = wanted; return wanted; }
-            if (Mathf.Abs(px - layer.PixelBucket) >= NoiseTextureFactory.ResolutionStep)
-                layer.PixelBucket = wanted;
-            return layer.PixelBucket;
-        }
-
         /// <summary>
         /// Reports the first field of two structure keys that differs.
         ///

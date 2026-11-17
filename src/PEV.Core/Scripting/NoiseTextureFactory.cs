@@ -23,18 +23,10 @@ namespace PEV.Scripting
     ///
     /// Frames are ref-counted and shared. Generation is O(cells) per frame, and the result
     /// is only rebuilt when the structure key changes — which is why the key must not
-    /// contain anything that drifts every frame (see ResolutionBucket).
+    /// contain anything that drifts every frame.
     /// </summary>
     public static class NoiseTextureFactory
     {
-        /// <summary>
-        /// Pixel widths are quantised to this step before they enter the structure key.
-        /// The camera zooms on the beat, so a continuous width would invalidate the key on
-        /// every frame and regenerate eight textures per update — the reported stutter.
-        /// </summary>
-        public const int ResolutionStep = 96;
-
-
         public const float PixelsPerUnit = 100f;
 
         public struct Piece
@@ -258,13 +250,6 @@ namespace PEV.Scripting
         public static void Release(BakedFrameCache.Frames frames) => FrameCache.Release(frames);
         public static void Clear() => FrameCache.Clear();
 
-        /// <summary>Coarse bucket so camera zoom does not invalidate the texture every frame.</summary>
-        public static int ResolutionBucket(float px)
-        {
-            int steps = Mathf.Clamp(Mathf.RoundToInt(px / ResolutionStep), 1, 12);
-            return steps * ResolutionStep;
-        }
-
         /// <summary>
         /// The generation key, exposed so the renderer compares exactly what the factory
         /// caches. A separate key in the renderer drifts from this one and causes either
@@ -277,18 +262,34 @@ namespace PEV.Scripting
         }
         private static readonly ConditionalWeakTable<PEV.Model.EventManifest, DeclarativeCacheKey<Request>> KeySpecs =
             new ConditionalWeakTable<PEV.Model.EventManifest, DeclarativeCacheKey<Request>>();
+        private static DeclarativeCacheKey<Request> ReadKeySpec(PEV.Model.EventManifest provider)
+        {
+            if (provider == null) throw new ArgumentException("Missing package provider");
+            return KeySpecs.GetValue(provider, package =>
+            {
+                if (!package.TryRuntimeResource("frameKey", package.KeySpecs, out var path))
+                    throw new ArgumentException("Package frame cache key is not declared");
+                return DeclarativeCacheKey<Request>.Parse(PEV.Loading.EventLoader.ReadResource(package.SourcePath, path, 32768));
+            });
+        }
+        internal static bool TryStickyBucket(PEV.Model.EventManifest provider, float value, int previous, out int bucket, out string error)
+        {
+            bucket = 0; error = null;
+            try
+            {
+                if (!ReadKeySpec(provider).TryBucket("TargetPixelWidth", out var spec))
+                    throw new ArgumentException("Package frame resolution bucket is not declared");
+                bucket = StickyQuantization.Update(value, previous, spec.Step, spec.Minimum, spec.Maximum, spec.Hysteresis);
+                return true;
+            }
+            catch (Exception e) { error = "frame resolution: " + e.Message; return false; }
+        }
         internal static bool TryKey(Request req, out string key, out string error)
         {
             key = null; error = null;
             try
             {
-                if (req.Provider == null) throw new ArgumentException("Missing package provider");
-                var spec = KeySpecs.GetValue(req.Provider, provider =>
-                {
-                    if (!provider.TryRuntimeResource("frameKey", provider.KeySpecs, out var path))
-                        throw new ArgumentException("Package frame cache key is not declared");
-                    return DeclarativeCacheKey<Request>.Parse(PEV.Loading.EventLoader.ReadResource(provider.SourcePath, path, 32768));
-                });
+                var spec = ReadKeySpec(req.Provider);
                 key = PackageIdentity.Of(req.Provider) + "|" + spec.Build(req);
                 return true;
             }

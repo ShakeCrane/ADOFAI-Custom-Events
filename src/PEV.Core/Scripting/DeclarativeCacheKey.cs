@@ -12,11 +12,18 @@ namespace PEV.Scripting
     // host-provided data type; paths cannot invoke properties, methods or reference objects.
     internal sealed class DeclarativeCacheKey<T> where T : struct
     {
+        internal struct Bucket
+        {
+            internal float Step, Hysteresis;
+            internal int Minimum, Maximum;
+        }
         private sealed class Value
         {
             internal FieldInfo[] Path;
+            internal string Name;
             internal int Digits;
             internal float Step;
+            internal float Hysteresis;
             internal int Minimum, Maximum;
             internal object Read(object root)
             {
@@ -82,7 +89,7 @@ namespace PEV.Scripting
                 throw new ArgumentException("Unsupported cache key value type");
             int digits = spec.Value<int?>("digits") ?? 3;
             if (digits < 0 || digits > 6) throw new ArgumentException("Invalid cache key precision");
-            var result = new Value { Path = path, Digits = digits };
+            var result = new Value { Path = path, Name = spec.Value<string>("path"), Digits = digits };
             if (spec["bucket"] != null)
             {
                 if (!(spec["bucket"] is JObject bucket) || leaf != typeof(float) ||
@@ -90,11 +97,26 @@ namespace PEV.Scripting
                     bucket["min"]?.Type != JTokenType.Integer || bucket["max"]?.Type != JTokenType.Integer)
                     throw new ArgumentException("Invalid cache key bucket");
                 result.Step = bucket.Value<float>("step"); result.Minimum = bucket.Value<int>("min"); result.Maximum = bucket.Value<int>("max");
+                if (bucket["hysteresis"] != null && bucket["hysteresis"].Type != JTokenType.Float && bucket["hysteresis"].Type != JTokenType.Integer)
+                    throw new ArgumentException("Invalid cache key hysteresis");
+                result.Hysteresis = bucket.Value<float?>("hysteresis") ?? result.Step;
                 if (result.Step <= 0 || float.IsNaN(result.Step) || float.IsInfinity(result.Step) ||
+                    result.Hysteresis < 0 || float.IsNaN(result.Hysteresis) || float.IsInfinity(result.Hysteresis) ||
                     result.Minimum < -1000000 || result.Maximum > 1000000 || result.Minimum > result.Maximum)
                     throw new ArgumentException("Invalid cache key bucket range");
             }
             return result;
+        }
+        internal bool TryBucket(string path, out Bucket bucket)
+        {
+            foreach (var value in _values)
+                if (value.Name == path && value.Step > 0)
+                {
+                    bucket = new Bucket { Step = value.Step, Hysteresis = value.Hysteresis,
+                        Minimum = value.Minimum, Maximum = value.Maximum };
+                    return true;
+                }
+            bucket = default(Bucket); return false;
         }
         private static FieldInfo[] Path(Type type, string path, out Type leaf)
         {

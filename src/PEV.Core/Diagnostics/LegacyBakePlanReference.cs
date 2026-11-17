@@ -6,7 +6,7 @@ namespace PEV.Scripting
     internal static class LegacyBakePlanReference
     {
         private const int MaxSide=1024, MinCells=8, MaxTexelsPerSet=4200000, MinPxWidth=192;
-        private static int ResolutionBucket(float px) => NoiseTextureFactory.ResolutionBucket(px);
+        private static int ResolutionBucket(float px) => Mathf.Clamp(Mathf.RoundToInt(px / 96f), 1, 12) * 96;
         internal static CpuPackageBake.Plan Prepare(NoiseTextureFactory.Request req)
         {
             int frames = Mathf.Clamp(req.FrameCount, 2, 128);
