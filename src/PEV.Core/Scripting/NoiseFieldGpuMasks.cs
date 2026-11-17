@@ -92,13 +92,13 @@ namespace PEV.Scripting
             }
             _graph.Run("render", _inputs, _textures);
         }
-        internal void WarpColors(Texture2D raw, RenderTexture output)
+        internal void RunExternal(string entry, string inputName, Texture input, string outputName, RenderTexture output)
         {
-            if (raw == null || output == null || raw.width != Width || raw.height != Height ||
+            if (input == null || output == null || input.width != Width || input.height != Height ||
                 output.width != Width || output.height != Height)
-                throw new ArgumentException("Palette textures must match the current mask size");
-            _textures["inputColors"] = raw; _textures["outputColors"] = output;
-            _graph.Run("colors", _inputs, _textures);
+                throw new ArgumentException("External textures must match the compute graph size");
+            _textures[inputName] = input; _textures[outputName] = output;
+            _graph.Run(entry, _inputs, _textures);
         }
         public void Dispose() => _graph.Dispose();
     }

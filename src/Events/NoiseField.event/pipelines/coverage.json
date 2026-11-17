@@ -276,6 +276,19 @@
     "main": "mainOut",
     "auxiliary": "auxOut"
   },
+  "vectorTextures": {
+    "outputs": [
+      {
+        "name": "coloredActive",
+        "filter": "point",
+        "wrap": "clamp",
+        "linear": true,
+        "transform": { "entry": "colors", "input": "inputColors", "output": "outputColors" }
+      },
+      { "name": "coloredDisabled", "filter": "point", "wrap": "clamp", "linear": true }
+    ],
+    "roles": { "primary": "coloredActive", "secondary": "coloredDisabled" }
+  },
   "tagValues": {
     "tagKey": "phase",
     "default": "Active",

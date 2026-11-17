@@ -26,11 +26,12 @@ namespace PEV.Scripting
             internal int ViewWidth, ViewHeight;
             internal bool Colored, ShowDisabled, ShowActive;
 
-            internal Group(ComputeShader shader, GpuGraphDefinition graph, CompositorDefinition compositor, EventManifest manifest, NoiseFieldGpuPlan.Key key,
+            internal Group(ComputeShader shader, GpuGraphDefinition graph, CompositorDefinition compositor, VectorTextureDefinition textures,
+                EventManifest manifest, NoiseFieldGpuPlan.Key key,
                 string contactProgram, FieldContactController history = null)
             {
                 History = history ?? new FieldContactController(contactProgram);
-                Palette = new NoiseFieldGpuPalette(manifest);
+                Palette = new NoiseFieldGpuPalette(manifest, textures);
                 Masks = new NoiseFieldGpuMasks(shader, graph);
                 try { Layer = new NoiseFieldGpuLayer(manifest, compositor, key.SortingLayer, key.SortingOrder, key.UnityLayer); }
                 catch { Masks.Dispose(); throw; }
@@ -43,6 +44,7 @@ namespace PEV.Scripting
         private readonly GpuGraphDefinition _graph;
         private readonly TaggedValueTable _modes;
         private readonly CompositorDefinition _compositor;
+        private readonly VectorTextureDefinition _textures;
         private readonly string _contactProgram;
         private readonly Dictionary<string, Texture2D> _images = new Dictionary<string, Texture2D>(StringComparer.Ordinal);
         private readonly NoiseFieldGpuPlan _plan = new NoiseFieldGpuPlan();
@@ -59,6 +61,7 @@ namespace PEV.Scripting
             _graph = GpuGraphDefinition.Parse(graphBytes);
             _modes = TaggedValueTable.Parse(graphBytes);
             _compositor = CompositorDefinition.Parse(graphBytes);
+            _textures = VectorTextureDefinition.Parse(graphBytes, _graph);
             if (!manifest.ShaderAssets.TryGetValue(_graph.ShaderRole, out var computePath))
                 throw new InvalidOperationException("Compute shader role is not declared");
             _compute = ShaderBundleCache.LoadCompute(manifest, computePath, out string error);
@@ -103,7 +106,7 @@ namespace PEV.Scripting
                 var group = pending ?? previous;
                 _graph.Size(camera.pixelWidth, camera.pixelHeight, out int width, out int height);
                 if (group == null)
-                    _staging.SetPending(pair.Key, group = new Group(_compute, _graph, _compositor, _manifest, pair.Key, _contactProgram)
+                    _staging.SetPending(pair.Key, group = new Group(_compute, _graph, _compositor, _textures, _manifest, pair.Key, _contactProgram)
                     {
                         ViewWidth = width, ViewHeight = height, Colored = plan.Colored,
                         ShowDisabled = plan.HasDisabled, ShowActive = plan.HasActive
@@ -118,7 +121,7 @@ namespace PEV.Scripting
                     group.Colored == plan.Colored && group.ShowDisabled == showDisabled && group.ShowActive == showActive;
                 if (!matches)
                 {
-                    var replacement = new Group(_compute, _graph, _compositor, _manifest, pair.Key, _contactProgram, group.History)
+                    var replacement = new Group(_compute, _graph, _compositor, _textures, _manifest, pair.Key, _contactProgram, group.History)
                     {
                         ViewWidth = width, ViewHeight = height, Colored = plan.Colored,
                         ShowDisabled = showDisabled, ShowActive = showActive

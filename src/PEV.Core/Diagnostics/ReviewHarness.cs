@@ -40,6 +40,10 @@ namespace PEV.Diagnostics
         private struct UnsafeSnapshotProbe { public GameObject SceneObject; }
         private struct GenericFrameProbe { public int Width, Height; public float Value; }
         private struct MutableRecordProbe { public int[] Values; }
+        private const string GenericVectorSource = @"function computeVector(i){
+function run(x){return Number(__compute(JSON.stringify(x)));}
+var p=run({op:'pixelFill',width:i.width,height:i.height,value:i.request.Items[0].Value+i.request.Options/100});
+return [run({op:'pixelPack',channels:[p,p,p,p]})];}";
 
         private static bool CheckPlainSnapshot()
         {
@@ -165,6 +169,7 @@ namespace PEV.Diagnostics
             CheckKeys();
             yield return CheckGenericFrameProgramSafe();
             yield return CheckGenericStructuredWorkerSafe();
+            yield return CheckGenericVectorTexturesSafe();
             yield return CheckGenericBakedFrameCacheSafe();
             yield return CheckTextures();
             yield return CheckFieldsWithoutGpuDriver();
@@ -204,10 +209,7 @@ namespace PEV.Diagnostics
 
         private static IEnumerator CheckGenericStructuredWorker()
         {
-            const string source = @"function computeVector(i){
-function run(x){return Number(__compute(JSON.stringify(x)));}
-var p=run({op:'pixelFill',width:i.width,height:i.height,value:i.request.Items[0].Value+i.request.Options/100});
-return [run({op:'pixelPack',channels:[p,p,p,p]})];}";
+            string source = GenericVectorSource;
             var mutable = new MutableRecordProbe { Values = Array.Empty<int>() };
             bool rejected = false;
             try { using (new StructuredVectorWorker<MutableRecordProbe, int>(source, 1)) { } }
@@ -230,6 +232,48 @@ return [run({op:'pixelPack',channels:[p,p,p,p]})];}";
                 }
                 Row("VECTOR-structured-generic", worker.LastError == null && worker.Latest?[0]?[0] == 191 ? "PASS" : "FAIL");
             }
+        }
+
+        private static IEnumerator CheckGenericVectorTexturesSafe()
+        {
+            var probe = CheckGenericVectorTextures();
+            while (true)
+            {
+                bool next;
+                try { next = probe.MoveNext(); }
+                catch (Exception e) { Row("VECTOR-textures-generic", "FAIL", e.ToString()); yield break; }
+                if (!next) yield break;
+                yield return probe.Current;
+            }
+        }
+        private static IEnumerator CheckGenericVectorTextures()
+        {
+            var definition = new VectorTextureDefinition();
+            definition.Outputs.Add(new VectorTextureDefinition.Output { Name = "custom", Filter = FilterMode.Bilinear,
+                Wrap = TextureWrapMode.Repeat, Linear = true });
+            Texture2D allocated = null;
+            using (var textures = new VectorTextureSet<GenericFrameProbe, int>(GenericVectorSource, definition))
+            {
+                var items = new[] { new GenericFrameProbe { Width = 4, Height = 3, Value = .25f } };
+                bool ready = false; float deadline = Time.realtimeSinceStartup + 5f;
+                while (!ready && Time.realtimeSinceStartup < deadline)
+                { ready = textures.Update(4, 3, 1, items, 0, null); yield return null; }
+                var first = ready ? textures.Get("custom") as Texture2D : null;
+                allocated = first;
+                if (first == null || first.GetPixels32()[0].r != 64 || first.filterMode != FilterMode.Bilinear || first.wrapMode != TextureWrapMode.Repeat)
+                { Row("VECTOR-textures-generic", "FAIL", "initial output"); yield break; }
+                items[0].Value = .5f; deadline = Time.realtimeSinceStartup + 5f;
+                while (Time.realtimeSinceStartup < deadline)
+                {
+                    textures.Update(4, 3, 1, items, 25, null);
+                    if (first.GetPixels32()[0].r == 191) break;
+                    yield return null;
+                }
+                Row("VECTOR-textures-generic", ReferenceEquals(first, textures.Get("custom")) && first.GetPixels32()[0].r == 191 ? "PASS" : "FAIL",
+                    "independent output, declared filtering and same-size texture reuse");
+            }
+            yield return null;
+            Row("VECTOR-textures-cleanup", allocated == null ? "PASS" : "FAIL", "released generated texture after dispose");
         }
 
         private static IEnumerator CheckGenericFrameProgramSafe()
@@ -1027,6 +1071,8 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Check("GPU-package-graph-parity", () => CheckGpuGraphParity(manifest));
             Check("GPU-package-graph-limits", () => CheckGpuGraphLimits(manifest));
             Check("GPU-package-record-layout", () => CheckGpuPackageRecordLayout(manifest));
+            Check("VECTOR-texture-declaration", () => CheckVectorTextureDefinition(manifest));
+            yield return CheckVectorTextureRemapSafe(manifest);
             Check("GPU-package-region-modes", () => CheckRegionModes(manifest));
             Check("GPU-package-compositor-limits", () => CheckCompositorLimits(manifest));
             Check("PIXEL-package-bake-plan-parity", () => CheckBakePlan(manifest));
@@ -1275,6 +1321,80 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             try { CompositorDefinition.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString())); return false; }
             catch (ArgumentException) { }
             return true;
+        }
+
+        private static bool CheckVectorTextureDefinition(EventManifest manifest)
+        {
+            var bytes = EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072);
+            byte[] changed = RemapVectorTextureGraph(bytes);
+            var root = JObject.Parse(System.Text.Encoding.UTF8.GetString(changed));
+            var spec = (JObject)root["vectorTextures"];
+            var graph = GpuGraphDefinition.Parse(changed);
+            var definition = VectorTextureDefinition.Parse(changed, graph);
+            if (definition.Role("primary") != "renamedOutput" || definition.Outputs[0].Input != "renamedInput" ||
+                definition.Outputs[0].Target != "renamedTarget") return false;
+            spec["outputs"][1]["name"] = "renamedOutput";
+            try { VectorTextureDefinition.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString()), graph); return false; }
+            catch (ArgumentException) { }
+            return true;
+        }
+        private static byte[] RemapVectorTextureGraph(byte[] bytes)
+        {
+            var root = JObject.Parse(System.Text.Encoding.UTF8.GetString(bytes));
+            var spec = (JObject)root["vectorTextures"];
+            spec["outputs"][0]["name"] = "renamedOutput";
+            spec["roles"]["primary"] = "renamedOutput";
+            spec["outputs"][0]["transform"]["input"] = "renamedInput";
+            spec["outputs"][0]["transform"]["output"] = "renamedTarget";
+            root["entries"]["colors"][0]["textures"]["_RawActiveColors"] = "$renamedInput";
+            root["entries"]["colors"][0]["textures"]["_WarpedActiveColors"] = "$renamedTarget";
+            return System.Text.Encoding.UTF8.GetBytes(root.ToString());
+        }
+        private static IEnumerator CheckVectorTextureRemapSafe(EventManifest manifest)
+        {
+            var probe = CheckVectorTextureRemap(manifest);
+            while (true)
+            {
+                bool next;
+                try { next = probe.MoveNext(); }
+                catch (Exception e) { Row("VECTOR-texture-remap-parity", "FAIL", e.ToString()); yield break; }
+                if (!next) yield break;
+                yield return probe.Current;
+            }
+        }
+        private static IEnumerator CheckVectorTextureRemap(EventManifest manifest)
+        {
+            var bytes = EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072);
+            var alternate = RemapVectorTextureGraph(bytes);
+            var graph = GpuGraphDefinition.Parse(bytes); var changed = GpuGraphDefinition.Parse(alternate);
+            var shader = ShaderBundleCache.LoadCompute(manifest, manifest.ShaderAssets["compute"], out string error);
+            var displacement = ReferenceNoiseTextures.Load(manifest, "displacement", out error);
+            var touch = ReferenceNoiseTextures.Load(manifest, "touch", out error);
+            if (shader == null || displacement == null || touch == null) throw new InvalidOperationException(error);
+            var images = new Dictionary<string, Texture2D> { ["displacement"] = displacement, ["touch"] = touch };
+            using (var firstMasks = new NoiseFieldGpuMasks(shader, graph))
+            using (var secondMasks = new NoiseFieldGpuMasks(shader, changed))
+            using (var first = new NoiseFieldGpuPalette(manifest, VectorTextureDefinition.Parse(bytes, graph)))
+            using (var second = new NoiseFieldGpuPalette(manifest, VectorTextureDefinition.Parse(alternate, changed)))
+            {
+                var areas = new[] { new NoiseFieldGpuMasks.Area { Center = Vector2.zero, HalfSize = new Vector2(.5f, .4f),
+                    YScale = 1, Opacity = 1, Flags = 1 } };
+                var contacts = Array.Empty<NoiseFieldGpuMasks.Touch>();
+                firstMasks.Render(areas, 1, 128, 128, 1, .37f, images, contacts, 0);
+                secondMasks.Render(areas, 1, 128, 128, 1, .37f, images, contacts, 0);
+                var zones = new[] { new NoiseFieldColorOwnership.Zone { CenterX = 0, CenterY = 0, HalfX = .5f, HalfY = .4f,
+                    YScale = 1, Opacity = 1, Active = true, Red = .2f, Green = .8f, Blue = .3f } };
+                bool readyFirst = false, readySecond = false; float deadline = Time.realtimeSinceStartup + 10f;
+                while ((!readyFirst || !readySecond) && Time.realtimeSinceStartup < deadline)
+                {
+                    readyFirst = first.Update(firstMasks, 1, zones); readySecond = second.Update(secondMasks, 1, zones);
+                    yield return null;
+                }
+                bool matches = readyFirst && readySecond && first.Active is RenderTexture a && second.Active is RenderTexture b &&
+                    ReadGpuPixels(a).SequenceEqual(ReadGpuPixels(b)) && first.Disabled is Texture2D c && second.Disabled is Texture2D d &&
+                    c.GetPixels32().SequenceEqual(d.GetPixels32());
+                Row("VECTOR-texture-remap-parity", matches ? "PASS" : "FAIL", "renamed output and compute texture bindings, byte-for-byte GPU outputs");
+            }
         }
 
         private static IEnumerator CheckCompositorParitySafe(EventManifest manifest)
@@ -2811,7 +2931,8 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Check("FIELD-color-texture-upload", () =>
             {
                 var rgba = new byte[] { 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255 };
-                var texture = NoiseFieldGpuPalette.MakeTexture(2, 2, "PEV.ReviewPalette", rgba);
+                var texture = VectorTextureSet<GenericFrameProbe, int>.MakeTexture(2, 2, "PEV.ReviewPalette", rgba,
+                    FilterMode.Point, TextureWrapMode.Clamp, true);
                 try
                 {
                     var pixels = texture.GetPixels32();
