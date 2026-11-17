@@ -19,6 +19,7 @@ namespace PEV.Scripting
         internal struct Touch { public Vector2 Center; public float Scale, Padding; }
         private readonly GpuComputeGraph _graph;
         private readonly GpuRecordBuffer _geometryRecords, _contactRecords;
+        private readonly int[] _geometryFields, _contactFields;
         private readonly Dictionary<string, object> _inputs = new Dictionary<string, object>();
         private readonly Dictionary<string, Texture> _textures = new Dictionary<string, Texture>();
         private readonly int[] _dimensions = new int[2];
@@ -32,9 +33,17 @@ namespace PEV.Scripting
         internal int Height => _graph.Height;
         internal NoiseFieldGpuMasks(ComputeShader shader, GpuGraphDefinition definition)
         {
+            if (!definition.Resources.TryGetValue("geometry", out var geometry) || !geometry.Buffer ||
+                !definition.Resources.TryGetValue("contacts", out var contacts) || !contacts.Buffer)
+                throw new ArgumentException("Required compute buffers are missing");
+            _geometryFields = new[] { geometry.Field("centerX", "float"), geometry.Field("centerY", "float"),
+                geometry.Field("halfX", "float"), geometry.Field("halfY", "float"), geometry.Field("angle", "float"),
+                geometry.Field("yScale", "float"), geometry.Field("opacity", "float"), geometry.Field("flags", "uint") };
+            _contactFields = new[] { contacts.Field("x", "float"), contacts.Field("y", "float"),
+                contacts.Field("scale", "float"), contacts.Field("padding", "float") };
+            _geometryRecords = new GpuRecordBuffer(geometry.Stride);
+            _contactRecords = new GpuRecordBuffer(contacts.Stride);
             _graph = new GpuComputeGraph(shader, definition);
-            _geometryRecords = new GpuRecordBuffer(32);
-            _contactRecords = new GpuRecordBuffer(16);
         }
         internal void Render(Area[] areas, int count, int viewportWidth, int viewportHeight,
             float aspect, float songTime, IReadOnlyDictionary<string, Texture2D> images, Touch[] touches, int touchCount)
@@ -52,10 +61,10 @@ namespace PEV.Scripting
             for (int i = 0; i < count; i++)
             {
                 var a = areas[i];
-                _geometryRecords.SetFloat(i, 0, a.Center.x); _geometryRecords.SetFloat(i, 1, a.Center.y);
-                _geometryRecords.SetFloat(i, 2, a.HalfSize.x); _geometryRecords.SetFloat(i, 3, a.HalfSize.y);
-                _geometryRecords.SetFloat(i, 4, a.AngleRadians); _geometryRecords.SetFloat(i, 5, a.YScale);
-                _geometryRecords.SetFloat(i, 6, a.Opacity); _geometryRecords.SetUInt(i, 7, a.Flags);
+                _geometryRecords.SetFloat(i, _geometryFields[0], a.Center.x); _geometryRecords.SetFloat(i, _geometryFields[1], a.Center.y);
+                _geometryRecords.SetFloat(i, _geometryFields[2], a.HalfSize.x); _geometryRecords.SetFloat(i, _geometryFields[3], a.HalfSize.y);
+                _geometryRecords.SetFloat(i, _geometryFields[4], a.AngleRadians); _geometryRecords.SetFloat(i, _geometryFields[5], a.YScale);
+                _geometryRecords.SetFloat(i, _geometryFields[6], a.Opacity); _geometryRecords.SetUInt(i, _geometryFields[7], a.Flags);
             }
             _geometryRecords.Upload(_graph, "geometry");
             if (touchCount > 0)
@@ -64,8 +73,8 @@ namespace PEV.Scripting
                 for (int i = 0; i < touchCount; i++)
                 {
                     var t = touches[i];
-                    _contactRecords.SetFloat(i, 0, t.Center.x); _contactRecords.SetFloat(i, 1, t.Center.y);
-                    _contactRecords.SetFloat(i, 2, t.Scale); _contactRecords.SetFloat(i, 3, t.Padding);
+                    _contactRecords.SetFloat(i, _contactFields[0], t.Center.x); _contactRecords.SetFloat(i, _contactFields[1], t.Center.y);
+                    _contactRecords.SetFloat(i, _contactFields[2], t.Scale); _contactRecords.SetFloat(i, _contactFields[3], t.Padding);
                 }
                 _contactRecords.Upload(_graph, "contacts");
             }

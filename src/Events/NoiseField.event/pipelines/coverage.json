@@ -62,12 +62,28 @@
     {
       "name": "geometry",
       "kind": "buffer",
-      "stride": 32
+      "stride": 32,
+      "fields": [
+        { "name": "centerX", "type": "float" },
+        { "name": "centerY", "type": "float" },
+        { "name": "halfX", "type": "float" },
+        { "name": "halfY", "type": "float" },
+        { "name": "angle", "type": "float" },
+        { "name": "yScale", "type": "float" },
+        { "name": "opacity", "type": "float" },
+        { "name": "flags", "type": "uint" }
+      ]
     },
     {
       "name": "contacts",
       "kind": "buffer",
-      "stride": 16
+      "stride": 16,
+      "fields": [
+        { "name": "x", "type": "float" },
+        { "name": "y", "type": "float" },
+        { "name": "scale", "type": "float" },
+        { "name": "padding", "type": "float" }
+      ]
     }
   ],
   "uniforms": {

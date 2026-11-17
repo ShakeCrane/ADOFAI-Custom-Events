@@ -829,6 +829,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             yield return CheckPackageImages(manifest);
             Check("GPU-package-graph-parity", () => CheckGpuGraphParity(manifest));
             Check("GPU-package-graph-limits", () => CheckGpuGraphLimits(manifest));
+            Check("GPU-package-record-layout", () => CheckGpuPackageRecordLayout(manifest));
             Check("GPU-package-region-modes", () => CheckRegionModes(manifest));
             Check("GPU-package-compositor-limits", () => CheckCompositorLimits(manifest));
             Check("PIXEL-package-bake-plan-parity", () => CheckBakePlan(manifest));
@@ -872,6 +873,22 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             yield return CheckRealFieldDepthSafe(manifest);
             yield return CheckRealFieldDriver(manifest);
             yield return CheckRealGpuFailureFallback(manifest);
+        }
+
+        private static bool CheckGpuPackageRecordLayout(EventManifest manifest)
+        {
+            var bytes = EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072);
+            var root = JObject.Parse(System.Text.Encoding.UTF8.GetString(bytes));
+            var geometry = ((JArray)root["resources"]).OfType<JObject>().Single(x => x.Value<string>("name") == "geometry");
+            var fields = (JArray)geometry["fields"];
+            geometry["fields"] = new JArray(fields.Reverse().Select(x => x.DeepClone()));
+            var parsed = GpuGraphDefinition.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString()));
+            var record = parsed.Resources["geometry"];
+            if (record.Field("centerX", "float") != 7 || record.Field("flags", "uint") != 0) return false;
+            ((JArray)geometry["fields"]).RemoveAt(0);
+            try { GpuGraphDefinition.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString())); return false; }
+            catch (ArgumentException) { }
+            return true;
         }
 
         private static IEnumerator CheckPackageImages(EventManifest manifest)

@@ -22,6 +22,13 @@ namespace PEV.Scripting
             internal GraphicsFormat Format;
             internal FilterMode Filter;
             internal int BytesPerPixel;
+            internal readonly Dictionary<string, (int Word, string Type)> Fields = new Dictionary<string, (int, string)>(StringComparer.Ordinal);
+            internal int Field(string name, string type)
+            {
+                if (!Fields.TryGetValue(name, out var field) || field.Type != type)
+                    throw new ArgumentException("Missing or incompatible compute buffer field");
+                return field.Word;
+            }
         }
         internal sealed class Uniform
         {
@@ -82,6 +89,18 @@ namespace PEV.Scripting
                 {
                     resource.Buffer = true; resource.Stride = Int(item["stride"], 4, 256);
                     if (resource.Stride % 4 != 0) throw new ArgumentException("compute buffer stride must be aligned");
+                    if (item["fields"] != null)
+                    {
+                        if (!(item["fields"] is JArray fields) || fields.Count != resource.Stride / 4)
+                            throw new ArgumentException("compute buffer fields must match its stride");
+                        for (int i = 0; i < fields.Count; i++)
+                        {
+                            if (!(fields[i] is JObject field)) throw new ArgumentException("invalid compute buffer field");
+                            string name = Name(field["name"]), type = field.Value<string>("type");
+                            if (type != "float" && type != "uint") throw new ArgumentException("unsupported compute buffer field type");
+                            resource.Fields.Add(name, (i, type));
+                        }
+                    }
                 }
                 else if (kind == "texture")
                 {
