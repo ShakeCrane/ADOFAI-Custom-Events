@@ -276,6 +276,9 @@
     "main": "mainOut",
     "auxiliary": "auxOut"
   },
+  "controllers": {
+    "input": { "capacity": 10, "maxInputs": 1024 }
+  },
   "vectorTextures": {
     "outputs": [
       {

@@ -91,7 +91,7 @@ namespace PEV.Scripting
                 masks == null || masks.Effect == null ||
                 masks.Auxiliary == null || displacement == null || spark == null || noise == null)
                 throw new ArgumentException("A valid orthographic camera, completed masks and reference textures are required");
-            if (touchCount < 0 || touchCount > FieldContactController.Capacity ||
+            if (touchCount < 0 || touchCount > 10 ||
                 (touchCount > 0 && (touchPositions == null || touchPositions.Length < touchCount)))
                 throw new ArgumentOutOfRangeException(nameof(touchCount));
             float distance = Mathf.Max(camera.nearClipPlane + 0.1f, 1f);

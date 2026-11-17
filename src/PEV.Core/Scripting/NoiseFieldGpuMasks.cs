@@ -49,7 +49,7 @@ namespace PEV.Scripting
             float aspect, float songTime, IReadOnlyDictionary<string, Texture2D> images, Touch[] touches, int touchCount)
         {
             if (areas == null || count < 0 || count > areas.Length) throw new ArgumentOutOfRangeException(nameof(count));
-            if (touchCount < 0 || touchCount > FieldContactController.Capacity ||
+            if (touchCount < 0 || touchCount > 64 ||
                 (touchCount > 0 && (touches == null || touchCount > touches.Length)))
                 throw new ArgumentOutOfRangeException(nameof(touchCount));
             if (viewportWidth <= 0 || viewportHeight <= 0 || aspect <= 0 || float.IsNaN(aspect) ||

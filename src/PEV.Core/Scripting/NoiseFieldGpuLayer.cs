@@ -25,7 +25,7 @@ namespace PEV.Scripting
             if (camera == null || !camera.orthographic || camera.pixelWidth <= 0 || camera.pixelHeight <= 0 ||
                 masks == null || images == null || settings == null)
                 throw new ArgumentException("A valid camera and completed field resources are required");
-            if (touchCount < 0 || touchCount > FieldContactController.Capacity ||
+            if (touchCount < 0 || touchCount > 64 ||
                 (touchCount > 0 && (touchPositions == null || touchPositions.Length < touchCount)))
                 throw new ArgumentOutOfRangeException(nameof(touchCount));
             float width = camera.pixelWidth, height = camera.pixelHeight;

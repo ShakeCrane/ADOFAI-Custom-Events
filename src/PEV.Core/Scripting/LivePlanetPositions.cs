@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace PEV.Scripting
 {
-    internal struct ViewportPoint { internal long Id; internal Vector2 Position; }
+    internal struct ViewportPoint { public long Id; public Vector2 Position; }
 
     // Generic game input: callers decide how a live planet position is used.
     internal static class LivePlanetPositions

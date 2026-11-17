@@ -19,18 +19,20 @@ namespace PEV.Scripting
             internal readonly NoiseFieldGpuLayer Layer;
             internal readonly NoiseFieldGpuPalette Palette;
             internal readonly FieldContactController History;
-            internal readonly NoiseFieldGpuMasks.Touch[] Touches = new NoiseFieldGpuMasks.Touch[FieldContactController.Capacity];
-            internal readonly Vector4[] TouchPositions = new Vector4[FieldContactController.Capacity];
+            internal readonly NoiseFieldGpuMasks.Touch[] Touches;
+            internal readonly Vector4[] TouchPositions;
             internal NoiseFieldGpuMasks.Area[] Areas = new NoiseFieldGpuMasks.Area[4];
             internal NoiseFieldColorOwnership.Zone[] Colors = Array.Empty<NoiseFieldColorOwnership.Zone>();
             internal int ViewWidth, ViewHeight;
             internal bool Colored, ShowDisabled, ShowActive;
 
             internal Group(ComputeShader shader, GpuGraphDefinition graph, CompositorDefinition compositor, VectorTextureDefinition textures,
-                EventManifest manifest, NoiseFieldGpuPlan.Key key,
+                GpuGraphDefinition.ControllerLimits limits, EventManifest manifest, NoiseFieldGpuPlan.Key key,
                 string contactProgram, FieldContactController history = null)
             {
-                History = history ?? new FieldContactController(contactProgram);
+                History = history ?? new FieldContactController(contactProgram, limits.Capacity, limits.MaxInputs);
+                Touches = new NoiseFieldGpuMasks.Touch[limits.Capacity];
+                TouchPositions = new Vector4[limits.Capacity];
                 Palette = new NoiseFieldGpuPalette(manifest, textures);
                 Masks = new NoiseFieldGpuMasks(shader, graph);
                 try { Layer = new NoiseFieldGpuLayer(manifest, compositor, key.SortingLayer, key.SortingOrder, key.UnityLayer); }
@@ -45,6 +47,7 @@ namespace PEV.Scripting
         private readonly TaggedValueTable _modes;
         private readonly CompositorDefinition _compositor;
         private readonly VectorTextureDefinition _textures;
+        private readonly GpuGraphDefinition.ControllerLimits _inputLimits;
         private readonly string _contactProgram;
         private readonly Dictionary<string, Texture2D> _images = new Dictionary<string, Texture2D>(StringComparer.Ordinal);
         private readonly NoiseFieldGpuPlan _plan = new NoiseFieldGpuPlan();
@@ -59,6 +62,8 @@ namespace PEV.Scripting
                 throw new InvalidOperationException("Field compute graph is not declared");
             var graphBytes = EventLoader.ReadResource(manifest.SourcePath, graphPath, 131072);
             _graph = GpuGraphDefinition.Parse(graphBytes);
+            if (!_graph.Controllers.TryGetValue("input", out _inputLimits))
+                throw new InvalidOperationException("Input controller limits are not declared");
             _modes = TaggedValueTable.Parse(graphBytes);
             _compositor = CompositorDefinition.Parse(graphBytes);
             _textures = VectorTextureDefinition.Parse(graphBytes, _graph);
@@ -106,7 +111,7 @@ namespace PEV.Scripting
                 var group = pending ?? previous;
                 _graph.Size(camera.pixelWidth, camera.pixelHeight, out int width, out int height);
                 if (group == null)
-                    _staging.SetPending(pair.Key, group = new Group(_compute, _graph, _compositor, _textures, _manifest, pair.Key, _contactProgram)
+                    _staging.SetPending(pair.Key, group = new Group(_compute, _graph, _compositor, _textures, _inputLimits, _manifest, pair.Key, _contactProgram)
                     {
                         ViewWidth = width, ViewHeight = height, Colored = plan.Colored,
                         ShowDisabled = plan.HasDisabled, ShowActive = plan.HasActive
@@ -121,7 +126,7 @@ namespace PEV.Scripting
                     group.Colored == plan.Colored && group.ShowDisabled == showDisabled && group.ShowActive == showActive;
                 if (!matches)
                 {
-                    var replacement = new Group(_compute, _graph, _compositor, _textures, _manifest, pair.Key, _contactProgram, group.History)
+                    var replacement = new Group(_compute, _graph, _compositor, _textures, _inputLimits, _manifest, pair.Key, _contactProgram, group.History)
                     {
                         ViewWidth = width, ViewHeight = height, Colored = plan.Colored,
                         ShowDisabled = showDisabled, ShowActive = showActive

@@ -36,6 +36,7 @@ namespace PEV.Scripting
             internal int IntValue;
             internal float FloatValue;
         }
+        internal sealed class ControllerLimits { internal int Capacity, MaxInputs; }
         internal sealed class Pass
         {
             internal string Kernel, When;
@@ -46,6 +47,7 @@ namespace PEV.Scripting
         internal readonly Dictionary<string, Resource> Resources = new Dictionary<string, Resource>(StringComparer.Ordinal);
         internal readonly Dictionary<string, List<Pass>> Entries = new Dictionary<string, List<Pass>>(StringComparer.Ordinal);
         internal readonly Dictionary<string, string> Outputs = new Dictionary<string, string>(StringComparer.Ordinal);
+        internal readonly Dictionary<string, ControllerLimits> Controllers = new Dictionary<string, ControllerLimits>(StringComparer.Ordinal);
         internal readonly List<Uniform> Uniforms = new List<Uniform>();
         internal int Divisor, Multiplier;
         internal string ShaderRole;
@@ -121,6 +123,17 @@ namespace PEV.Scripting
                 else throw new ArgumentException("invalid compute resource kind");
                 if (graph.Resources.ContainsKey(resource.Name)) throw new ArgumentException("duplicate compute resource");
                 graph.Resources.Add(resource.Name, resource);
+            }
+            if (root["controllers"] != null)
+            {
+                if (!(root["controllers"] is JObject controllers) || controllers.Count > 16)
+                    throw new ArgumentException("invalid compute graph controllers");
+                foreach (var controller in controllers.Properties())
+                {
+                    if (!ValidName(controller.Name) || !(controller.Value is JObject spec)) throw new ArgumentException("invalid compute graph controller");
+                    graph.Controllers.Add(controller.Name, new ControllerLimits { Capacity = Int(spec["capacity"], 1, 64),
+                        MaxInputs = Int(spec["maxInputs"], 1, 4096) });
+                }
             }
             ReadUniforms(root["uniforms"], graph.Uniforms);
             if (!(root["entries"] is JObject entries) || entries.Count < 1 || entries.Count > 8)

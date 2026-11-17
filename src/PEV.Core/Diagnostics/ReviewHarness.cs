@@ -1077,6 +1077,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Check("GPU-package-compositor-limits", () => CheckCompositorLimits(manifest));
             Check("PIXEL-package-bake-plan-parity", () => CheckBakePlan(manifest));
             Check("GPU-package-contacts-parity", () => CheckContactControllerParity(manifest));
+            Check("GPU-package-contact-capacity", () => CheckContactCapacity(manifest));
             Check("GPU-contact-controller-sandbox", CheckControllerSandbox);
             yield return CheckCompositorParitySafe(manifest);
 
@@ -1483,7 +1484,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 activeColors.Apply(false, false); auxiliaryColors.Apply(false, false);
                 legacy = new LegacyGpuLayerReference(manifest, CompositorDefinition.Parse(graphData), 0, 0, 30);
                 current = new NoiseFieldGpuLayer(manifest, compositor, 0, 0, 31);
-                var positions = new Vector4[FieldContactController.Capacity];
+                var positions = new Vector4[10];
                 positions[0] = NoiseFieldGpuLayer.TouchPosition(new Vector2(.5f, .5f), 128, 128);
                 Func<int, Color32[]> capture = layer =>
                 {
@@ -1549,7 +1550,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
         {
             string path = manifest.VectorPrograms["contacts"];
             string source = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, path, 262144));
-            var actual = new FieldContactController(source);
+            var actual = new FieldContactController(source, 10, 1024);
             var expected = new NoiseFieldTouchHistory();
             var areas = new[] {
                 new FieldContactController.Area { Center = Vector2.zero, HalfSize = new Vector2(.9f,.7f), Angle = .2f, Active = true, Visible = true },
@@ -1573,7 +1574,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 var watch = System.Diagnostics.Stopwatch.StartNew();
                 actual.Update(areas, points, 16f / 9f, time);
                 watch.Stop(); sumMs += watch.Elapsed.TotalMilliseconds; worstMs = Math.Max(worstMs, watch.Elapsed.TotalMilliseconds);
-                if (actual.Visible != expected.Visible || actual.Contacts.Count != Math.Min(hits.Length, FieldContactController.Capacity))
+                if (actual.Visible != expected.Visible || actual.Contacts.Count != Math.Min(hits.Length, 10))
                     throw new InvalidOperationException($"frame {frame} visible {actual.Visible}/{expected.Visible}, contacts {actual.Contacts.Count}/{hits.Length}");
                 for (int i = 0; i < actual.Contacts.Count; i++) if (actual.Contacts[i].Id != hits[i].Id)
                     throw new InvalidOperationException($"frame {frame} contact {i}");
@@ -1606,12 +1607,31 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             return true;
         }
 
+        private static bool CheckContactCapacity(EventManifest manifest)
+        {
+            string path = manifest.VectorPrograms["contacts"];
+            string source = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, path, 262144));
+            var controller = new FieldContactController(source, 3, 20);
+            var areas = new[] { new FieldContactController.Area { Center = Vector2.zero, HalfSize = Vector2.one, Active = true, Visible = true } };
+            var points = Enumerable.Range(0, 8).Select(i => new ViewportPoint { Id = i, Position = new Vector2(.5f, .5f) }).ToArray();
+            controller.Update(areas, points, 1, 0); controller.Update(areas, points, 1, .2f);
+            if (controller.Contacts.Count != 3 || controller.Slots.Count != 3) return false;
+            var limited = new FieldContactController(source, 3, 5);
+            try { limited.Update(areas, points, 1, 0); return false; }
+            catch (ArgumentException) { }
+            const string overflow = "function updateController(){return {visible:false,contacts:[],slots:[{x:0,y:0,scale:1},{x:0,y:0,scale:1},{x:0,y:0,scale:1},{x:0,y:0,scale:1}]};}";
+            try { new FieldContactController(overflow, 3, 20).Update(areas, points, 1, 0); return false; }
+            catch (ArgumentException) { }
+            return true;
+        }
+
         private static bool CheckGpuGraphLimits(EventManifest manifest)
         {
             var data = EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072);
             string source = System.Text.Encoding.UTF8.GetString(data);
             var invalid = new List<string> { "{}", source + "{}", source.Replace("\"divisor\": 8", "\"divisor\": 0"),
                 source.Replace("\"format\": \"r32uint\"", "\"format\": \"unknown\""),
+                source.Replace("\"capacity\": 10", "\"capacity\": 65"),
                 source.Replace("\"_Areas\": \"geometry\"", "\"_Areas\": \"missing\"") };
             foreach (var text in invalid)
             {

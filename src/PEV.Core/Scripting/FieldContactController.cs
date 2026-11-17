@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 
@@ -10,34 +9,33 @@ namespace PEV.Scripting
     // Transitional field adapter. The package controls hit tests and contact animation.
     internal sealed class FieldContactController
     {
-        internal const int Capacity = 10;
         internal struct Area
         {
-            internal Vector2 Center, HalfSize;
-            internal float Angle;
-            internal bool Active, Inverted, Visible;
+            public Vector2 Center, HalfSize;
+            public float Angle;
+            public bool Active, Inverted, Visible;
         }
+        private struct Input { public float Time, Aspect; public int Capacity; public Area[] Areas; public ViewportPoint[] Points; }
         internal struct Slot { internal Vector2 Position; internal float Scale; }
         private readonly JsonController _controller;
+        private readonly int _capacity, _maxInputs;
         internal readonly List<ViewportPoint> Contacts = new List<ViewportPoint>();
         internal readonly List<Slot> Slots = new List<Slot>();
         internal bool Visible { get; private set; }
-        internal FieldContactController(string source) { _controller = new JsonController(source); }
+        internal FieldContactController(string source, int capacity, int maxInputs)
+        {
+            if (capacity < 1 || capacity > 64 || maxInputs < 1 || maxInputs > 4096) throw new ArgumentOutOfRangeException("Controller limits");
+            _capacity = capacity; _maxInputs = maxInputs; _controller = new JsonController(source);
+        }
 
         internal void Update(IReadOnlyList<Area> areas, IReadOnlyList<ViewportPoint> points, float aspect, float time)
         {
-            if (areas.Count > 1024 || points.Count > 1024 || !Finite(aspect) || aspect <= 0 || !Finite(time))
+            if (areas.Count > _maxInputs || points.Count > _maxInputs || !Finite(aspect) || aspect <= 0 || !Finite(time))
                 throw new ArgumentException("Invalid contact controller input");
-            var input = new
-            {
-                time, aspect,
-                areas = areas.Select(a => new { x = a.Center.x, y = a.Center.y, halfX = a.HalfSize.x,
-                    halfY = a.HalfSize.y, angle = a.Angle, active = a.Active, inverted = a.Inverted, visible = a.Visible }).ToArray(),
-                points = points.Select(p => new { id = p.Id, x = p.Position.x, y = p.Position.y }).ToArray()
-            };
-            var result = _controller.Update(JsonConvert.SerializeObject(input));
+            var input = new Input { Time = time, Aspect = aspect, Capacity = _capacity, Areas = areas.ToArray(), Points = points.ToArray() };
+            var result = _controller.Update(PublicFieldsSnapshot.Serialize(input));
             if (result["visible"]?.Type != JTokenType.Boolean || !(result["contacts"] is JArray contacts) ||
-                !(result["slots"] is JArray slots) || contacts.Count > Capacity || slots.Count > Capacity)
+                !(result["slots"] is JArray slots) || contacts.Count > _capacity || slots.Count > _capacity)
                 throw new ArgumentException("Invalid contact controller output");
             var nextContacts = new List<ViewportPoint>(contacts.Count);
             var nextSlots = new List<Slot>(slots.Count);
