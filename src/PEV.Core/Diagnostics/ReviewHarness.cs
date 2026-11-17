@@ -192,6 +192,9 @@ return [run({op:'pixelPack',channels:[p,p,p,p]})];}";
             }
             if (Environment.GetEnvironmentVariable("PEV_TEST_REAL_FIELD_BUNDLE") == "1")
                 yield return CheckRealFieldBundle();
+            if (Environment.GetEnvironmentVariable("PEV_TEST_FIELD_PERFORMANCE") == "1" &&
+                EventRegistry.TryGetById("pev.noise-field", out var performanceManifest))
+                yield return CheckFieldPerformanceSafe(performanceManifest);
             yield return ProbeGlobalSettingsGui();
             CheckEditorPlacement(editor);
             Row("DONE", "ok");
@@ -1921,6 +1924,92 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 NoiseFieldRenderer.LiveCount == 1 && NoiseFieldRenderer.LayerCount == 0 ? "PASS" : "FAIL", error);
             NoiseFieldRenderer.DestroyAll();
             yield return null;
+        }
+
+        private static IEnumerator CheckFieldPerformanceSafe(EventManifest manifest)
+        {
+            var probe = CheckFieldPerformance(manifest);
+            while (true)
+            {
+                bool next;
+                try { next = probe.MoveNext(); }
+                catch (Exception e) { Row("GPU-field-performance", "FAIL", e.ToString()); yield break; }
+                if (!next) yield break;
+                yield return probe.Current;
+            }
+        }
+
+        private static IEnumerator CheckFieldPerformance(EventManifest manifest)
+        {
+            var cameraObject = new GameObject("PEV.PerformanceCamera");
+            var backgroundObject = new GameObject("PEV.PerformanceBackground");
+            var camera = cameraObject.AddComponent<Camera>();
+            var background = backgroundObject.AddComponent<SpriteRenderer>();
+            RenderTexture target = null, previous = RenderTexture.active;
+            Texture2D readback = null;
+            NoiseFieldGpuCoordinator coordinator = null;
+            try
+            {
+                camera.enabled = false; camera.orthographic = true; camera.orthographicSize = 1;
+                camera.aspect = 16f / 9f; camera.cullingMask = unchecked((int)0x80000000u);
+                camera.clearFlags = CameraClearFlags.SolidColor; camera.backgroundColor = Color.black;
+                cameraObject.transform.position = new Vector3(0, 0, -10);
+                backgroundObject.layer = 31; backgroundObject.transform.localScale = new Vector3(4, 2, 1);
+                background.sprite = SolidSprite.White; background.color = new Color(.1f, .2f, .6f); background.sortingOrder = -100;
+                target = new RenderTexture(1600, 900, 0, RenderTextureFormat.ARGB32) { antiAliasing = 1 };
+                if (!target.Create()) throw new InvalidOperationException("Cannot create performance target");
+                camera.targetTexture = target;
+                readback = new Texture2D(1, 1, TextureFormat.RGBA32, false, true);
+                var entries = Enumerable.Range(0, 12).Select(i => new NoiseFieldRenderer.Entry {
+                    Provider = manifest, GpuSequence = i, Visible = true, Renderable = true, Opacity = 1,
+                    SortingOrder = (i % 3) * 10, UnityLayer = 31, FillColor = new Color32(255, 84, 84, 255),
+                    World = new Placement.Frame { Center = new Vector3((i % 4 - 1.5f) * .28f, (i / 4 - 1) * .25f, 0),
+                        Size = new Vector2(.8f, .65f) } }).ToArray();
+                coordinator = new NoiseFieldGpuCoordinator(manifest);
+                var times = new double[3][]; var cpu = new double[3][];
+                Color32 baseline = default, effect = default;
+                for (int mode = 0; mode < 3; mode++)
+                {
+                    bool capture = mode == 2;
+                    var settings = new Dictionary<string, bool> { ["captureScene"] = capture };
+                    if (mode != 0)
+                    {
+                        bool ready = false; float deadline = Time.realtimeSinceStartup + 15f;
+                        while (!ready && Time.realtimeSinceStartup < deadline)
+                        { ready = coordinator.Render(entries, camera, 1, settings, Color.black); yield return null; }
+                        if (!ready) throw new InvalidOperationException("Performance groups did not become ready");
+                    }
+                    for (int warm = 0; warm < 8; warm++)
+                    {
+                        if (mode != 0) coordinator.Render(entries, camera, warm / 60f, settings, Color.black);
+                        camera.Render(); RenderTexture.active = target; readback.ReadPixels(new Rect(800, 450, 1, 1), 0, 0);
+                        RenderTexture.active = previous; yield return null;
+                    }
+                    times[mode] = new double[60]; cpu[mode] = new double[60];
+                    for (int sample = 0; sample < 60; sample++)
+                    {
+                        var watch = System.Diagnostics.Stopwatch.StartNew();
+                        if (mode != 0) coordinator.Render(entries, camera, sample / 60f, settings, Color.black);
+                        cpu[mode][sample] = watch.Elapsed.TotalMilliseconds;
+                        camera.Render(); RenderTexture.active = target; readback.ReadPixels(new Rect(800, 450, 1, 1), 0, 0);
+                        watch.Stop(); times[mode][sample] = watch.Elapsed.TotalMilliseconds;
+                        if (sample == 0) { if (mode == 0) baseline = readback.GetPixel(0, 0); else effect = readback.GetPixel(0, 0); }
+                        RenderTexture.active = previous; yield return null;
+                    }
+                }
+                double P95(double[] values) { Array.Sort(values); return values[(int)Math.Ceiling(values.Length * .95) - 1]; }
+                string detail = $"1600x900, 12 areas, 3 depths; forced GPU readback; " +
+                    $"baseline={P95(times[0]):F2}ms, off={P95(times[1]):F2}ms (CPU {P95(cpu[1]):F2}), " +
+                    $"on={P95(times[2]):F2}ms (CPU {P95(cpu[2]):F2})";
+                Row("GPU-field-performance", !baseline.Equals(effect) ? "PASS" : "FAIL", detail);
+            }
+            finally
+            {
+                RenderTexture.active = previous; coordinator?.Dispose();
+                if (target != null) { target.Release(); UnityEngine.Object.Destroy(target); }
+                if (readback != null) UnityEngine.Object.Destroy(readback);
+                UnityEngine.Object.Destroy(backgroundObject); UnityEngine.Object.Destroy(cameraObject);
+            }
         }
 
         private static IEnumerator CheckRealFieldDepthSafe(EventManifest manifest)
