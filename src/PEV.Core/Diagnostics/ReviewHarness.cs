@@ -46,6 +46,24 @@ namespace PEV.Diagnostics
             return replacement.Count == 1 && staging.Active.Count == 0 && staging.Pending.Count == 0 && !staging.Committed;
         }
 
+        private static bool CheckGpuRecordLayouts()
+        {
+            var field = typeof(GpuRecordBuffer).GetField("Types", BindingFlags.NonPublic | BindingFlags.Static);
+            var types = (Type[])field.GetValue(null);
+            if (types.Length != 64) return false;
+            for (int i = 0; i < types.Length; i++)
+                if (System.Runtime.InteropServices.Marshal.SizeOf(types[i]) != (i + 1) * 4) return false;
+            var buffer = new GpuRecordBuffer(16);
+            buffer.Prepare(2); buffer.SetFloat(0, 0, -1.25f); buffer.SetUInt(1, 3, uint.MaxValue);
+            var data = (byte[])typeof(GpuRecordBuffer).GetField("_bytes", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(buffer);
+            if (BitConverter.ToSingle(data, 0) != -1.25f || BitConverter.ToUInt32(data, 28) != uint.MaxValue) return false;
+            try { buffer.SetFloat(0, 0, float.NaN); return false; } catch (ArgumentException) { }
+            try { buffer.SetUInt(2, 0, 0); return false; } catch (ArgumentOutOfRangeException) { }
+            try { buffer.Prepare(65537); return false; } catch (ArgumentOutOfRangeException) { }
+            try { new GpuRecordBuffer(3); return false; } catch (ArgumentOutOfRangeException) { }
+            return true;
+        }
+
         public static void Configure(string modDir)
         {
             if (!File.Exists(Path.Combine(modDir, "review-test.txt"))) return;
@@ -97,6 +115,7 @@ namespace PEV.Diagnostics
             Check("PIXEL-kernel-limits", CheckPixelKernelLimits);
             Check("PIXEL-worker-limits-and-reuse", CheckPixelWorkerLimits);
             Check("RESOURCE-group-staging", CheckResourceStaging);
+            Check("GPU-record-layouts-and-limits", CheckGpuRecordLayouts);
             Check("PIXEL-package-resource-limits", CheckPackagePixelResourceLimits);
             Check("PIXEL-kernel-mono-performance", CheckPixelKernelPerformance);
             CheckKeys();

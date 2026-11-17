@@ -18,6 +18,7 @@ namespace PEV.Scripting
         [StructLayout(LayoutKind.Sequential)]
         internal struct Touch { public Vector2 Center; public float Scale, Padding; }
         private readonly GpuComputeGraph _graph;
+        private readonly GpuRecordBuffer _geometryRecords, _contactRecords;
         private readonly Dictionary<string, object> _inputs = new Dictionary<string, object>();
         private readonly Dictionary<string, Texture> _textures = new Dictionary<string, Texture>();
         private readonly int[] _dimensions = new int[2];
@@ -32,6 +33,8 @@ namespace PEV.Scripting
         internal NoiseFieldGpuMasks(ComputeShader shader, GpuGraphDefinition definition)
         {
             _graph = new GpuComputeGraph(shader, definition);
+            _geometryRecords = new GpuRecordBuffer(32);
+            _contactRecords = new GpuRecordBuffer(16);
         }
         internal void Render(Area[] areas, int count, int viewportWidth, int viewportHeight,
             float aspect, float songTime, IReadOnlyDictionary<string, Texture2D> images, Touch[] touches, int touchCount)
@@ -45,8 +48,27 @@ namespace PEV.Scripting
                 throw new ArgumentOutOfRangeException("Invalid viewport, aspect or song time");
             if (images == null) throw new ArgumentNullException(nameof(images));
             _graph.Resize(viewportWidth, viewportHeight);
-            _graph.Upload("geometry", areas, count);
-            if (touchCount > 0) _graph.Upload("contacts", touches, touchCount);
+            _geometryRecords.Prepare(count);
+            for (int i = 0; i < count; i++)
+            {
+                var a = areas[i];
+                _geometryRecords.SetFloat(i, 0, a.Center.x); _geometryRecords.SetFloat(i, 1, a.Center.y);
+                _geometryRecords.SetFloat(i, 2, a.HalfSize.x); _geometryRecords.SetFloat(i, 3, a.HalfSize.y);
+                _geometryRecords.SetFloat(i, 4, a.AngleRadians); _geometryRecords.SetFloat(i, 5, a.YScale);
+                _geometryRecords.SetFloat(i, 6, a.Opacity); _geometryRecords.SetUInt(i, 7, a.Flags);
+            }
+            _geometryRecords.Upload(_graph, "geometry");
+            if (touchCount > 0)
+            {
+                _contactRecords.Prepare(touchCount);
+                for (int i = 0; i < touchCount; i++)
+                {
+                    var t = touches[i];
+                    _contactRecords.SetFloat(i, 0, t.Center.x); _contactRecords.SetFloat(i, 1, t.Center.y);
+                    _contactRecords.SetFloat(i, 2, t.Scale); _contactRecords.SetFloat(i, 3, t.Padding);
+                }
+                _contactRecords.Upload(_graph, "contacts");
+            }
             _dimensions[0] = Width; _dimensions[1] = Height;
             _inputs["dimensions"] = _dimensions;
             _inputs["geometryCount"] = count; _inputs["aspect"] = aspect; _inputs["time"] = songTime;
