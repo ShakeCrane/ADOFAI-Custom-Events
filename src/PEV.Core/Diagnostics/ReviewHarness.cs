@@ -64,6 +64,14 @@ namespace PEV.Diagnostics
             return true;
         }
 
+        private static bool CheckRectangleClusters()
+        {
+            var items = new[] { new Rect(0, 0, 1, 1), new Rect(4, 0, 1, 1), new Rect(2, 0, 1, 1),
+                new Rect(.5f, 0, 4, 1), new Rect(20, 0, 1, 1) };
+            var groups = RectangleClusters.Group(items, item => item);
+            return groups.Count == 2 && groups[0].Count == 4 && groups[1].Count == 1 && groups[1][0] == items[4];
+        }
+
         public static void Configure(string modDir)
         {
             if (!File.Exists(Path.Combine(modDir, "review-test.txt"))) return;
@@ -116,6 +124,7 @@ namespace PEV.Diagnostics
             Check("PIXEL-worker-limits-and-reuse", CheckPixelWorkerLimits);
             Check("RESOURCE-group-staging", CheckResourceStaging);
             Check("GPU-record-layouts-and-limits", CheckGpuRecordLayouts);
+            Check("GEOMETRY-rectangle-cluster-bridges", CheckRectangleClusters);
             Check("PIXEL-package-resource-limits", CheckPackagePixelResourceLimits);
             Check("PIXEL-kernel-mono-performance", CheckPixelKernelPerformance);
             CheckKeys();

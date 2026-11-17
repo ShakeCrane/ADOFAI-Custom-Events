@@ -923,45 +923,7 @@ namespace PEV.Scripting
             foreach (var groupKey in order)
             {
                 var list = groups[groupKey];
-                // Greedy clustering by bounding-box overlap. Fields that do not touch can never
-                // share a texel, so there is nothing to merge and everything to lose by merging.
-                var clusters = new List<List<Entry>>();
-                var boxes = new List<Rect>();
-                foreach (var m in list)
-                {
-                    Rect box = Bounds(m);
-                    int target = -1;
-                    for (int i = 0; i < boxes.Count; i++)
-                    {
-                        if (boxes[i].Overlaps(box)) { target = i; break; }
-                    }
-                    if (target < 0)
-                    {
-                        clusters.Add(new List<Entry> { m });
-                        boxes.Add(box);
-                    }
-                    else
-                    {
-                        clusters[target].Add(m);
-                        boxes[target] = Rect.MinMaxRect(
-                            Mathf.Min(boxes[target].xMin, box.xMin), Mathf.Min(boxes[target].yMin, box.yMin),
-                            Mathf.Max(boxes[target].xMax, box.xMax), Mathf.Max(boxes[target].yMax, box.yMax));
-                        // A bridging field may join several existing clusters. Merge until
-                        // the expanded box no longer touches another cluster.
-                        for (int i = 0; i < boxes.Count; i++)
-                        {
-                            if (i == target || !boxes[target].Overlaps(boxes[i])) continue;
-                            clusters[target].AddRange(clusters[i]);
-                            boxes[target] = Rect.MinMaxRect(
-                                Mathf.Min(boxes[target].xMin, boxes[i].xMin), Mathf.Min(boxes[target].yMin, boxes[i].yMin),
-                                Mathf.Max(boxes[target].xMax, boxes[i].xMax), Mathf.Max(boxes[target].yMax, boxes[i].yMax));
-                            clusters.RemoveAt(i);
-                            boxes.RemoveAt(i);
-                            if (i < target) target--;
-                            i = -1;
-                        }
-                    }
-                }
+                var clusters = RectangleClusters.Group(list, Bounds);
 
                 for (int i = 0; i < clusters.Count; i++)
                 {
