@@ -1,8 +1,6 @@
 using System;
-using System.Linq;
 using System.Text;
 using System.Threading;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using PEV.Loading;
 using UnityEngine;
@@ -22,8 +20,7 @@ namespace PEV.Scripting
             if (bytes == null) throw new InvalidOperationException("Package bake plan is missing or too large");
             cancellation.ThrowIfCancellationRequested();
             var controller = new JsonController(new UTF8Encoding(false, true).GetString(bytes), 500);
-            string input = JsonConvert.SerializeObject(new { widthWorld = req.WidthWorld, heightWorld = req.HeightWorld,
-                margin = req.Margin, targetPixelWidth = req.TargetPixelWidth, frameCount = req.FrameCount, sampleRate = req.SampleRate });
+            string input = "{\"request\":" + PublicFieldsSnapshot.Serialize(req) + "}";
             var result = controller.Update(input);
             var plan = ValidatePlan(result);
             cancellation.ThrowIfCancellationRequested();
@@ -48,25 +45,14 @@ namespace PEV.Scripting
         internal static void Render(NoiseTextureFactory.Request req, Color32[][] frames, int width, int height, CancellationToken cancellation)
         {
             var manifest = req.Provider ?? throw new ArgumentException("Missing package provider");
-            var pieces = (req.Pieces ?? Array.Empty<NoiseTextureFactory.Piece>()).Select(p => new
-            {
-                x = p.Offset.x, y = p.Offset.y, hx = p.Half.x, hy = p.Half.y,
-                rotation = p.Rotation, circle = p.Circle
-            }).ToArray();
-            var request = new
-            {
-                req.WidthWorld, req.HeightWorld, req.Margin, req.EvolveSpeed, req.ScreenPixelWidth, req.Seed,
-                EdgeColor = new[] { req.EdgeColor.r, req.EdgeColor.g, req.EdgeColor.b },
-                SceneColor = new[] { req.SceneColor.r, req.SceneColor.g, req.SceneColor.b },
-                req.FillOpacity, req.FillStrength, req.Exposure, req.EdgeOpacity, req.GlowOpacity, req.SparkOpacity, req.Glitch,
-                pieces
-            };
+            string request = PublicFieldsSnapshot.Serialize(req);
             if (!manifest.RuntimeBindings.TryGetValue("frameProgram", out var frameProgram))
                 throw new InvalidOperationException("Package frame program binding is missing");
-            PixelFrameBatch.Render(manifest, frameProgram, frames, width, height, k => JsonConvert.SerializeObject(new
-            {
-                stage = "frame", width, height, frameCount = frames.Length, frameIndex = k, request
-            }), cancellation);
+            PixelFrameBatch.Render(manifest, frameProgram, frames, width, height, k =>
+                "{\"stage\":\"frame\",\"width\":" + width.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"height\":" + height.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"frameCount\":" + frames.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ",\"frameIndex\":" + k.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"request\":" + request + "}", cancellation);
         }
     }
 }

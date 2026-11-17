@@ -31,6 +31,25 @@ namespace PEV.Diagnostics
             internal int Count;
             public void Dispose() { Count++; }
         }
+        private struct PlainSnapshotProbe
+        {
+            public int Number;
+            public Vector2 Position;
+            public int HiddenProperty => 42;
+        }
+        private struct UnsafeSnapshotProbe { public GameObject SceneObject; }
+
+        private static bool CheckPlainSnapshot()
+        {
+            string json = PublicFieldsSnapshot.Serialize(new PlainSnapshotProbe { Number = 3, Position = new Vector2(2, 4) });
+            var data = JObject.Parse(json);
+            if (data.Value<int>("Number") != 3 || data["Position"]?.Value<float>("x") != 2 || data["HiddenProperty"] != null) return false;
+            try { PublicFieldsSnapshot.Serialize(new UnsafeSnapshotProbe { SceneObject = null }); return false; }
+            catch (Exception) { }
+            try { PublicFieldsSnapshot.Serialize<GameObject>(null); return false; }
+            catch (Exception) { }
+            return true;
+        }
 
         private static bool CheckResourceStaging()
         {
@@ -123,6 +142,7 @@ namespace PEV.Diagnostics
             Check("PIXEL-kernel-limits", CheckPixelKernelLimits);
             Check("PIXEL-worker-limits-and-reuse", CheckPixelWorkerLimits);
             Check("RESOURCE-group-staging", CheckResourceStaging);
+            Check("SANDBOX-plain-data-snapshot", CheckPlainSnapshot);
             Check("GPU-record-layouts-and-limits", CheckGpuRecordLayouts);
             Check("GEOMETRY-rectangle-cluster-bridges", CheckRectangleClusters);
             Check("PIXEL-package-resource-limits", CheckPackagePixelResourceLimits);

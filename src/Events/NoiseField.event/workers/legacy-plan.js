@@ -1,5 +1,10 @@
 // The package chooses its own flipbook resolution under the host's validated output budget.
 function updateController(input) {
+  if (input.request) {
+    var request=input.request;
+    input={widthWorld:request.WidthWorld,heightWorld:request.HeightWorld,margin:request.Margin,
+      targetPixelWidth:request.TargetPixelWidth,frameCount:request.FrameCount,sampleRate:request.SampleRate};
+  }
   var f=Math.fround;
   function roundEven(x) {
     var lo=Math.floor(x), part=x-lo;

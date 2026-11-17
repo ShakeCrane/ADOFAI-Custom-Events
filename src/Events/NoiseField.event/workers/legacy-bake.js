@@ -13,8 +13,11 @@ function computeVector(input) {
     input.time=f(f(input.frameIndex)/speed); input.loopPeriod=f(f(input.frameCount)/speed);
     input.totalWidth=Math.max(f(.001),f(f(request.WidthWorld)+f(margin*f(2))));
     input.totalHeight=Math.max(f(.001),f(f(request.HeightWorld)+f(margin*f(2))));
-    input.seed=request.Seed; input.pieces=request.pieces;
-    input.options={edgeColor:request.EdgeColor,sceneColor:request.SceneColor,
+    input.seed=request.Seed; input.pieces=(request.Pieces||[]).map(function(piece) {
+      return {x:piece.Offset.x,y:piece.Offset.y,hx:piece.Half.x,hy:piece.Half.y,rotation:piece.Rotation,circle:piece.Circle};
+    });
+    input.options={edgeColor:[request.EdgeColor.r,request.EdgeColor.g,request.EdgeColor.b],
+      sceneColor:[request.SceneColor.r,request.SceneColor.g,request.SceneColor.b],
       fillOpacity:request.FillOpacity,fillStrength:request.FillStrength,exposure:request.Exposure,
       edgeOpacity:request.EdgeOpacity,glowOpacity:request.GlowOpacity,sparkOpacity:request.SparkOpacity,glitch:request.Glitch};
   }
