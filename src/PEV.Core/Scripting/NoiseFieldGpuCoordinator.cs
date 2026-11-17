@@ -46,8 +46,8 @@ namespace PEV.Scripting
         private readonly string _contactProgram;
         private readonly Dictionary<string, Texture2D> _images = new Dictionary<string, Texture2D>(StringComparer.Ordinal);
         private readonly NoiseFieldGpuPlan _plan = new NoiseFieldGpuPlan();
-        private readonly NoiseFieldGroupStaging<NoiseFieldGpuPlan.Key, Group> _staging =
-            new NoiseFieldGroupStaging<NoiseFieldGpuPlan.Key, Group>();
+        private readonly ResourceGroupStaging<NoiseFieldGpuPlan.Key, Group> _staging =
+            new ResourceGroupStaging<NoiseFieldGpuPlan.Key, Group>();
         private readonly List<ViewportPoint> _planets = new List<ViewportPoint>();
 
         internal NoiseFieldGpuCoordinator(EventManifest manifest)

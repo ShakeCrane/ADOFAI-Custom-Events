@@ -26,6 +26,25 @@ namespace PEV.Diagnostics
         private const string StateEventId = "pev.noise-field-state";
         private static string _results;
         private static bool _ran;
+        private sealed class DisposableProbe : IDisposable
+        {
+            internal int Count;
+            public void Dispose() { Count++; }
+        }
+
+        private static bool CheckResourceStaging()
+        {
+            var first = new DisposableProbe(); var obsolete = new DisposableProbe(); var replacement = new DisposableProbe();
+            var staging = new ResourceGroupStaging<int, DisposableProbe>();
+            var keep = new Dictionary<int, bool> { [1] = true };
+            staging.SetPending(1, first); staging.SetPending(2, obsolete);
+            staging.Commit(keep);
+            if (obsolete.Count != 1 || first.Count != 0 || staging.Active.Count != 1 || !staging.Active.ContainsKey(1)) return false;
+            staging.SetPending(1, replacement); staging.Commit(keep);
+            if (first.Count != 1 || replacement.Count != 0 || staging.Active[1] != replacement) return false;
+            staging.Dispose();
+            return replacement.Count == 1 && staging.Active.Count == 0 && staging.Pending.Count == 0 && !staging.Committed;
+        }
 
         public static void Configure(string modDir)
         {
@@ -77,6 +96,7 @@ namespace PEV.Diagnostics
             Check("PIXEL-kernel-operations", CheckPixelKernel);
             Check("PIXEL-kernel-limits", CheckPixelKernelLimits);
             Check("PIXEL-worker-limits-and-reuse", CheckPixelWorkerLimits);
+            Check("RESOURCE-group-staging", CheckResourceStaging);
             Check("PIXEL-package-resource-limits", CheckPackagePixelResourceLimits);
             Check("PIXEL-kernel-mono-performance", CheckPixelKernelPerformance);
             CheckKeys();

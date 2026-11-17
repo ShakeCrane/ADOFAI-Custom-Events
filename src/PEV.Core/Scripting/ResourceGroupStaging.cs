@@ -4,7 +4,7 @@ using System.Collections.Generic;
 namespace PEV.Scripting
 {
     /// <summary>Keep committed resources alive until every replacement is ready.</summary>
-    internal sealed class NoiseFieldGroupStaging<TKey, TValue> : IDisposable where TValue : class, IDisposable
+    internal sealed class ResourceGroupStaging<TKey, TValue> : IDisposable where TValue : class, IDisposable
     {
         internal readonly Dictionary<TKey, TValue> Active = new Dictionary<TKey, TValue>();
         internal readonly Dictionary<TKey, TValue> Pending = new Dictionary<TKey, TValue>();
@@ -32,6 +32,10 @@ namespace PEV.Scripting
 
         internal void Commit<TPlan>(IReadOnlyDictionary<TKey, TPlan> keep)
         {
+            if (keep == null) throw new ArgumentNullException(nameof(keep));
+            // A pending resource can become obsolete between preparation and commit.
+            // Commit must enforce this invariant even when called independently.
+            DiscardPendingExcept(keep);
             _stale.Clear();
             foreach (var pair in Active)
                 if (!keep.ContainsKey(pair.Key) || Pending.ContainsKey(pair.Key)) _stale.Add(pair.Key);
