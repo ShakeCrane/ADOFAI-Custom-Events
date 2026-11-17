@@ -77,7 +77,7 @@
     },
     "_NoiseDimensions": {
       "type": "int2",
-      "input": "noiseDimensions"
+      "input": "displacementDimensions"
     },
     "_AreaCount": {
       "type": "int",
@@ -101,7 +101,7 @@
     },
     "_TouchTextureDimensions": {
       "type": "int2",
-      "input": "contactDimensions"
+      "input": "touchDimensions"
     }
   },
   "entries": {
@@ -128,7 +128,7 @@
       {
         "kernel": "BuildTouch",
         "textures": {
-          "_TouchTexture": "$contactTexture",
+          "_TouchTexture": "$touch",
           "_AuxCompose": "auxCompose"
         },
         "buffers": {
@@ -139,7 +139,7 @@
       {
         "kernel": "WarpActive",
         "textures": {
-          "_NoiseTexture": "$noise",
+          "_NoiseTexture": "$displacement",
           "_Compose": "compose",
           "_Effect": "effect",
           "_RingOutput": "ping"
@@ -249,7 +249,7 @@
       {
         "kernel": "WarpColors",
         "textures": {
-          "_NoiseTexture": "$noise",
+          "_NoiseTexture": "$displacement",
           "_RawActiveColors": "$inputColors",
           "_WarpedActiveColors": "$outputColors"
         }
@@ -308,32 +308,32 @@
       {
         "name": "_EffectRT_TexelSize",
         "type": "vector",
-        "input": "texelSize"
+        "input": "output_main_texelSize"
       },
       {
         "name": "uMasks",
         "type": "texture",
-        "input": "mainMask"
+        "input": "output_main"
       },
       {
         "name": "uAuxMasks",
         "type": "texture",
-        "input": "auxMask"
+        "input": "output_auxiliary"
       },
       {
         "name": "uDisplaceTex",
         "type": "texture",
-        "input": "displacement"
+        "input": "image_displacement"
       },
       {
         "name": "uSparkTex",
         "type": "texture",
-        "input": "spark"
+        "input": "image_spark"
       },
       {
         "name": "uNoiseTex",
         "type": "texture",
-        "input": "noise"
+        "input": "image_noise"
       },
       {
         "name": "_PEVBackground",

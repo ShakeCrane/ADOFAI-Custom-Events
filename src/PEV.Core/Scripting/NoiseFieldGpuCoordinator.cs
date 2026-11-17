@@ -44,7 +44,7 @@ namespace PEV.Scripting
         private readonly RegionModes _modes;
         private readonly CompositorDefinition _compositor;
         private readonly string _contactProgram;
-        private Texture2D _displacement, _spark, _noise, _touch;
+        private readonly Dictionary<string, Texture2D> _images = new Dictionary<string, Texture2D>(StringComparer.Ordinal);
         private readonly NoiseFieldGpuPlan _plan = new NoiseFieldGpuPlan();
         private readonly NoiseFieldGroupStaging<NoiseFieldGpuPlan.Key, Group> _staging =
             new NoiseFieldGroupStaging<NoiseFieldGpuPlan.Key, Group>();
@@ -70,11 +70,16 @@ namespace PEV.Scripting
             _contactProgram = new UTF8Encoding(false, true).GetString(contactBytes);
         }
 
-        private bool EnsureTexture(string name, ref Texture2D texture)
+        private bool EnsureImages()
         {
-            if (texture != null) return true;
-            bool ready = PackageImageCache.TryGet(_manifest, name, out texture, out string error);
-            if (error != null) throw new InvalidOperationException(error);
+            bool ready = true;
+            foreach (var item in _manifest.ImageAssets)
+            {
+                if (_images.TryGetValue(item.Key, out var existing) && existing != null) continue;
+                bool loaded = PackageImageCache.TryGet(_manifest, item.Key, out var texture, out string error);
+                if (error != null) throw new InvalidOperationException(error);
+                if (loaded) _images[item.Key] = texture; else ready = false;
+            }
             return ready;
         }
 
@@ -82,11 +87,7 @@ namespace PEV.Scripting
             bool captureScene, Color fallbackBackground)
         {
             if (camera == null || !camera.orthographic) throw new NotSupportedException("An orthographic camera is required");
-            bool assets = EnsureTexture("displacement", ref _displacement);
-            assets &= EnsureTexture("spark", ref _spark);
-            assets &= EnsureTexture("noise", ref _noise);
-            assets &= EnsureTexture("touch", ref _touch);
-            if (!assets) return _staging.Committed;
+            if (!EnsureImages()) return _staging.Committed;
             float aspect = Mathf.Min(camera.aspect, 16f / 9f);
             _plan.Build(entries, camera, aspect, _modes, GameBridge.Values);
             NoiseFieldPlanetInputs.Collect(camera, _planets);
@@ -140,12 +141,12 @@ namespace PEV.Scripting
                     group.TouchPositions[i] = NoiseFieldGpuLayer.TouchPosition(p, camera.pixelWidth, camera.pixelHeight);
                 }
                 group.Masks.Render(group.Areas, plan.Areas.Count, camera.pixelWidth, camera.pixelHeight,
-                    aspect, songTime, _displacement, group.Touches, touchCount, _touch);
+                    aspect, songTime, _images, group.Touches, touchCount);
                 if (plan.Colored)
                 {
                     if (group.Colors.Length != plan.Colors.Count) Array.Resize(ref group.Colors, plan.Colors.Count);
                     plan.Colors.CopyTo(group.Colors, 0);
-                    if (!group.Palette.Update(group.Masks, _displacement, aspect, group.Colors))
+                    if (!group.Palette.Update(group.Masks, aspect, group.Colors))
                     {
                         // Do not silently render a colored group as default red while its
                         // first palette or resized palette is still being calculated.
@@ -154,7 +155,7 @@ namespace PEV.Scripting
                         continue;
                     }
                 }
-                ready &= group.Layer.Draw(camera, group.Masks, _displacement, _spark, _noise, aspect, songTime,
+                ready &= group.Layer.Draw(camera, group.Masks, _images, aspect, songTime,
                     captureScene, group.History.Visible, showDisabled, showActive,
                     fallbackBackground, group.TouchPositions, positionCount,
                     plan.Colored ? group.Palette.Active : null, plan.Colored ? group.Palette.Disabled : null);

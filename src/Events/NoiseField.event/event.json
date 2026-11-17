@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "id": "pev.noise-field",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",

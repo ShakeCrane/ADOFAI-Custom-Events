@@ -23,7 +23,7 @@ namespace PEV.Scripting
                 System.Globalization.CultureInfo.InvariantCulture, out int rgb) ? rgb : 0xffffff;
         }
 
-        internal bool Update(NoiseFieldGpuMasks masks, Texture2D noise, float aspect,
+        internal bool Update(NoiseFieldGpuMasks masks, float aspect,
             NoiseFieldColorOwnership.Zone[] zones)
         {
             if (_worker == null)
@@ -78,7 +78,7 @@ namespace PEV.Scripting
                 }
             }
             if (_rawActive == null || _rawActive.width != width || _rawActive.height != height) return false;
-            masks.WarpColors(_rawActive, _active, noise);
+            masks.WarpColors(_rawActive, _active);
             return true;
         }
 

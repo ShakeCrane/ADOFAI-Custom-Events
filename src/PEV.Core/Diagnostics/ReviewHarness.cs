@@ -979,7 +979,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             GameObject cameraObject = null;
             RenderTexture target = null;
             Texture2D read = null, activeColors = null, auxiliaryColors = null;
-            NoiseFieldGpuMasks masks = null;
+            NoiseFieldGpuMasks masks = null, genericMasks = null;
             LegacyGpuLayerReference legacy = null;
             NoiseFieldGpuLayer current = null;
             var prior = RenderTexture.active;
@@ -987,7 +987,26 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             {
                 byte[] graphData = EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072);
                 var graph = GpuGraphDefinition.Parse(graphData);
-                var compositor = CompositorDefinition.Parse(graphData);
+                var remapped = JObject.Parse(System.Text.Encoding.UTF8.GetString(graphData));
+                remapped["uniforms"]["_NoiseDimensions"]["input"] = "imageADimensions";
+                remapped["uniforms"]["_TouchTextureDimensions"]["input"] = "imageDDimensions";
+                foreach (var entry in ((JObject)remapped["entries"]).Properties())
+                    foreach (var pass in (JArray)entry.Value)
+                        if (pass["textures"] is JObject bindings)
+                            foreach (var binding in bindings.Properties().ToArray())
+                            {
+                                if (binding.Value.Value<string>() == "$displacement") binding.Value = "$imageA";
+                                if (binding.Value.Value<string>() == "$touch") binding.Value = "$imageD";
+                            }
+                remapped["outputs"] = new JObject { ["shape"] = "mainOut", ["detail"] = "auxOut" };
+                var renamedInputs = new Dictionary<string, string> { ["image_displacement"] = "image_imageA", ["image_spark"] = "image_imageB",
+                    ["image_noise"] = "image_imageC", ["output_main"] = "output_shape", ["output_auxiliary"] = "output_detail",
+                    ["output_main_texelSize"] = "output_shape_texelSize" };
+                foreach (var binding in (JArray)remapped["compositor"]["bindings"])
+                    if (renamedInputs.TryGetValue(binding.Value<string>("input"), out var replacement)) binding["input"] = replacement;
+                byte[] alternateData = System.Text.Encoding.UTF8.GetBytes(remapped.ToString(Newtonsoft.Json.Formatting.None));
+                var alternateGraph = GpuGraphDefinition.Parse(alternateData);
+                var compositor = CompositorDefinition.Parse(alternateData);
                 var shader = ShaderBundleCache.LoadCompute(manifest, manifest.ShaderAssets["compute"], out string error);
                 if (shader == null) throw new InvalidOperationException(error);
                 var displacement = ReferenceNoiseTextures.Load(manifest, "displacement", out error);
@@ -1004,12 +1023,16 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 camera.targetTexture = target;
                 read = new Texture2D(128, 128, TextureFormat.RGBA32, false, true);
                 masks = new NoiseFieldGpuMasks(shader, graph);
+                genericMasks = new NoiseFieldGpuMasks(shader, alternateGraph);
                 var areas = new[] {
                     new NoiseFieldGpuMasks.Area { Center = new Vector2(-.2f,0), HalfSize = new Vector2(.5f,.6f), YScale = 1, Opacity = 1, Flags = 1 },
                     new NoiseFieldGpuMasks.Area { Center = new Vector2(.35f,0), HalfSize = new Vector2(.25f,.35f), YScale = 1, Opacity = .8f, Flags = 4 }
                 };
                 var touches = new[] { new NoiseFieldGpuMasks.Touch { Center = new Vector2(.5f,.5f), Scale = 1f } };
-                masks.Render(areas, areas.Length, 128, 128, 1f, 1f, displacement, touches, 1, touch);
+                var images = new Dictionary<string, Texture2D> { ["displacement"] = displacement, ["spark"] = spark, ["noise"] = noise, ["touch"] = touch };
+                var renamedImages = new Dictionary<string, Texture2D> { ["imageA"] = displacement, ["imageB"] = spark, ["imageC"] = noise, ["imageD"] = touch };
+                masks.Render(areas, areas.Length, 128, 128, 1f, 1f, images, touches, 1);
+                genericMasks.Render(areas, areas.Length, 128, 128, 1f, 1f, renamedImages, touches, 1);
                 activeColors = new Texture2D(masks.Width, masks.Height, TextureFormat.RGBA32, false, true);
                 auxiliaryColors = new Texture2D(masks.Width, masks.Height, TextureFormat.RGBA32, false, true);
                 activeColors.SetPixels32(Enumerable.Repeat(new Color32(20, 220, 80, 255), masks.Width * masks.Height).ToArray());
@@ -1034,7 +1057,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     var first = colored ? activeColors : null; var second = colored ? auxiliaryColors : null;
                     legacy.Draw(camera, masks, displacement, spark, noise, 1f, 1f, captureScene, hover,
                         showDisabled, showActive, Color.black, positions, hover ? 1 : 0, first, second);
-                    current.Draw(camera, masks, displacement, spark, noise, 1f, 1f, captureScene, hover,
+                    current.Draw(camera, genericMasks, renamedImages, 1f, 1f, captureScene, hover,
                         showDisabled, showActive, Color.black, positions, hover ? 1 : 0, first, second);
                     yield return null;
                     var before = capture(30); var after = capture(31);
@@ -1044,11 +1067,11 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     scenarios++;
                 }
                 Row("GPU-compositor-parity", scenarios == 24 && visibleScenarios == 24 ? "PASS" : "FAIL",
-                    scenarios + " material and layer combinations; " + visibleScenarios + " visibly rendered");
+                    scenarios + " material and layer combinations; " + visibleScenarios + " visibly rendered; custom image/output names");
             }
             finally
             {
-                current?.Dispose(); legacy?.Dispose(); masks?.Dispose(); RenderTexture.active = prior;
+                current?.Dispose(); legacy?.Dispose(); masks?.Dispose(); genericMasks?.Dispose(); RenderTexture.active = prior;
                 if (target != null) { target.Release(); UnityEngine.Object.Destroy(target); }
                 if (read != null) UnityEngine.Object.Destroy(read);
                 if (activeColors != null) UnityEngine.Object.Destroy(activeColors);
@@ -1174,6 +1197,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 new NoiseFieldGpuMasks.Area { Center = new Vector2(0,.3f), HalfSize = new Vector2(.3f,.1f), YScale = 1f, Opacity = 1f, Flags = 0 }
             };
             var touches = new[] { new NoiseFieldGpuMasks.Touch { Center = new Vector2(.5f,.5f), Scale = 1f } };
+            var images = new Dictionary<string, Texture2D> { ["displacement"] = noise, ["touch"] = touchTexture };
             using (var legacy = new LegacyGpuMaskReference(shader, weights))
             using (var graph = new NoiseFieldGpuMasks(shader, definition))
             {
@@ -1184,7 +1208,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     float time = i * .77f;
                     legacy.Render(areas, count, width, height, 16f / 9f, time, noise, touches, touchCount, touchTexture);
                     var oldMain = ReadGpuPixels(legacy.Effect); var oldAux = ReadGpuPixels(legacy.Auxiliary);
-                    graph.Render(areas, count, width, height, 16f / 9f, time, noise, touches, touchCount, touchTexture);
+                    graph.Render(areas, count, width, height, 16f / 9f, time, images, touches, touchCount);
                     if (!oldMain.SequenceEqual(ReadGpuPixels(graph.Effect)) || !oldAux.SequenceEqual(ReadGpuPixels(graph.Auxiliary)))
                         return false;
                 }

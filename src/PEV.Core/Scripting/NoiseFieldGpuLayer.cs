@@ -19,13 +19,13 @@ namespace PEV.Scripting
         }
         internal static void ApplyUniforms(Material material, IReadOnlyList<FieldUniformSpec> uniforms) =>
             SpriteCompositor.ApplyUniforms(material, uniforms);
-        internal bool Draw(Camera camera, NoiseFieldGpuMasks masks, Texture2D displacement,
-            Texture2D spark, Texture2D noise, float chartAspect, float songTime, bool capture,
+        internal bool Draw(Camera camera, NoiseFieldGpuMasks masks, IReadOnlyDictionary<string, Texture2D> images,
+            float chartAspect, float songTime, bool capture,
             bool hover, bool showDisabled, bool showActive, Color fallbackBackground,
             Vector4[] touchPositions, int touchCount, Texture activeColors, Texture disabledColors)
         {
             if (camera == null || !camera.orthographic || camera.pixelWidth <= 0 || camera.pixelHeight <= 0 ||
-                masks == null || masks.Effect == null || masks.Auxiliary == null || displacement == null || spark == null || noise == null)
+                masks == null || images == null)
                 throw new ArgumentException("A valid camera and completed field resources are required");
             if (touchCount < 0 || touchCount > FieldContactController.Capacity ||
                 (touchCount > 0 && (touchPositions == null || touchPositions.Length < touchCount)))
@@ -38,9 +38,18 @@ namespace PEV.Scripting
             _inputs["view"] = new Vector4(width, height, chartAspect, 0);
             _inputs["time"] = new Vector4(songTime / 20f, songTime, songTime * 2f, songTime * 3f);
             _inputs["screen"] = new Vector4(width, height, 1f + 1f / width, 1f + 1f / height);
-            _inputs["texelSize"] = new Vector4(1f / masks.Effect.width, 1f / masks.Effect.height, masks.Effect.width, masks.Effect.height);
-            _inputs["mainMask"] = masks.Effect; _inputs["auxMask"] = masks.Auxiliary;
-            _inputs["displacement"] = displacement; _inputs["spark"] = spark; _inputs["noise"] = noise;
+            foreach (var output in masks.Outputs)
+            {
+                if (output.Value == null) throw new ArgumentException("Invalid compute output");
+                _inputs["output_" + output.Key] = output.Value;
+                _inputs["output_" + output.Key + "_texelSize"] = new Vector4(1f / output.Value.width, 1f / output.Value.height,
+                    output.Value.width, output.Value.height);
+            }
+            foreach (var image in images)
+            {
+                if (image.Value == null) throw new ArgumentException("Invalid package image");
+                _inputs["image_" + image.Key] = image.Value;
+            }
             _inputs["background"] = fallbackBackground; _inputs["contactCount"] = touchCount;
             if (touchCount > 0) _inputs["contacts"] = touchPositions;
             if (_conditions["colored"]) { _inputs["primaryColors"] = activeColors; _inputs["secondaryColors"] = disabledColors; }

@@ -82,6 +82,10 @@ namespace PEV.Scripting
         }
 
         internal RenderTexture Output(string name) => _textures[_definition.Outputs[name]];
+        internal IEnumerable<KeyValuePair<string, RenderTexture>> Outputs
+        {
+            get { foreach (var item in _definition.Outputs) yield return new KeyValuePair<string, RenderTexture>(item.Key, _textures[item.Value]); }
+        }
 
         internal void Run(string entry, IReadOnlyDictionary<string, object> inputs, IReadOnlyDictionary<string, Texture> externals)
         {
