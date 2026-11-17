@@ -256,12 +256,16 @@ namespace PEV.Scripting
         private static readonly Dictionary<string, Layer> Layers =
             new Dictionary<string, Layer>();
 
+#if PEV_DIAGNOSTICS
         public static int LiveCount => Live.Count;
         public static int LayerCount => Layers.Count;
         private static bool _gpuRendering;
+#endif
         private static readonly HashSet<PEV.Model.EventManifest> GpuProviders =
             new HashSet<PEV.Model.EventManifest>();
+#if PEV_DIAGNOSTICS
         internal static bool IsGpuProviderActive(PEV.Model.EventManifest provider) => GpuProviders.Contains(provider);
+#endif
 
         // GPU ownership is per package. A failed or unready provider must not suspend
         // the CPU fallback of another package using the same field primitive.
@@ -275,7 +279,8 @@ namespace PEV.Scripting
             foreach (int depth in depths) RebuildDepth(depth);
         }
 
-        // Draft driver only: switch after GPU groups have produced a complete frame.
+#if PEV_DIAGNOSTICS
+        // Diagnostic-only override for exercising CPU/GPU transitions.
         // On failure, rebuild the legacy path from the retained entries.
         internal static void SetGpuRendering(bool enabled)
         {
@@ -319,6 +324,7 @@ namespace PEV.Scripting
             list.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
             return list;
         }
+#endif
 
         // The GPU plan orders entries by their sequence; avoid allocating and sorting a
         // diagnostics snapshot every frame on its high-refresh rendering path.
@@ -328,6 +334,7 @@ namespace PEV.Scripting
             foreach (var entry in Live.Values) destination.Add(entry);
         }
 
+#if PEV_DIAGNOSTICS
         /// <summary>
         /// Writes every composited layer's current frame to a PNG.
         ///
@@ -380,6 +387,7 @@ namespace PEV.Scripting
             }
             return written;
         }
+#endif
 
         private static string ScopeOf(Dictionary<string, object> args)
         {
@@ -622,7 +630,9 @@ namespace PEV.Scripting
 
         public static void DestroyAll()
         {
+#if PEV_DIAGNOSTICS
             _gpuRendering = false;
+#endif
             GpuProviders.Clear();
             ReleaseLegacyLayers();
             Live.Clear();
@@ -866,7 +876,9 @@ namespace PEV.Scripting
         /// </summary>
         private static bool RebuildDepth(int depth)
         {
+#if PEV_DIAGNOSTICS
             if (_gpuRendering) return true;
+#endif
             var members = new List<Entry>();
             foreach (var kv in Live)
             {
