@@ -23,7 +23,6 @@ namespace PEV.Core
         private const string HarmonyId = "org.shakecrane.pev.core";
 
         public static UnityModManager.ModEntry Mod;
-        public static string EventsDirectory;
         public static bool Verbose = true;
         internal static EventGlobalSettings EventSettings = new EventGlobalSettings();
         private static string _settingsPath;
@@ -36,36 +35,12 @@ namespace PEV.Core
             _logPath = Path.Combine(entry.Path, "pev-core.log");
             TryResetLog();
 
-            EventsDirectory = Path.Combine(entry.Path, "Events");
-            Directory.CreateDirectory(EventsDirectory);
-
-            var report = EventLoader.Scan(new[] { EventsDirectory });
-            Log($"scan: {report.Summary()}");
-            foreach (var m in report.Loaded)
-                Log($"  {m.Id} v{m.Version} ({m.Params.Count} params) <- {Path.GetFileName(m.SourcePath)}");
-            foreach (var e in report.Errors)
-                Log("  ERROR " + e);
-
-            // With no usable event packages, leave the game's metadata, editor, level
-            // serialization and runtime untouched. Installing Core alone is inert.
-            if (report.Loaded.Count == 0)
-            {
-                Log("no event packages loaded; core dormant, no game patches");
-                return true;
-            }
-
             EventSettings = new EventGlobalSettings();
             _settingsPath = Path.Combine(entry.Path, "event-settings.json");
             try { EventSettings.Load(_settingsPath); }
             catch (Exception e) { Log("event settings load failed; original file preserved: " + e.Message); }
             entry.OnGUI = OnGUI;
             entry.OnSaveGUI = OnSaveGUI;
-
-            // The placeholder type is built in, never shipped as a package: it exists so
-            // unresolved payloads stay visible on the track instead of quietly vanishing.
-            var builtIn = new List<PEV.Model.EventManifest> { PEV.Registry.PlaceholderEvent.Build() };
-            builtIn.AddRange(report.Loaded);
-            EventRegistry.RegisterAll(builtIn, w => Log("registry: " + w));
 
             new Harmony(HarmonyId).PatchAll(Assembly.GetExecutingAssembly());
 #if PEV_DIAGNOSTICS
@@ -76,8 +51,9 @@ namespace PEV.Core
             Diagnostics.P4Harness.Configure(entry.Path);
             Diagnostics.PN1Harness.Configure(entry.Path);
             Diagnostics.ReviewHarness.Configure(entry.Path);
+            Diagnostics.ChartHarness.Configure(entry.Path);
 #endif
-            Log("harmony patched");
+            Log("harmony patched; event packages are loaded from each chart directory");
             return true;
         }
 
@@ -172,8 +148,14 @@ namespace PEV.Core
     [HarmonyPatch(typeof(LevelData), "Decode")]
     public static class DecodePatch
     {
-        public static void Postfix(LevelData __instance)
+        public static void Prefix(LevelData __instance, Dictionary<string, object> dict)
         {
+            try { ChartPackages.Prepare(__instance, dict); }
+            catch (Exception e) { Plugin.Log("chart package discovery failed: " + e); }
+        }
+        public static void Postfix(LevelData __instance, LoadResult status)
+        {
+            if (ChartPackages.Exporting || status != LoadResult.Successful) return;
             try
             {
                 LevelStorage.Clear();
@@ -183,16 +165,37 @@ namespace PEV.Core
                 Plugin.Log($"decode: {summary}");
                 foreach (var p in summary.Problems) Plugin.Log("  " + p);
                 Editor.EditorReport.AddFrom(summary);
+                ChartPackages.AddProblems(__instance);
+                Editor.EditorReport.Schedule();
 
                 // Arm the runtime for whatever just loaded. Rebuilding is cheap and
                 // makes reloads idempotent.
-                Scripting.RuntimeHost.Ensure().Rebuild(__instance);
+                if (EventRegistry.All.Count > 0) Scripting.RuntimeHost.Ensure().Rebuild(__instance);
             }
             catch (Exception e)
             {
                 Plugin.Log("decode failed: " + e);
             }
         }
+    }
+
+    [HarmonyPatch(typeof(scnGame), "LoadLevel")]
+    public static class ChartLoadPatch
+    {
+        private static void Prefix(scnGame __instance, string levelPath, out ChartPackages.LoadContext __state) =>
+            __state = ChartPackages.Begin(__instance.levelData, levelPath);
+        private static void Postfix(bool __result, ChartPackages.LoadContext __state) { if (__state != null) __state.Succeeded = __result; }
+        private static Exception Finalizer(Exception __exception, ChartPackages.LoadContext __state)
+        {
+            ChartPackages.End(__state, __exception == null && __state != null && __state.Succeeded);
+            return __exception;
+        }
+    }
+
+    [HarmonyPatch(typeof(LevelData), "Copy")]
+    public static class ChartCopyPatch
+    {
+        private static void Postfix(LevelData __instance, LevelData __result) => ChartDependencies.Copy(__instance, __result);
     }
 
     [HarmonyPatch(typeof(scnEditor), "Play")]
@@ -260,6 +263,7 @@ namespace PEV.Core
                     ? raw as List<Dictionary<string, object>>
                     : null;
                 var summary = LevelStorage.Bake(__instance, actions);
+                ChartDependencies.Write(__instance, __result);
                 if (summary.Written > 0 || summary.RemovedStale > 0)
                     Plugin.Log($"encode: {summary}");
             }

@@ -27,11 +27,14 @@ namespace PEV.Editor
 
         private static readonly List<Problem> Collected = new List<Problem>();
         private static bool _shown;
+        private static ReportPump _pump;
 
         public static void Reset()
         {
             Collected.Clear();
             _shown = false;
+            if (_pump != null) UnityEngine.Object.Destroy(_pump.gameObject);
+            _pump = null;
         }
 
         public static void Add(string kind, string detail)
@@ -59,19 +62,49 @@ namespace PEV.Editor
         public static void ShowIfNeeded()
         {
             if (_shown || Collected.Count == 0) return;
-            if (ADOBase.editor == null) return;
-
-            _shown = true;
             try
             {
                 string text = BuildSummary();
-                ADOBase.editor.ShowNotification(text, new Color(1f, 0.75f, 0.4f), 4f);
+                var notification = Notification.instance;
+                notification.ShowNoSpace();
+                notification.text.text = text;
+                _shown = true;
             }
-            catch { /* a failed notification must never break loading */ }
+            catch
+            {
+                try { if (ADOBase.editor != null) { ADOBase.editor.ShowNotification(BuildSummary(), new Color(1f, .75f, .4f), 6f); _shown = true; } }
+                catch { /* a failed notification must never break loading */ }
+            }
+        }
+
+        internal static void Schedule()
+        {
+            if (_shown || Collected.Count == 0 || _pump != null) return;
+            var go = new GameObject("PEV.ChartNotification");
+            UnityEngine.Object.DontDestroyOnLoad(go);
+            _pump = go.AddComponent<ReportPump>();
+        }
+
+        public sealed class ReportPump : MonoBehaviour
+        {
+            private float _deadline;
+            private void Awake() { _deadline = Time.unscaledTime + .5f; }
+            private void Update()
+            {
+                if (Time.unscaledTime < _deadline || (ADOBase.editor != null && ADOBase.editor.isLoading)) return;
+                ShowIfNeeded();
+                if (_shown || Time.unscaledTime > _deadline + 10f) { _pump = null; Destroy(gameObject); }
+            }
         }
 
         private static string BuildSummary()
         {
+            var chartProblems = Collected.Where(p => p.Kind == "ChartPackage").Select(p => p.Detail).Distinct().ToList();
+            if (chartProblems.Count > 0)
+            {
+                string text = string.Join("\n", chartProblems.Take(4));
+                return chartProblems.Count > 4 ? text + "\n还有 " + (chartProblems.Count - 4) + " 项" : text;
+            }
             var sb = new StringBuilder("Programmable Events: ");
             var kinds = Collected.GroupBy(p => p.Kind)
                 .Select(g => $"{g.Key} x{g.Count()}")

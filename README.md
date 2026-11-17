@@ -28,10 +28,11 @@ corrupt one.
 1. Install [Unity Mod Manager](https://www.nexusmods.com/site/mods/21) if you have not.
 2. Download `PEV.Core-<version>.zip` from [Releases](../../releases).
 3. In UMM, use **Mods → Install Mod** and pick the zip.
-4. Launch the game. The mod loads with three example events.
+4. Place the independent `NoiseField.event` next to the `.adofai` chart that uses it, then open the chart.
 
-Mods live in `<game folder>/Mods/PEV.Core/`. To add an event, drop a `.event` file into
-`Mods/PEV.Core/Events/`.
+The Core package contains no events. Each chart loads `.event` files from its own
+directory only. Missing declared packages produce a notification and preserve event data;
+the game's chart export includes declared packages.
 
 ---
 
@@ -94,7 +95,7 @@ be usable by both people and AI agents.
 
 ## Example events
 
-Install event packages separately in `Mods/PEV.Core/Events/`. The Core distribution
+Install event packages separately alongside the chart. The Core distribution
 does not include event packages:
 
 | Event | Demonstrates |
@@ -117,8 +118,8 @@ python tools/build_release.py --version 0.1.0
 ```
 
 That builds `src/PEV.Core` and writes the core-only `dist/PEV.Core-<version>.zip`
-alongside a separate `NoiseField.event` containing the field and its state control. The current
-Core still contains field-specific rendering code; see [the boundary audit](docs/CORE-BOUNDARY-AUDIT.md).
+alongside a separate `NoiseField.event` containing the field and its state control.
+See [the boundary audit](docs/CORE-BOUNDARY-AUDIT.md) for the implementation boundary.
 
 The game path is set at the top of `src/PEV.Core/PEV.Core.csproj`.
 

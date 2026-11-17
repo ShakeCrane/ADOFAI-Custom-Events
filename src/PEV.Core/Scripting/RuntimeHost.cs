@@ -289,8 +289,9 @@ namespace PEV.Scripting
 
         private void OnDestroy()
         {
+            if (_instance != this) return;
             Teardown();
-            if (_instance == this) _instance = null;
+            _instance = null;
         }
     }
 }

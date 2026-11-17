@@ -161,7 +161,9 @@ namespace PEV.Scripting
                     await VectorWorkerLimits.Slots.WaitAsync(cancellation).ConfigureAwait(false);
                     try
                     {
-                        if (_backgroundController == null) _backgroundController = new JsonController(_source, 50, 524288, 262144, cancellation);
+                        // Large plans run off the main thread; allow scheduler pauses while
+                        // retaining the cancellation and bounded execution safeguards.
+                        if (_backgroundController == null) _backgroundController = new JsonController(_source, 250, 524288, 262144, cancellation);
                         return _backgroundController.Update(PublicFieldsSnapshot.Serialize(new Input { Items = snapshot }));
                     }
                     finally { VectorWorkerLimits.Slots.Release(); }

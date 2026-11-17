@@ -7,8 +7,7 @@ Produces a core-only Unity Mod Manager package and separate event packages:
     ├── Info.json
     ├── PEV.Core.dll
     ├── Jint.dll
-    ├── Acornima.dll
-    └── Events/ (empty)
+    └── Acornima.dll
 
     NoiseField.event
 
@@ -87,7 +86,7 @@ def main():
     print("staging...")
     with tempfile.TemporaryDirectory(prefix="pev-release-") as staging_root:
         stage = os.path.join(staging_root, MOD_ID)
-        os.makedirs(os.path.join(stage, "Events"))
+        os.makedirs(stage)
         shutil.copy2(dll, stage)
         shutil.copy2(os.path.join(ROOT, "LICENSE"), stage)
         shutil.copy2(os.path.join(ROOT, "docs", "INSTALL-zh-CN.md"), stage)
@@ -110,7 +109,6 @@ def main():
             pack(os.path.join(EVENTS, name), os.path.join(staging_root, name))
         print("packing...")
         with zipfile.ZipFile(zip_path, "x", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f"{MOD_ID}/Events/", b"")
             for dirpath, _dirnames, filenames in os.walk(stage):
                 for fn in filenames:
                     full = os.path.join(dirpath, fn)

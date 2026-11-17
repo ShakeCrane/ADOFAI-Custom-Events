@@ -63,7 +63,7 @@ namespace PEV.Registry
                     if (!TryParseLanguage(entry.Key, out var lang)) continue;
 
                     string stamp = key + "|" + lang;
-                    if (!Written.Add(stamp)) continue;
+                    Written.Add(stamp);
 
                     try
                     {

@@ -49,6 +49,13 @@ namespace PEV.Registry
 
         public static bool IsConditional(string name) => name != null && Conditional.Contains(name);
 
+        internal static void ClearChart()
+        {
+            if (TryGetNativeInfo(out var info))
+                foreach (var name in Injected) info.propertiesInfo.Remove(name);
+            Injected.Clear(); Conditional.Clear();
+        }
+
         /// <summary>
         /// The native AddDecoration metadata, or null if the table is not up yet.
         ///

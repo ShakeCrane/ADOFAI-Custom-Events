@@ -49,6 +49,25 @@ namespace PEV.Loading
             return report;
         }
 
+        /// <summary>Load packed event assets next to a chart, never from other charts or global directories.</summary>
+        public static LoadReport ScanChartDirectory(string root)
+        {
+            var report = new LoadReport();
+            if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) return report;
+            try
+            {
+                foreach (string path in Directory.GetFiles(root, "*.event", SearchOption.TopDirectoryOnly)
+                    .OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+                {
+                    if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                    { report.Errors.Add($"{Path.GetFileName(path)}: symbolic links are not chart assets"); continue; }
+                    AddFromPath(path, report);
+                }
+            }
+            catch (Exception e) { report.Errors.Add($"scan '{root}' failed: {e.Message}"); }
+            return report;
+        }
+
         private static void AddFromPath(string path, LoadReport report)
         {
             try
@@ -65,6 +84,8 @@ namespace PEV.Loading
                     report.Errors.Add($"{Path.GetFileName(path)}: {error}");
                     return;
                 }
+                if (ReadResource(path, manifest.Entry) == null)
+                    throw new InvalidDataException("event entry not found: " + manifest.Entry);
                 // A compound package is registered atomically: a broken included event must
                 // not silently leave half of a feature installed. All entries and resources
                 // use the same package root, for both ZIPs and directory packages.

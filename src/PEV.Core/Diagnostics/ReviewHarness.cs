@@ -132,7 +132,7 @@ return [run({op:'pixelPack',channels:[p,p,p,p]})];}";
             public static void Postfix()
             {
                 if (_results == null || _ran) return;
-                scnEditor.levelToOpenOnLoad = Path.Combine(
+                scnEditor.levelToOpenOnLoad = Environment.GetEnvironmentVariable("PEV_REVIEW_CHART") ?? Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
                     "A Dance of Fire and Ice", "Levels", "P3Test.adofai");
                 ADOBase.loader.LoadScene("scnEditor");
@@ -2719,6 +2719,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 {
                     File.WriteAllText(Path.Combine(package, "event.json"),
                         "{\"schemaVersion\":4,\"id\":\"example.parent\",\"includedEvents\":[\"child/state.json\"]}");
+                    File.WriteAllText(Path.Combine(package, "main.js"), "function create(){}");
                     File.WriteAllText(Path.Combine(package, "child", "state.json"),
                         "{\"schemaVersion\":1,\"id\":\"example.state\",\"entry\":\"child/state.js\"}");
                     string script = Path.Combine(package, "child", "state.js");

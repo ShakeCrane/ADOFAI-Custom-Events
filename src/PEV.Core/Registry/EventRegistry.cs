@@ -28,6 +28,7 @@ namespace PEV.Registry
 
         private static readonly Dictionary<LevelEventType, LevelEventInfo> InfoByType =
             new Dictionary<LevelEventType, LevelEventInfo>();
+        private static readonly Dictionary<LevelEventType, Sprite> OwnedIcons = new Dictionary<LevelEventType, Sprite>();
 
         public static IReadOnlyCollection<EventManifest> All => ById.Values;
 
@@ -39,6 +40,24 @@ namespace PEV.Registry
 
         public static bool TryGetInfo(LevelEventType type, out LevelEventInfo info) =>
             InfoByType.TryGetValue(type, out info);
+
+        /// <summary>Remove only metadata published by the previously open chart.</summary>
+        internal static void ClearChart()
+        {
+            foreach (var item in ByType)
+            {
+                string key = ((int)item.Key).ToString();
+                if (GCS.levelEventsInfo != null && InfoByType.TryGetValue(item.Key, out var info) &&
+                    GCS.levelEventsInfo.TryGetValue(key, out var current) && ReferenceEquals(current, info))
+                    GCS.levelEventsInfo.Remove(key);
+                if (GCS.levelEventTypeString != null && GCS.levelEventTypeString.TryGetValue(item.Key, out var mapped) && mapped == key)
+                    GCS.levelEventTypeString.Remove(item.Key);
+                if (GCS.levelEventIcons != null) GCS.levelEventIcons.Remove(item.Key);
+            }
+            foreach (var sprite in OwnedIcons.Values)
+                if (sprite != null) { var texture = sprite.texture; UnityEngine.Object.Destroy(sprite); if (texture != null) UnityEngine.Object.Destroy(texture); }
+            OwnedIcons.Clear(); ById.Clear(); ByType.Clear(); InfoByType.Clear();
+        }
 
         /// <summary>
         /// Adds manifests to the registry and, if the game is already running,
@@ -221,6 +240,7 @@ namespace PEV.Registry
             if (custom != null)
             {
                 GCS.levelEventIcons[type] = custom;
+                OwnedIcons[type] = custom;
                 return;
             }
 
