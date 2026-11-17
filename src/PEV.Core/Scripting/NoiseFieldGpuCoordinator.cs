@@ -84,9 +84,10 @@ namespace PEV.Scripting
         }
 
         internal bool Render(IReadOnlyList<NoiseFieldRenderer.Entry> entries, Camera camera, float songTime,
-            bool captureScene, Color fallbackBackground)
+            IReadOnlyDictionary<string, bool> settings, Color fallbackBackground)
         {
             if (camera == null || !camera.orthographic) throw new NotSupportedException("An orthographic camera is required");
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
             if (!EnsureImages()) return _staging.Committed;
             float aspect = Mathf.Min(camera.aspect, 16f / 9f);
             _plan.Build(entries, camera, aspect, _modes, GameBridge.Values);
@@ -156,7 +157,7 @@ namespace PEV.Scripting
                     }
                 }
                 ready &= group.Layer.Draw(camera, group.Masks, _images, aspect, songTime,
-                    captureScene, group.History.Visible, showDisabled, showActive,
+                    settings, group.History.Visible, showDisabled, showActive,
                     fallbackBackground, group.TouchPositions, positionCount,
                     plan.Colored ? group.Palette.Active : null, plan.Colored ? group.Palette.Disabled : null);
             }
@@ -170,6 +171,12 @@ namespace PEV.Scripting
             _staging.Commit(_plan.Groups);
             return true;
         }
+
+#if PEV_DIAGNOSTICS
+        internal bool Render(IReadOnlyList<NoiseFieldRenderer.Entry> entries, Camera camera, float songTime,
+            bool captureScene, Color fallbackBackground) =>
+            Render(entries, camera, songTime, new Dictionary<string, bool> { ["captureScene"] = captureScene }, fallbackBackground);
+#endif
 
         public void Dispose()
         {

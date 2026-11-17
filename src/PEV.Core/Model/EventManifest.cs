@@ -406,8 +406,7 @@ namespace PEV.Model
                     if (spec["binding"] != null)
                     {
                         if (spec["binding"].Type != JTokenType.String ||
-                            spec.Value<string>("binding") != "fx.field.captureScene" ||
-                            m.HostPrimitive != "fx.field" ||
+                            !System.Text.RegularExpressions.Regex.IsMatch(spec.Value<string>("binding"), "^[A-Za-z][A-Za-z0-9_.]{0,127}$") ||
                             m.GlobalSettings.Any(existing => existing.Binding == spec.Value<string>("binding")))
                         { error = "invalid or duplicate global setting binding"; return null; }
                         binding = spec.Value<string>("binding");

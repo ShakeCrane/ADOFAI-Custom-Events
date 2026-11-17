@@ -195,7 +195,7 @@ def validate(root, manifest, _included=False):
                 names.add(name)
                 if "binding" in setting:
                     binding = setting["binding"]
-                    if binding != "fx.field.captureScene" or primitive != "fx.field" or binding in bindings:
+                    if (not isinstance(binding, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.]{0,127}", binding) or binding in bindings):
                         problems.append("invalid or duplicate global setting binding")
                     else:
                         bindings.add(binding)

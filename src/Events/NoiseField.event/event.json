@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "id": "pev.noise-field",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
@@ -184,7 +184,6 @@
       "name": "captureScene",
       "type": "Bool",
       "default": true,
-      "binding": "fx.field.captureScene",
       "label": {
         "en": "Realtime scene sampling (disable for better performance)",
         "zh-CN": "实时场景采样（关闭可提高性能）"

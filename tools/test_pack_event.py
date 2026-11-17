@@ -102,12 +102,13 @@ class PackageValidationTests(unittest.TestCase):
         for replacement in (None, [], {"name": "__proto__", "type": "Bool", "default": True},
                             {"name": "capture", "type": "Bool", "default": "true"},
                             {"name": "capture", "type": "Int", "default": True},
-                            {"name": "capture", "type": "Bool", "default": True, "binding": "unknown"}):
+                            {"name": "capture", "type": "Bool", "default": True, "binding": "../unsafe"}):
             with self.subTest(replacement=replacement):
                 self.assertTrue(validate(self.root, dict(valid, globalSettings=[replacement])))
         self.assertTrue(validate(self.root, dict(valid, schemaVersion=2)))
         self.assertTrue(validate(self.root, dict(valid, apiVersion=1)))
         self.assertTrue(validate(self.root, dict(valid, globalSettings=[setting, setting])))
+        self.assertEqual([], validate(self.root, dict(valid, globalSettings=[dict(setting, binding="custom.effect.toggle")])))
 
     def test_decoration_defaults_are_scoped_and_validated(self):
         valid = dict(self.manifest, schemaVersion=3, decoration=True, decorationDefaults={"color": "ff5454", "tag": "noise"})

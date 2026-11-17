@@ -1004,6 +1004,13 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     ["output_main_texelSize"] = "output_shape_texelSize" };
                 foreach (var binding in (JArray)remapped["compositor"]["bindings"])
                     if (renamedInputs.TryGetValue(binding.Value<string>("input"), out var replacement)) binding["input"] = replacement;
+                foreach (var layer in (JArray)remapped["compositor"]["layers"])
+                    foreach (var variant in (JArray)layer["variants"])
+                        if (variant["when"] is JObject when && when["setting_captureScene"] != null)
+                        {
+                            when["setting_customOption"] = when["setting_captureScene"];
+                            when.Remove("setting_captureScene");
+                        }
                 byte[] alternateData = System.Text.Encoding.UTF8.GetBytes(remapped.ToString(Newtonsoft.Json.Formatting.None));
                 var alternateGraph = GpuGraphDefinition.Parse(alternateData);
                 var compositor = CompositorDefinition.Parse(alternateData);
@@ -1057,7 +1064,8 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     var first = colored ? activeColors : null; var second = colored ? auxiliaryColors : null;
                     legacy.Draw(camera, masks, displacement, spark, noise, 1f, 1f, captureScene, hover,
                         showDisabled, showActive, Color.black, positions, hover ? 1 : 0, first, second);
-                    current.Draw(camera, genericMasks, renamedImages, 1f, 1f, captureScene, hover,
+                    current.Draw(camera, genericMasks, renamedImages, 1f, 1f,
+                        new Dictionary<string, bool> { ["customOption"] = captureScene }, hover,
                         showDisabled, showActive, Color.black, positions, hover ? 1 : 0, first, second);
                     yield return null;
                     var before = capture(30); var after = capture(31);
@@ -1067,7 +1075,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     scenarios++;
                 }
                 Row("GPU-compositor-parity", scenarios == 24 && visibleScenarios == 24 ? "PASS" : "FAIL",
-                    scenarios + " material and layer combinations; " + visibleScenarios + " visibly rendered; custom image/output names");
+                    scenarios + " material and layer combinations; " + visibleScenarios + " visibly rendered; custom image/output/setting names");
             }
             finally
             {
@@ -1344,7 +1352,14 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 var alternate = capture();
                 Row("GPU-real-capture-samples", !after[0].Equals(alternate[0]) ? "PASS" : "FAIL",
                     $"blue {after[0]}; red {alternate[0]}");
-                coordinator.Render(entries, camera, 1f, false, Color.black);
+                var store = new PEV.Core.EventGlobalSettings();
+                var settings = new Dictionary<string, bool>();
+                store.CopyBooleans(manifest, settings);
+                bool defaultOn = settings.TryGetValue("captureScene", out var initial) && initial;
+                var captureSetting = manifest.GlobalSettings.Single(s => s.Name == "captureScene");
+                store.Set(manifest, captureSetting, false);
+                store.CopyBooleans(manifest, settings);
+                coordinator.Render(entries, camera, 1f, settings, Color.black);
                 var noCaptureRed = capture();
                 background.color = Color.blue;
                 var noCaptureBlue = capture();
@@ -1355,6 +1370,8 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 bool sameBlend = Math.Abs((nr.r - nb.r) - (nb.b - nr.b)) <= 2 && Math.Abs(nr.g - nb.g) <= 2;
                 Row("GPU-real-no-capture-background", sameBlend ? "PASS" : "FAIL",
                     $"red {noCaptureRed[0]}; blue {noCaptureBlue[0]}");
+                Row("GPU-real-event-setting", defaultOn && settings.TryGetValue("captureScene", out var changedSetting) &&
+                    !changedSetting && !noCaptureBlue[0].Equals(after[0]) ? "PASS" : "FAIL", "package-declared setting drives material selection");
                 entry.FillColor=Color.green;
                 Color32[] colored=null;
                 float coloredDeadline=Time.realtimeSinceStartup+10f;
@@ -1592,12 +1609,12 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 EventManifest.Parse("{\"id\":\"x\",\"schemaVersion\":3,\"apiVersion\":2,\"globalSettings\":[{\"name\":\"__proto__\",\"type\":\"Bool\",\"default\":true}]}", "", out _) == null);
             Check("GLOBAL-primitive-binding", () =>
             {
-                const string json = "{\"id\":\"another.author\",\"schemaVersion\":3,\"apiVersion\":2,\"hostPrimitive\":\"fx.field\",\"globalSettings\":[{\"name\":\"authorChoice\",\"type\":\"Bool\",\"default\":true,\"binding\":\"fx.field.captureScene\"}]}";
+                const string json = "{\"id\":\"another.author\",\"schemaVersion\":3,\"apiVersion\":2,\"globalSettings\":[{\"name\":\"authorChoice\",\"type\":\"Bool\",\"default\":true,\"binding\":\"custom.effect.toggle\"}]}";
                 var manifest = EventManifest.Parse(json, "", out _);
                 var store = new PEV.Core.EventGlobalSettings();
-                if (manifest == null || !store.GetBoundBool(manifest, "fx.field.captureScene", false)) return false;
+                if (manifest == null || !store.GetBoundBool(manifest, "custom.effect.toggle", false)) return false;
                 store.Set(manifest, manifest.GlobalSettings[0], false);
-                return !store.GetBoundBool(manifest, "fx.field.captureScene", true) &&
+                return !store.GetBoundBool(manifest, "custom.effect.toggle", true) &&
                     store.GetBoundBool(manifest, "not.declared", true);
             });
             Check("FIELD-event-uniform-declarations", () =>

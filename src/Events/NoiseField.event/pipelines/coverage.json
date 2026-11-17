@@ -391,64 +391,64 @@
             "shader": "activeNoCapture",
             "when": {
               "colored": false,
-              "capture": false,
-              "hover": false
+              "hover": false,
+              "setting_captureScene": false
             }
           },
           {
             "shader": "hoverNoCapture",
             "when": {
               "colored": false,
-              "capture": false,
-              "hover": true
+              "hover": true,
+              "setting_captureScene": false
             }
           },
           {
             "shader": "activeCapture",
             "when": {
               "colored": false,
-              "capture": true,
-              "hover": false
+              "hover": false,
+              "setting_captureScene": true
             }
           },
           {
             "shader": "hoverCapture",
             "when": {
               "colored": false,
-              "capture": true,
-              "hover": true
+              "hover": true,
+              "setting_captureScene": true
             }
           },
           {
             "shader": "activeNoCaptureColored",
             "when": {
               "colored": true,
-              "capture": false,
-              "hover": false
+              "hover": false,
+              "setting_captureScene": false
             }
           },
           {
             "shader": "hoverNoCaptureColored",
             "when": {
               "colored": true,
-              "capture": false,
-              "hover": true
+              "hover": true,
+              "setting_captureScene": false
             }
           },
           {
             "shader": "activeCaptureColored",
             "when": {
               "colored": true,
-              "capture": true,
-              "hover": false
+              "hover": false,
+              "setting_captureScene": true
             }
           },
           {
             "shader": "hoverCaptureColored",
             "when": {
               "colored": true,
-              "capture": true,
-              "hover": true
+              "hover": true,
+              "setting_captureScene": true
             }
           }
         ],

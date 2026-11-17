@@ -60,6 +60,13 @@ namespace PEV.Core
             return result;
         }
 
+        internal void CopyBooleans(EventManifest manifest, Dictionary<string, bool> destination)
+        {
+            destination.Clear();
+            if (manifest != null)
+                foreach (var setting in manifest.GlobalSettings) destination[setting.Name] = Get(manifest, setting);
+        }
+
         internal void Save(string path)
         {
             if (_loadFailed) throw new InvalidOperationException("Settings file could not be read; refusing to overwrite it");

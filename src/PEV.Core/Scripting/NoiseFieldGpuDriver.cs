@@ -20,6 +20,7 @@ namespace PEV.Scripting
         private readonly Dictionary<EventManifest, List<NoiseFieldRenderer.Entry>> _groups =
             new Dictionary<EventManifest, List<NoiseFieldRenderer.Entry>>();
         private readonly HashSet<EventManifest> _ready = new HashSet<EventManifest>();
+        private readonly Dictionary<string, bool> _settings = new Dictionary<string, bool>(StringComparer.Ordinal);
 
         internal void Tick(bool playing, double songTime)
         {
@@ -51,8 +52,8 @@ namespace PEV.Scripting
                     {
                         if (!_coordinators.TryGetValue(provider, out var coordinator))
                             _coordinators.Add(provider, coordinator = new NoiseFieldGpuCoordinator(provider));
-                        bool capture = Plugin.EventSettings.GetBoundBool(provider, "fx.field.captureScene", true);
-                        if (coordinator.Render(pair.Value, camera, time, capture, NoiseFieldRenderer.SceneBackground()))
+                        Plugin.EventSettings.CopyBooleans(provider, _settings);
+                        if (coordinator.Render(pair.Value, camera, time, _settings, NoiseFieldRenderer.SceneBackground()))
                             _ready.Add(provider);
                     }
                     catch (Exception e)
@@ -90,6 +91,7 @@ namespace PEV.Scripting
             _entries.Clear();
             _groups.Clear();
             _ready.Clear();
+            _settings.Clear();
             // The owning host destroys all field entries immediately after disposal.
         }
     }

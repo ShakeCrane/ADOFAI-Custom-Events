@@ -20,19 +20,20 @@ namespace PEV.Scripting
         internal static void ApplyUniforms(Material material, IReadOnlyList<FieldUniformSpec> uniforms) =>
             SpriteCompositor.ApplyUniforms(material, uniforms);
         internal bool Draw(Camera camera, NoiseFieldGpuMasks masks, IReadOnlyDictionary<string, Texture2D> images,
-            float chartAspect, float songTime, bool capture,
+            float chartAspect, float songTime, IReadOnlyDictionary<string, bool> settings,
             bool hover, bool showDisabled, bool showActive, Color fallbackBackground,
             Vector4[] touchPositions, int touchCount, Texture activeColors, Texture disabledColors)
         {
             if (camera == null || !camera.orthographic || camera.pixelWidth <= 0 || camera.pixelHeight <= 0 ||
-                masks == null || images == null)
+                masks == null || images == null || settings == null)
                 throw new ArgumentException("A valid camera and completed field resources are required");
             if (touchCount < 0 || touchCount > FieldContactController.Capacity ||
                 (touchCount > 0 && (touchPositions == null || touchPositions.Length < touchCount)))
                 throw new ArgumentOutOfRangeException(nameof(touchCount));
             float width = camera.pixelWidth, height = camera.pixelHeight;
             _conditions["showSecondary"] = showDisabled; _conditions["showPrimary"] = showActive;
-            _conditions["capture"] = capture; _conditions["hover"] = hover;
+            foreach (var setting in settings) _conditions["setting_" + setting.Key] = setting.Value;
+            _conditions["hover"] = hover;
             _conditions["colored"] = activeColors != null && disabledColors != null;
             _conditions["hasContacts"] = touchCount > 0;
             _inputs["view"] = new Vector4(width, height, chartAspect, 0);
