@@ -90,6 +90,10 @@ def main():
         shutil.copy2(dll, stage)
         shutil.copy2(os.path.join(ROOT, "LICENSE"), stage)
         shutil.copy2(os.path.join(ROOT, "docs", "INSTALL-zh-CN.md"), stage)
+        license_dir = os.path.join(stage, "third-party-licenses")
+        os.makedirs(license_dir)
+        for name in ("Jint-LICENSE.txt", "Acornima-LICENSE.txt"):
+            shutil.copy2(os.path.join(ROOT, "docs", "third-party", name), license_dir)
         for dep in ("Jint.dll", "Acornima.dll"):
             src = os.path.join(PACKAGES, dep)
             if not os.path.isfile(src):

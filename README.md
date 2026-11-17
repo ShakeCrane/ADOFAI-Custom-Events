@@ -166,4 +166,6 @@ GPUs and full frame-by-frame comparison in Unity remain to be verified. See
 
 ## Licence
 
-Source is provided as-is for the ADOFAI modding community.
+The project is distributed under [AGPL-3.0](LICENSE). The independent noise-field
+package includes assets and shader work derived from Phira-Pro; see the notices in
+the package and the [reference record](docs/NOISEFIELD-REFERENCE.md).

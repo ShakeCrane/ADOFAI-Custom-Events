@@ -27,6 +27,9 @@ class SplitReleaseTest(unittest.TestCase):
             (packages / "Acornima.dll").write_bytes(b"acornima")
             (root / "LICENSE").write_text("license", encoding="utf-8")
             (docs / "INSTALL-zh-CN.md").write_text("install", encoding="utf-8")
+            (docs / "third-party").mkdir()
+            for name in ("Jint-LICENSE.txt", "Acornima-LICENSE.txt"):
+                (docs / "third-party" / name).write_text("third party license", encoding="utf-8")
             for name in ("NoiseField.event",):
                 folder = events / name
                 folder.mkdir(parents=True)
@@ -44,6 +47,8 @@ class SplitReleaseTest(unittest.TestCase):
                 original = core_zip.read_bytes()
                 with zipfile.ZipFile(core_zip) as archive:
                     self.assertIn("PEV.Core/PEV.Core.dll", archive.namelist())
+                    self.assertIn("PEV.Core/third-party-licenses/Jint-LICENSE.txt", archive.namelist())
+                    self.assertIn("PEV.Core/third-party-licenses/Acornima-LICENSE.txt", archive.namelist())
                     self.assertFalse(any(name.startswith("PEV.Core/Events/")
                                          for name in archive.namelist()))
                 for name in ("NoiseField.event",):
