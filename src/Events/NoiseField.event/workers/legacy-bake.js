@@ -5,6 +5,19 @@ function computeVector(input) {
   input.profile = bakeProfile;
   if (input.stage !== 'coverage' && input.stage !== 'effects' && input.stage !== 'frame') throw Error('unknown bake stage');
   var f = Math.fround, pi = f(Math.PI);
+  // Interpret the legacy decoration request inside the event, not in the host's frame executor.
+  if (input.request) {
+    var request=input.request, margin=Math.max(0,f(request.Margin));
+    var speed=Math.max(1,f(request.EvolveSpeed));
+    input.screenPixelWidth=request.ScreenPixelWidth>0?request.ScreenPixelWidth:input.width;
+    input.time=f(f(input.frameIndex)/speed); input.loopPeriod=f(f(input.frameCount)/speed);
+    input.totalWidth=Math.max(f(.001),f(f(request.WidthWorld)+f(margin*f(2))));
+    input.totalHeight=Math.max(f(.001),f(f(request.HeightWorld)+f(margin*f(2))));
+    input.seed=request.Seed; input.pieces=request.pieces;
+    input.options={edgeColor:request.EdgeColor,sceneColor:request.SceneColor,
+      fillOpacity:request.FillOpacity,fillStrength:request.FillStrength,exposure:request.Exposure,
+      edgeOpacity:request.EdgeOpacity,glowOpacity:request.GlowOpacity,sparkOpacity:request.SparkOpacity,glitch:request.Glitch};
+  }
   function roundEven(value) {
     var floor=Math.floor(value), fraction=value-floor;
     return fraction<.5 ? floor : fraction>.5 ? floor+1 : (floor%2===0 ? floor : floor+1);
