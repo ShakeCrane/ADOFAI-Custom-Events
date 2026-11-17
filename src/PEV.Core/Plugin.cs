@@ -36,6 +36,24 @@ namespace PEV.Core
             _logPath = Path.Combine(entry.Path, "pev-core.log");
             TryResetLog();
 
+            EventsDirectory = Path.Combine(entry.Path, "Events");
+            Directory.CreateDirectory(EventsDirectory);
+
+            var report = EventLoader.Scan(new[] { EventsDirectory });
+            Log($"scan: {report.Summary()}");
+            foreach (var m in report.Loaded)
+                Log($"  {m.Id} v{m.Version} ({m.Params.Count} params) <- {Path.GetFileName(m.SourcePath)}");
+            foreach (var e in report.Errors)
+                Log("  ERROR " + e);
+
+            // With no usable event packages, leave the game's metadata, editor, level
+            // serialization and runtime untouched. Installing Core alone is inert.
+            if (report.Loaded.Count == 0)
+            {
+                Log("no event packages loaded; core dormant, no game patches");
+                return true;
+            }
+
             EventSettings = new EventGlobalSettings();
             _settingsPath = Path.Combine(entry.Path, "event-settings.json");
             try { EventSettings.Load(_settingsPath); }
@@ -43,21 +61,11 @@ namespace PEV.Core
             entry.OnGUI = OnGUI;
             entry.OnSaveGUI = OnSaveGUI;
 
-            EventsDirectory = Path.Combine(entry.Path, "Events");
-            Directory.CreateDirectory(EventsDirectory);
-
-            var report = EventLoader.Scan(new[] { EventsDirectory });
             // The placeholder type is built in, never shipped as a package: it exists so
             // unresolved payloads stay visible on the track instead of quietly vanishing.
             var builtIn = new List<PEV.Model.EventManifest> { PEV.Registry.PlaceholderEvent.Build() };
             builtIn.AddRange(report.Loaded);
             EventRegistry.RegisterAll(builtIn, w => Log("registry: " + w));
-
-            Log($"scan: {report.Summary()}");
-            foreach (var m in report.Loaded)
-                Log($"  {m.Id} v{m.Version} ({m.Params.Count} params) <- {Path.GetFileName(m.SourcePath)}");
-            foreach (var e in report.Errors)
-                Log("  ERROR " + e);
 
             new Harmony(HarmonyId).PatchAll(Assembly.GetExecutingAssembly());
 #if PEV_DIAGNOSTICS
