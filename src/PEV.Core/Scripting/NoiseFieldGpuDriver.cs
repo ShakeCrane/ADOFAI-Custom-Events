@@ -9,6 +9,10 @@ namespace PEV.Scripting
     /// <summary>Field rendering isolated by package provider, with per-provider fallback.</summary>
     internal sealed class NoiseFieldGpuDriver : IDisposable
     {
+#if PEV_DIAGNOSTICS
+        internal static bool SuppressForFallbackTest;
+        internal static readonly HashSet<EventManifest> TestFaults = new HashSet<EventManifest>();
+#endif
         private readonly Dictionary<EventManifest, NoiseFieldGpuCoordinator> _coordinators =
             new Dictionary<EventManifest, NoiseFieldGpuCoordinator>();
         private readonly HashSet<EventManifest> _faulted = new HashSet<EventManifest>();
@@ -19,6 +23,9 @@ namespace PEV.Scripting
 
         internal void Tick(bool playing, double songTime)
         {
+#if PEV_DIAGNOSTICS
+            if (SuppressForFallbackTest) return;
+#endif
             NoiseFieldRenderer.CopyEntriesTo(_entries);
             _groups.Clear();
             foreach (var entry in _entries)
@@ -50,6 +57,9 @@ namespace PEV.Scripting
                     }
                     catch (Exception e)
                     {
+#if PEV_DIAGNOSTICS
+                        TestFaults.Add(provider);
+#endif
                         _faulted.Add(provider);
                         Plugin.Log("experimental field GPU failed for " + provider.Id + "; restoring its legacy renderer: " + e);
                         DisposeCoordinator(provider);

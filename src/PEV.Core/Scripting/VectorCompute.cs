@@ -32,18 +32,19 @@ namespace PEV.Scripting
         private readonly Dictionary<string, PixelKernel.Compiled> _pixelPrograms = new Dictionary<string, PixelKernel.Compiled>(StringComparer.Ordinal);
         private readonly Dictionary<string, PixelResource> _resources = new Dictionary<string, PixelResource>(StringComparer.Ordinal);
         private readonly int _width, _height, _count;
+        private readonly int _timeoutSeconds;
         private readonly float _aspect;
         private readonly Action _checkpoint;
         private int _generation, _outputSlot = 1, _outputIndex, _commands;
         private long _allocated, _work, _pixelWork, _deadline;
         private CancellationToken _cancellation;
 
-        internal VectorCompute(int width, int height, float aspect, IReadOnlyDictionary<string, PixelResource> resources = null)
+        internal VectorCompute(int width, int height, float aspect, IReadOnlyDictionary<string, PixelResource> resources = null, int timeoutSeconds = 2)
         {
             if (width < 1 || height < 1 || width > 4096 || height > 4096 ||
-                (long)width * height > 1048576 || !Finite(aspect) || aspect <= 0f || aspect > 16f)
+                (long)width * height > 1048576 || !Finite(aspect) || aspect <= 0f || aspect > 16f || timeoutSeconds < 1 || timeoutSeconds > 15)
                 throw new ArgumentOutOfRangeException("invalid vector dimensions or aspect");
-            _width = width; _height = height; _count = width * height; _aspect = aspect;
+            _width = width; _height = height; _count = width * height; _aspect = aspect; _timeoutSeconds = timeoutSeconds;
             _checkpoint = Checkpoint;
             if (resources != null)
             {
@@ -78,7 +79,7 @@ namespace PEV.Scripting
             _generation = _generation >= (int.MaxValue / MaxBuffers - 1) ? 1 : _generation + 1;
             _outputSlot = 1 - _outputSlot; _outputIndex = 0; _commands = 0; _work = _pixelWork = 0;
             _cancellation = cancellation;
-            _deadline = Stopwatch.GetTimestamp() + 2 * Stopwatch.Frequency;
+            _deadline = Stopwatch.GetTimestamp() + _timeoutSeconds * Stopwatch.Frequency;
             Checkpoint();
         }
 
@@ -346,7 +347,7 @@ namespace PEV.Scripting
                 !(root["uniforms"] is JArray uniforms) || uniforms.Count > 128)
                 throw new ArgumentException("invalid pixel kernel command");
             long work = (long)width * height * program.Count;
-            if (work < 0 || _pixelWork > 350000000L - work) throw new InvalidOperationException("pixel work limit exceeded");
+            if (work < 0 || _pixelWork > 1500000000L - work) throw new InvalidOperationException("pixel work limit exceeded");
             _pixelWork += work; Checkpoint();
             var inputs = new PixelPlane[sources.Count];
             for (int i = 0; i < inputs.Length; i++)
@@ -372,7 +373,7 @@ namespace PEV.Scripting
                 _pixelPrograms.Add(key, kernel = PixelKernel.Compile(program, inputs.Length, values.Length));
             }
             var result = FloatPlane(width, height);
-            kernel.Execute(inputs, values, result.Values, width, height, _cancellation, _checkpoint);
+            kernel.Execute(inputs, values, result.Values, width, height, _cancellation, _checkpoint, _timeoutSeconds);
             return Put(result);
         }
         private int PixelPack(JObject root)
@@ -402,6 +403,38 @@ namespace PEV.Scripting
             }
             return Put(new ResultBuffer { Bytes = dst });
         }
+        private int PixelShiftRows(JObject root)
+        {
+            var source = Get<ResultBuffer>(Integer(root, "source", 0, int.MaxValue));
+            if (!(root["shifts"] is JArray shifts) || shifts.Count != _height || _outputIndex >= MaxOutputs)
+                throw new ArgumentException("invalid pixel row shifts");
+            var parsed = new int[_height];
+            for (int y = 0; y < _height; y++)
+            {
+                if (shifts[y].Type != JTokenType.Integer) throw new ArgumentException("invalid pixel row shift");
+                long shift = shifts[y].Value<long>();
+                if (shift < -_width || shift > _width) throw new ArgumentOutOfRangeException("pixel row shift");
+                parsed[y] = (int)shift;
+            }
+            Charge(_count);
+            var dst = _outputs[_outputSlot][_outputIndex];
+            if (dst == null) { Reserve((long)_count * 4); _outputs[_outputSlot][_outputIndex] = dst = new byte[_count * 4]; }
+            _outputIndex++;
+            for (int y = 0; y < _height; y++)
+            {
+                if ((y & 31) == 0) Checkpoint();
+                for (int x = 0; x < _width; x++)
+                {
+                    int sx = x + parsed[y];
+                    if (sx < 0) sx += _width;
+                    if (sx >= _width) sx -= _width;
+                    int sourceOffset = (y * _width + sx) * 4, targetOffset = (y * _width + x) * 4;
+                    dst[targetOffset] = source.Bytes[sourceOffset]; dst[targetOffset + 1] = source.Bytes[sourceOffset + 1];
+                    dst[targetOffset + 2] = source.Bytes[sourceOffset + 2]; dst[targetOffset + 3] = source.Bytes[sourceOffset + 3];
+                }
+            }
+            return Put(new ResultBuffer { Bytes = dst });
+        }
 
         internal string Apply(string input)
         {
@@ -427,6 +460,7 @@ namespace PEV.Scripting
                 case "pixelResource": result = PixelResourceHandle(root); break;
                 case "pixelRun": result = PixelRun(root); break;
                 case "pixelPack": result = PixelPack(root); break;
+                case "pixelShiftRows": result = PixelShiftRows(root); break;
                 default: throw new ArgumentException("unknown vector operation");
             }
             return result.ToString(CultureInfo.InvariantCulture);

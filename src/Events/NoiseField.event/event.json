@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "id": "pev.noise-field",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
@@ -640,7 +640,8 @@
   ],
   "vectorPrograms": {
     "palette": "workers/palette.js",
-    "contacts": "workers/contacts.js"
+    "contacts": "workers/contacts.js",
+    "legacyBake": "workers/legacy-bake.js"
   },
   "computeGraphs": {
     "coverage": "pipelines/coverage.json"

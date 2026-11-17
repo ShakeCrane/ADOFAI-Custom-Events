@@ -81,7 +81,7 @@ namespace PEV.Diagnostics
             Check("PIXEL-kernel-mono-performance", CheckPixelKernelPerformance);
             CheckKeys();
             yield return CheckTextures();
-            yield return CheckFields();
+            yield return CheckFieldsWithoutGpuDriver();
             string vectorProbe = Environment.GetEnvironmentVariable("PEV_TEST_VECTOR_SCRIPT");
             if (!string.IsNullOrEmpty(vectorProbe))
             {
@@ -89,12 +89,294 @@ namespace PEV.Diagnostics
                 yield return CheckVectorWorker();
                 yield return CheckPackagedVectorWorker();
                 yield return CheckPackagePixelResources();
+                yield return CheckCpuCoverageProgram();
+                yield return CheckCpuGlitchProgram();
+                yield return CheckCpuBakePerformance();
+                yield return CheckCpuBakeCancellation();
+                if (Environment.GetEnvironmentVariable("PEV_TEST_BIG_CPU") == "1") yield return CheckCpuBakeLarge();
             }
             if (Environment.GetEnvironmentVariable("PEV_TEST_REAL_FIELD_BUNDLE") == "1")
                 yield return CheckRealFieldBundle();
             yield return ProbeGlobalSettingsGui();
             CheckEditorPlacement(editor);
             Row("DONE", "ok");
+        }
+
+        private static IEnumerator CheckCpuBakeCancellation()
+        {
+            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest)) yield break;
+            var request = Request(); request.Provider = manifest; request.FrameCount = 96; request.TargetPixelWidth = 768;
+            request.Pieces = new[] { new NoiseTextureFactory.Piece { Half = new Vector2(.8f,.6f), Rotation = 27f } };
+            var frames = NoiseTextureFactory.Begin(request, out string error);
+            if (frames == null) { Row("PIXEL-package-bake-cancellation", "FAIL", error); yield break; }
+            float start = Time.realtimeSinceStartup;
+            while (Time.realtimeSinceStartup - start < .1f && frames.Worker.IsAlive) yield return null;
+            NoiseTextureFactory.Release(frames);
+            float canceled = Time.realtimeSinceStartup, deadline = canceled + 3f;
+            while (frames.Worker.IsAlive && Time.realtimeSinceStartup < deadline) yield return null;
+            bool ok = !frames.Worker.IsAlive && frames.Cancelled && frames.Pixels == null && NoiseTextureFactory.CachedFrameSets == 0;
+            Row("PIXEL-package-bake-cancellation", ok ? "PASS" : "FAIL", $"worker stopped {(Time.realtimeSinceStartup-canceled)*1000:F0} ms after release");
+        }
+
+        private static IEnumerator CheckCpuBakeLarge()
+        {
+            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest)) yield break;
+            var request = Request(); request.Provider = manifest; request.ScreenPixelWidth = 1024; request.FrameCount = 2;
+            request.EvolveSpeed = 24; request.EdgeColor = new Color(.8f,.2f,.4f); request.SceneColor = new Color(.1f,.3f,.7f);
+            request.FillStrength = .7f; request.Exposure = .15f; request.SparkOpacity = .8f;
+            request.Pieces = new[] { new NoiseTextureFactory.Piece { Half = new Vector2(.8f,.6f), Rotation = 27f } };
+            var frames = new Color32[2][];
+            using (var cancellation = new System.Threading.CancellationTokenSource())
+            {
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                var task = System.Threading.Tasks.Task.Run(() => CpuPackageBake.Render(request, frames, 1024, 1024, cancellation.Token));
+                float deadline = Time.realtimeSinceStartup + 30f;
+                while (!task.IsCompleted && Time.realtimeSinceStartup < deadline) yield return null;
+                if (!task.IsCompleted) cancellation.Cancel();
+                watch.Stop();
+                bool ok = task.IsCompleted && !task.IsFaulted && frames.All(frame => frame != null && frame.Length == 1024 * 1024);
+                Row("PIXEL-package-bake-large", ok ? "PASS" : "FAIL", $"2 frames 1024x1024: {watch.Elapsed.TotalMilliseconds:F0} ms; {task.Exception}");
+            }
+        }
+
+        private static IEnumerator CheckFieldsWithoutGpuDriver()
+        {
+            NoiseFieldGpuDriver.SuppressForFallbackTest = true;
+            var test = CheckFields();
+            try
+            {
+                while (test.MoveNext()) yield return test.Current;
+            }
+            finally
+            {
+                (test as IDisposable)?.Dispose();
+                NoiseFieldGpuDriver.SuppressForFallbackTest = false;
+            }
+        }
+
+        private static IEnumerator CheckCpuBakePerformance()
+        {
+            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest)) yield break;
+            var request = Request(); request.Provider = manifest; request.ScreenPixelWidth = 640; request.FrameCount = 96;
+            request.EvolveSpeed = 24; request.EdgeColor = new Color(.8f,.2f,.4f); request.SceneColor = new Color(.1f,.3f,.7f);
+            request.FillStrength = .7f; request.Exposure = .15f; request.SparkOpacity = .8f;
+            request.Pieces = new[] { new NoiseTextureFactory.Piece { Half = new Vector2(.8f,.6f), Rotation = 27f } };
+            var frames = new Color32[96][];
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var task = System.Threading.Tasks.Task.Run(() => CpuPackageBake.Render(request, frames, 192, 132, System.Threading.CancellationToken.None));
+            float deadline = Time.realtimeSinceStartup + 20f, previous = Time.realtimeSinceStartup, worstFrame = 0;
+            while (!task.IsCompleted && Time.realtimeSinceStartup < deadline)
+            {
+                yield return null;
+                float now = Time.realtimeSinceStartup; worstFrame = Math.Max(worstFrame, now - previous); previous = now;
+            }
+            watch.Stop();
+            bool ok = task.IsCompleted && !task.IsFaulted && frames.All(frame => frame != null && frame.Length == 192 * 132);
+            Row("PIXEL-package-bake-performance", ok ? "PASS" : "FAIL",
+                $"96 frames 192x132: {watch.Elapsed.TotalMilliseconds:F0} ms wall, worst observed game frame {worstFrame * 1000:F1} ms; {task.Exception}");
+        }
+
+        private static IEnumerator CheckCpuGlitchProgram()
+        {
+            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest) || !manifest.VectorPrograms.TryGetValue("legacyBake", out var path))
+            { Row("PIXEL-package-glitch-parity", "FAIL", "package CPU program is missing"); yield break; }
+            var samples = LegacyFieldTextureSet.Load(manifest, out string error);
+            if (samples?.Profile == null) { Row("PIXEL-package-glitch-parity", "FAIL", error); yield break; }
+            const int texW = 80, texH = 61, frameCount = 4;
+            var req = Request(); req.Provider = manifest; req.Samples = samples; req.WidthWorld = 2.3f; req.HeightWorld = 1.8f;
+            req.Margin = .25f; req.ScreenPixelWidth = 320; req.EvolveSpeed = 24f; req.Seed = 123456; req.Glitch = .9f;
+            req.EdgeColor = new Color(.8f, .2f, .4f); req.SceneColor = new Color(.1f, .3f, .7f);
+            req.FillStrength = .7f; req.Exposure = .15f; req.SparkOpacity = .8f;
+            req.Pieces = new[] { new NoiseTextureFactory.Piece { Offset = new Vector2(.1f,.1f), Half = new Vector2(.8f,.6f), Rotation = 27f } };
+            var expected = new Color32[frameCount][];
+            var baked = new Color32[frameCount][];
+            var reference = System.Threading.Tasks.Task.Run(() =>
+                LegacyCpuBakeReference.RenderPixels(req, expected, texW, texH, () => false));
+            var load = System.Threading.Tasks.Task.Run(() => PixelResourceLoader.Load(manifest, System.Threading.CancellationToken.None));
+            var bakeTime = System.Diagnostics.Stopwatch.StartNew();
+            var bake = System.Threading.Tasks.Task.Run(() => CpuPackageBake.Render(req, baked, texW, texH, System.Threading.CancellationToken.None));
+            float deadline = Time.realtimeSinceStartup + 15f;
+            while ((!reference.IsCompleted || !load.IsCompleted || !bake.IsCompleted) && Time.realtimeSinceStartup < deadline) yield return null;
+            bakeTime.Stop();
+            if (!reference.IsCompleted || reference.IsFaulted || !load.IsCompleted || load.IsFaulted || !bake.IsCompleted || bake.IsFaulted)
+            { Row("PIXEL-package-glitch-parity", "FAIL", reference.Exception?.ToString() ?? load.Exception?.ToString() ?? bake.Exception?.ToString()); yield break; }
+            bool bakeMatches = Enumerable.Range(0, frameCount).All(i => baked[i] != null && baked[i].SequenceEqual(expected[i]));
+            Row("PIXEL-package-bake-scheduler", bakeMatches ? "PASS" : "FAIL", $"{frameCount} frames {texW}x{texH}, {bakeTime.Elapsed.TotalMilliseconds:F0} ms");
+            string source = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, path, 262144));
+            var profile = manifest.LegacyFieldProfile;
+            int cw = Mathf.Clamp(Mathf.RoundToInt(req.ScreenPixelWidth * samples.Profile.ComposeScale), 1, texW);
+            int ch = Mathf.Clamp(Mathf.RoundToInt(cw * (float)texH / texW), 1, texH);
+            int ew = Mathf.Clamp(Mathf.Max(2, cw * 2), 1, texW), eh = Mathf.Clamp(Mathf.Max(2, ch * 2), 1, texH);
+            int displaced = 0;
+            using (var worker = new VectorWorker<string>(source, x => x, (a,b) => a == b, (w,h,a,x) => x, load.Result))
+            {
+                for (int k = 0; k < frameCount; k++)
+                {
+                    float time = k / req.EvolveSpeed;
+                    string payload = Newtonsoft.Json.JsonConvert.SerializeObject(new {
+                        stage = "frame", width = texW, height = texH, screenPixelWidth = req.ScreenPixelWidth,
+                        time, loopPeriod = frameCount / req.EvolveSpeed,
+                        frameCount, frameIndex = k, seed = req.Seed,
+                        totalWidth = req.WidthWorld + req.Margin * 2f, totalHeight = req.HeightWorld + req.Margin * 2f,
+                        profile = profile.ToDictionary(p => p.Key, p => p.Value.Length == 1 ? (object)p.Value[0] : p.Value),
+                        options = new { edgeColor = new[] { req.EdgeColor.r, req.EdgeColor.g, req.EdgeColor.b },
+                            sceneColor = new[] { req.SceneColor.r, req.SceneColor.g, req.SceneColor.b },
+                            fillOpacity = req.FillOpacity, fillStrength = req.FillStrength, exposure = req.Exposure,
+                            edgeOpacity = req.EdgeOpacity, glowOpacity = req.GlowOpacity, sparkOpacity = req.SparkOpacity, glitch = req.Glitch },
+                        pieces = req.Pieces.Select(p => new { x = p.Offset.x, y = p.Offset.y, hx = p.Half.x, hy = p.Half.y,
+                            rotation = p.Rotation, circle = p.Circle }).ToArray()
+                    });
+                    bool ready = worker.Update(texW, texH, 1f, payload);
+                    deadline = Time.realtimeSinceStartup + 10f;
+                    while (!ready && worker.LastError == null && Time.realtimeSinceStartup < deadline)
+                    { yield return null; ready = worker.Update(texW, texH, 1f, payload); }
+                    if (!ready || worker.Latest == null)
+                    { Row("PIXEL-package-glitch-parity", "FAIL", "frame " + k + ": " + worker.LastError); yield break; }
+                    var raw = new Color32[texW * texH];
+                    req.LoopPeriod = frameCount / req.EvolveSpeed;
+                    NoiseComposer.Frame.Build(req.Pieces, req, texW, texH, time, 0, frameCount).RenderRows(raw, 0, texH);
+                    byte[] actual = worker.Latest[0]; int differences = 0;
+                    for (int i = 0; i < expected[k].Length; i++)
+                    {
+                        var pixel = expected[k][i];
+                        if (actual[4*i] != pixel.r || actual[4*i+1] != pixel.g || actual[4*i+2] != pixel.b || actual[4*i+3] != pixel.a) differences++;
+                        if (!pixel.Equals(raw[i])) displaced++;
+                    }
+                    if (differences != 0)
+                    { Row("PIXEL-package-glitch-parity", "FAIL", $"frame {k}, {differences} pixels differ"); yield break; }
+                }
+            }
+            Row("PIXEL-package-glitch-parity", displaced > 0 ? "PASS" : "FAIL", $"{frameCount} frames, {displaced} pixels actually shifted");
+        }
+
+        private static IEnumerator CheckCpuCoverageProgram()
+        {
+            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest) || !manifest.VectorPrograms.TryGetValue("legacyBake", out var path))
+            { Row("PIXEL-package-coverage-parity", "FAIL", "package CPU program is missing"); yield break; }
+            byte[] script = EventLoader.ReadResource(manifest.SourcePath, path, 262144);
+            var load = System.Threading.Tasks.Task.Run(() => PixelResourceLoader.Load(manifest, System.Threading.CancellationToken.None));
+            float deadline = Time.realtimeSinceStartup + 10f;
+            while (!load.IsCompleted && Time.realtimeSinceStartup < deadline) yield return null;
+            if (!load.IsCompleted || load.IsFaulted || script == null)
+            { Row("PIXEL-package-coverage-parity", "FAIL", load.Exception?.ToString()); yield break; }
+            var samples = LegacyFieldTextureSet.Load(manifest, out string error);
+            if (samples?.Profile == null) { Row("PIXEL-package-coverage-parity", "FAIL", error); yield break; }
+            var profile = manifest.LegacyFieldProfile;
+            var random = new System.Random(3127);
+            using (var worker = new VectorWorker<string>(System.Text.Encoding.UTF8.GetString(script), x => x, (a,b) => a == b,
+                (w,h,a,x) => x, load.Result))
+            {
+                for (int trial = 0; trial < 80; trial++)
+                {
+                    int count = trial % 17;
+                    var pieces = new NoiseTextureFactory.Piece[count];
+                    for (int i = 0; i < count; i++)
+                        pieces[i] = new NoiseTextureFactory.Piece {
+                            Offset = new Vector2((float)random.NextDouble() * 1.4f - .7f, (float)random.NextDouble() - .5f),
+                            Half = new Vector2(.1f + (float)random.NextDouble() * .5f, .1f + (float)random.NextDouble() * .4f),
+                            Rotation = (float)random.NextDouble() * 160f - 80f, Circle = i % 3 == 2
+                        };
+                    var req = Request(); req.Provider = manifest; req.Samples = samples;
+                    req.WidthWorld = 2.3f; req.HeightWorld = 1.8f; req.Margin = .25f;
+                    req.ScreenPixelWidth = trial % 2 == 0 ? 320 : 511;
+                    req.EvolveSpeed = 24f; req.LoopPeriod = 12f / req.EvolveSpeed;
+                    req.EdgeColor = new Color((float)random.NextDouble(), (float)random.NextDouble(), (float)random.NextDouble());
+                    req.SceneColor = new Color((float)random.NextDouble(), (float)random.NextDouble(), (float)random.NextDouble());
+                    req.FillStrength = .35f + .55f * (float)random.NextDouble();
+                    req.Exposure = .2f; req.SparkOpacity = .8f;
+                    int texW = trial % 2 == 0 ? 80 : 127, texH = trial % 2 == 0 ? 60 : 71;
+                    float time = trial * .071f;
+                    var old = NoiseComposer.Frame.Build(pieces, req, texW, texH, time, 0, 12);
+                    var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+                    var type = typeof(NoiseComposer.Frame);
+                    int width = (int)type.GetField("_cw", flags).GetValue(old), height = (int)type.GetField("_ch", flags).GetValue(old);
+                    var expected = (float[])type.GetField("_compose", flags).GetValue(old);
+                    string payload = Newtonsoft.Json.JsonConvert.SerializeObject(new {
+                        stage = "coverage", width, height, time, loopPeriod = req.LoopPeriod, frameCount = 12,
+                        totalWidth = Mathf.Max(.001f, req.WidthWorld + req.Margin * 2f),
+                        totalHeight = Mathf.Max(.001f, req.HeightWorld + req.Margin * 2f),
+                        profile = new { composeDisplaceDirection = profile["composeDisplaceDirection"],
+                            composeDisplaceMapScale = profile["composeDisplaceMapScale"],
+                            composeDisplaceSpeed = profile["composeDisplaceSpeed"][0],
+                            composeDisplaceStrength = profile["composeDisplaceStrength"][0] },
+                        pieces = pieces.Select(p => new { x = p.Offset.x, y = p.Offset.y, hx = p.Half.x, hy = p.Half.y,
+                            rotation = p.Rotation, circle = p.Circle }).ToArray()
+                    });
+                    bool ready = worker.Update(width, height, 1f, payload);
+                    deadline = Time.realtimeSinceStartup + 10f;
+                    while (!ready && worker.LastError == null && Time.realtimeSinceStartup < deadline)
+                    { yield return null; ready = worker.Update(width, height, 1f, payload); }
+                    if (!ready || worker.Latest == null)
+                    { Row("PIXEL-package-coverage-parity", "FAIL", "trial " + trial + ": " + worker.LastError); yield break; }
+                    byte[] actual = worker.Latest[0]; int differences = 0;
+                    for (int i = 0; i < expected.Length; i++) if (actual[i * 4] != (expected[i] > .5f ? 255 : 0)) differences++;
+                    if (differences != 0)
+                    { Row("PIXEL-package-coverage-parity", "FAIL", $"trial {trial}, {count} pieces, {width}x{height}, {differences} pixels differ"); yield break; }
+                    int effectWidth = (int)type.GetField("_ew", flags).GetValue(old), effectHeight = (int)type.GetField("_eh", flags).GetValue(old);
+                    var oldEdges = (float[])type.GetField("_edges", flags).GetValue(old);
+                    var oldGlow = (float[])type.GetField("_glow", flags).GetValue(old);
+                    var effectInput = JObject.Parse(payload);
+                    effectInput["stage"] = "effects"; effectInput["coverageWidth"] = width; effectInput["coverageHeight"] = height;
+                    effectInput["width"] = effectWidth; effectInput["height"] = effectHeight;
+                    effectInput["profile"]["glowWeights"] = JArray.FromObject(profile["glowWeights"]);
+                    string effectPayload = effectInput.ToString(Newtonsoft.Json.Formatting.None);
+                    ready = worker.Update(effectWidth, effectHeight, 1f, effectPayload);
+                    deadline = Time.realtimeSinceStartup + 10f;
+                    while (!ready && worker.LastError == null && Time.realtimeSinceStartup < deadline)
+                    { yield return null; ready = worker.Update(effectWidth, effectHeight, 1f, effectPayload); }
+                    if (!ready || worker.Latest == null)
+                    { Row("PIXEL-package-effects-parity", "FAIL", "trial " + trial + ": " + worker.LastError); yield break; }
+                    actual = worker.Latest[0]; int edgeDifferences = 0, glowDifferences = 0;
+                    for (int i = 0; i < oldEdges.Length; i++)
+                    {
+                        int expectedEdge = (int)Math.Floor(Math.Max(0f, Math.Min(1f, oldEdges[i])) * 255f + .5f);
+                        int expectedGlow = (int)Math.Floor(Math.Max(0f, Math.Min(1f, oldGlow[i])) * 255f + .5f);
+                        if (actual[i * 4] != expectedEdge) edgeDifferences++;
+                        if (actual[i * 4 + 1] != expectedGlow) glowDifferences++;
+                    }
+                    if (edgeDifferences != 0 || glowDifferences != 0)
+                    { Row("PIXEL-package-effects-parity", "FAIL", $"trial {trial}, edge {edgeDifferences}, glow {glowDifferences} differing bytes"); yield break; }
+                    if (trial < 16)
+                    {
+                        var expectedFrame = new Color32[texW * texH];
+                        old.RenderRows(expectedFrame, 0, texH);
+                        var frameInput = (JObject)effectInput.DeepClone();
+                        frameInput["stage"] = "frame"; frameInput["width"] = texW; frameInput["height"] = texH;
+                        frameInput.Remove("coverageWidth"); frameInput.Remove("coverageHeight");
+                        frameInput["screenPixelWidth"] = req.ScreenPixelWidth;
+                        frameInput["profile"] = JObject.FromObject(profile.ToDictionary(p => p.Key,
+                            p => p.Value.Length == 1 ? (object)p.Value[0] : p.Value));
+                        frameInput["options"] = JObject.FromObject(new {
+                            edgeColor = new[] { req.EdgeColor.r, req.EdgeColor.g, req.EdgeColor.b },
+                            sceneColor = new[] { req.SceneColor.r, req.SceneColor.g, req.SceneColor.b },
+                            fillOpacity = req.FillOpacity, fillStrength = req.FillStrength, exposure = req.Exposure,
+                            edgeOpacity = req.EdgeOpacity, glowOpacity = req.GlowOpacity, sparkOpacity = req.SparkOpacity
+                        });
+                        string framePayload = frameInput.ToString(Newtonsoft.Json.Formatting.None);
+                        ready = worker.Update(texW, texH, 1f, framePayload);
+                        deadline = Time.realtimeSinceStartup + 10f;
+                        while (!ready && worker.LastError == null && Time.realtimeSinceStartup < deadline)
+                        { yield return null; ready = worker.Update(texW, texH, 1f, framePayload); }
+                        if (!ready || worker.Latest == null)
+                        { Row("PIXEL-package-frame-parity", "FAIL", "trial " + trial + ": " + worker.LastError); yield break; }
+                        actual = worker.Latest[0]; int changed = 0, maxDifference = 0, first = -1;
+                        for (int i = 0; i < expectedFrame.Length; i++)
+                        {
+                            var color = expectedFrame[i]; var expectedBytes = new[] { color.r, color.g, color.b, color.a };
+                            for (int channel = 0; channel < 4; channel++)
+                            {
+                                int delta = Math.Abs(actual[i * 4 + channel] - expectedBytes[channel]);
+                                if (delta > 0) { changed++; if (first < 0) first = i * 4 + channel; maxDifference = Math.Max(maxDifference, delta); }
+                            }
+                        }
+                        if (changed != 0)
+                        { Row("PIXEL-package-frame-parity", "FAIL", $"trial {trial}, {changed} bytes differ, max {maxDifference}, first {first}"); yield break; }
+                    }
+                }
+            }
+            Row("PIXEL-package-coverage-parity", "PASS", "80 old/new CPU coverage cases including circles, rotation and up to 16 regions");
+            Row("PIXEL-package-effects-parity", "PASS", "80 old/new CPU edge and five-pass glow cases");
+            Row("PIXEL-package-frame-parity", "PASS", "16 full old/new CPU frames with varied colors and scene backgrounds");
         }
 
         private static bool CheckPackagePixelResourceLimits()
@@ -519,6 +801,41 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             NoiseFieldRenderer.DestroyAll();
             yield return CheckRealFieldDepthSafe(manifest);
             yield return CheckRealFieldDriver(manifest);
+            yield return CheckRealGpuFailureFallback(manifest);
+        }
+
+        private static IEnumerator CheckRealGpuFailureFallback(EventManifest manifest)
+        {
+            string json = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, "event.json"));
+            var broken = EventManifest.Parse(json, manifest.SourcePath, out string error);
+            if (broken == null) { Row("GPU-real-failure-cpu-fallback", "FAIL", error); yield break; }
+            broken.Id = "pev.review-fault";
+            broken.ComputeGraphs["coverage"] = "missing-test-graph.json";
+            var args = new Dictionary<string, object>
+            {
+                ["__instance"] = "review/gpu-failure", ["__manifest"] = broken, ["relativeTo"] = "Camera",
+                ["size"] = new[] { 2f, 2f }, ["frameCount"] = 2, ["frame"] = 0, ["depth"] = 0
+            };
+            try
+            {
+                NoiseFieldRenderer.DestroyAll();
+                NoiseFieldRenderer.Set("field", args, out _);
+                float deadline = Time.realtimeSinceStartup + 20f;
+                while (Time.realtimeSinceStartup < deadline)
+                {
+                    NoiseTextureFactory.Pump(2f);
+                    NoiseFieldRenderer.Set("field", args, out _);
+                    var entry = NoiseFieldRenderer.AllEntries().FirstOrDefault();
+                    if (NoiseFieldGpuDriver.TestFaults.Contains(broken) && entry?.GameObject != null &&
+                        entry.GameObject.GetComponent<SpriteRenderer>()?.sprite != null) break;
+                    yield return null;
+                }
+                var result = NoiseFieldRenderer.AllEntries().FirstOrDefault();
+                bool ok = NoiseFieldGpuDriver.TestFaults.Contains(broken) && result?.GameObject != null &&
+                    result.GameObject.GetComponent<SpriteRenderer>()?.sprite != null && !NoiseFieldRenderer.IsGpuProviderActive(broken);
+                Row("GPU-real-failure-cpu-fallback", ok ? "PASS" : "FAIL", "broken GPU graph must display the package CPU bake");
+            }
+            finally { NoiseFieldRenderer.DestroyAll(); NoiseFieldGpuDriver.TestFaults.Remove(broken); }
         }
 
         private static bool CheckCompositorLimits(EventManifest manifest)
@@ -1855,6 +2172,8 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             var other = new EventManifest { Id = "example.other", SourcePath = first.SourcePath, Version = "other" };
             foreach (var item in first.LegacyFieldTextures) other.LegacyFieldTextures[item.Key] = item.Value;
             foreach (var item in first.LegacyFieldProfile) other.LegacyFieldProfile[item.Key] = item.Value;
+            foreach (var item in first.VectorPrograms) other.VectorPrograms[item.Key] = item.Value;
+            foreach (var item in first.PixelResources) other.PixelResources[item.Key] = item.Value;
             var otherArgs = new Dictionary<string, object>(args) { ["__instance"] = "review/other", ["__manifest"] = other };
             NoiseFieldRenderer.Set("field", otherArgs, out _);
             NoiseFieldRenderer.SetGpuProviders(new HashSet<EventManifest> { first });
@@ -1888,7 +2207,19 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 }
                 Check("FIELD-swaps-ready-texture", () => sr.sprite != null && sr.sprite != old);
             }
-            else Row("FIELD-first-texture", "FAIL timeout");
+            else
+            {
+                var cache = typeof(NoiseTextureFactory).GetField("Cache", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null)
+                    as System.Collections.IDictionary;
+                var details = new List<string>();
+                foreach (System.Collections.DictionaryEntry item in cache)
+                {
+                    var set = (NoiseTextureFactory.Frames)item.Value;
+                    details.Add($"{set.TexW}x{set.TexH} frames={set.Pixels?.Length} built={set.Pixels?.Count(x => x != null)} " +
+                        $"ready={set.PixelsReady}/{set.Ready} worker={set.Worker?.IsAlive} error={set.Error}");
+                }
+                Row("FIELD-first-texture", "FAIL", "timeout; " + string.Join("; ", details));
+            }
             NoiseFieldRenderer.DestroyAll();
 
             args["size"] = new[] { 4f, 4f };

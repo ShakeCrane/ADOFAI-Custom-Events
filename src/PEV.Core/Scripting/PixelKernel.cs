@@ -24,11 +24,12 @@ namespace PEV.Scripting
             internal Compiled(Runner runner, int[] channels, int uniforms, int work)
             { _runner = runner; _channels = channels; _uniforms = uniforms; _work = work; }
             internal void Execute(PixelPlane[] sources, float[] uniforms, float[] output, int width, int height,
-                CancellationToken cancellation, Action additionalCheckpoint = null)
+                CancellationToken cancellation, Action additionalCheckpoint = null, int timeoutSeconds = 2)
             {
                 if (width < 1 || height < 1 || width > 4096 || height > 4096 || (long)width * height > 1048576 ||
                     sources == null || sources.Length != _channels.Length || uniforms == null || uniforms.Length != _uniforms ||
-                    output == null || output.LongLength != (long)width * height || (long)width * height * _work > 350000000)
+                    output == null || output.LongLength != (long)width * height || (long)width * height * _work > 350000000 ||
+                    timeoutSeconds < 1 || timeoutSeconds > 15)
                     throw new ArgumentException("Invalid pixel kernel inputs");
                 long memory = output.LongLength * sizeof(float);
                 for (int i = 0; i < sources.Length; i++)
@@ -40,7 +41,7 @@ namespace PEV.Scripting
                 if (memory > 128L * 1024 * 1024) throw new ArgumentException("Pixel kernel memory limit exceeded");
                 foreach (float number in uniforms)
                     if (float.IsNaN(number) || float.IsInfinity(number)) throw new ArgumentException("Invalid pixel uniform");
-                long deadline = Stopwatch.GetTimestamp() + 2 * Stopwatch.Frequency;
+                long deadline = Stopwatch.GetTimestamp() + timeoutSeconds * Stopwatch.Frequency;
                 Action check = () =>
                 {
                     cancellation.ThrowIfCancellationRequested();
