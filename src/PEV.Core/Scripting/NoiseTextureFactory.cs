@@ -340,7 +340,6 @@ namespace PEV.Scripting
         public static Frames Begin(Request req, out string error)
         {
             error = null;
-            req.Provider = LegacyFieldTextureSet.ResolveProvider(req.Provider);
             string key = Fingerprint(req);
             if (Cache.TryGetValue(key, out var hit) && HitIsAlive(hit))
             {
@@ -516,14 +515,13 @@ namespace PEV.Scripting
         /// </summary>
         public static string Key(Request req)
         {
-            req.Provider = LegacyFieldTextureSet.ResolveProvider(req.Provider);
             return Fingerprint(req);
         }
 
         private static string Fingerprint(Request r)
         {
             var sb = new StringBuilder(240);
-            sb.Append(LegacyFieldTextureSet.Identity(r.Provider)).Append('|');
+            sb.Append(PackageIdentity.Of(r.Provider)).Append('|');
             sb.Append(F(r.WidthWorld)).Append('|').Append(F(r.HeightWorld)).Append('|')
               .Append(C(r.FillColor)).Append('|').Append(C(r.EdgeColor)).Append('|')
               .Append(C(r.SparkColor)).Append('|')

@@ -30,7 +30,7 @@ namespace PEV.Scripting
             _groups.Clear();
             foreach (var entry in _entries)
             {
-                var provider = LegacyFieldTextureSet.ResolveProvider(entry.Provider);
+                var provider = entry.Provider;
                 if (provider == null || provider.HostPrimitive != "fx.field" ||
                     string.IsNullOrEmpty(provider.ShaderBundlePath) || _faulted.Contains(provider)) continue;
                 if (!_groups.TryGetValue(provider, out var group))

@@ -872,7 +872,7 @@ namespace PEV.Scripting
             {
                 var entry = kv.Value;
                 if (entry.Depth != depth) continue;
-                if (GpuProviders.Contains(LegacyFieldTextureSet.ResolveProvider(entry.Provider)))
+                if (entry.Provider != null && GpuProviders.Contains(entry.Provider))
                 {
                     entry.GameObject = null;
                     continue;
@@ -896,7 +896,7 @@ namespace PEV.Scripting
                 // with the same sorting position but different layers cannot safely
                 // share a renderer, even if their rectangles overlap.
                 string groupKey = m.SortingLayerID + ":" + m.SortingOrder + ":" + m.UnityLayer + ":" +
-                    LegacyFieldTextureSet.Identity(LegacyFieldTextureSet.ResolveProvider(m.Provider));
+                    PackageIdentity.Of(m.Provider);
                 if (!groups.TryGetValue(groupKey, out var list))
                 {
                     list = new List<Entry>();

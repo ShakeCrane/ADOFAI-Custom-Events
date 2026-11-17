@@ -1898,6 +1898,13 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 b.LegacyFieldProfile["sample"] = new[] { 2f };
                 return LegacyFieldTextureSet.Identity(a) != LegacyFieldTextureSet.Identity(b);
             });
+            Check("CORE-package-identity-isolation", () =>
+            {
+                var a = new EventManifest { Id = "same", SourcePath = "same", Version = "1" };
+                var b = new EventManifest { Id = "same", SourcePath = "same", Version = "1" };
+                return PackageIdentity.Of(a) == PackageIdentity.Of(a) && PackageIdentity.Of(a) != PackageIdentity.Of(b) &&
+                    PackageIdentity.Of(null) == "";
+            });
         }
 
         private static void CheckStorage(scnEditor editor)
@@ -2098,12 +2105,16 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             });
         }
 
-        private static NoiseTextureFactory.Request Request() => new NoiseTextureFactory.Request
+        private static NoiseTextureFactory.Request Request()
         {
-            WidthWorld = 2, HeightWorld = 2, FrameCount = 2, TargetPixelWidth = 192,
-            FillOpacity = 0.6f, EdgeOpacity = 0.8f, GlowOpacity = 0.8f,
-            EdgeColor = Color.red, SampleRate = 1f, ScreenPixelWidth = 192
-        };
+            EventRegistry.TryGetById("pev.noise-field", out var provider);
+            return new NoiseTextureFactory.Request
+            {
+                Provider = provider, WidthWorld = 2, HeightWorld = 2, FrameCount = 2, TargetPixelWidth = 192,
+                FillOpacity = 0.6f, EdgeOpacity = 0.8f, GlowOpacity = 0.8f,
+                EdgeColor = Color.red, SampleRate = 1f, ScreenPixelWidth = 192
+            };
+        }
 
         private static void CheckKeys()
         {
@@ -2154,8 +2165,18 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
 
         private static IEnumerator CheckFields()
         {
+            EventRegistry.TryGetById("pev.noise-field", out var first);
+            Check("FIELD-provider-required", () =>
+            {
+                var missing = new Dictionary<string, object> { ["__instance"] = "review/no-provider", ["relativeTo"] = "Camera",
+                    ["size"] = new[] { 2f, 2f }, ["frameCount"] = 2 };
+                bool accepted = NoiseFieldRenderer.Set("field", missing, out _);
+                NoiseFieldRenderer.DestroyAll();
+                return !accepted;
+            });
             var args = new Dictionary<string, object>
             {
+                { "__manifest", first },
                 { "__instance", "review/field" }, { "relativeTo", "Camera" },
                 { "size", new[] { 2f, 2f } }, { "frameCount", 2 }, { "frame", 0 }, { "depth", 123 }
             };
@@ -2168,7 +2189,6 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Check("FIELD-gpu-takeover-suspends-bake", () => NoiseFieldRenderer.LayerCount == 0 && NoiseFieldRenderer.LiveCount == 1);
             NoiseFieldRenderer.SetGpuRendering(false);
             Check("FIELD-gpu-failure-restores-legacy", () => NoiseFieldRenderer.LayerCount == 1 && NoiseFieldRenderer.LiveCount == 1);
-            var first = LegacyFieldTextureSet.ResolveProvider(null);
             var other = new EventManifest { Id = "example.other", SourcePath = first.SourcePath, Version = "other" };
             foreach (var item in first.LegacyFieldTextures) other.LegacyFieldTextures[item.Key] = item.Value;
             foreach (var item in first.LegacyFieldProfile) other.LegacyFieldProfile[item.Key] = item.Value;

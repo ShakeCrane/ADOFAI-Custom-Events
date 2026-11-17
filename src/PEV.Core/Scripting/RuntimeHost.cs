@@ -45,11 +45,13 @@ namespace PEV.Scripting
 
         public static void Shutdown()
         {
-            if (_instance == null) { ShaderBundleCache.Clear(); ReferenceNoiseTextures.Clear(); LegacyFieldTextureSet.Clear(); return; }
+#if PEV_DIAGNOSTICS
+            LegacyFieldTextureSet.Clear();
+#endif
+            if (_instance == null) { ShaderBundleCache.Clear(); ReferenceNoiseTextures.Clear(); return; }
             _instance.Teardown();
             ShaderBundleCache.Clear();
             ReferenceNoiseTextures.Clear();
-            LegacyFieldTextureSet.Clear();
             UnityEngine.Object.Destroy(_instance.gameObject);
             _instance = null;
         }
