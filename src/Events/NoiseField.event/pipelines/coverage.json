@@ -63,6 +63,7 @@
       "name": "geometry",
       "kind": "buffer",
       "stride": 32,
+      "countInput": "geometryCount",
       "fields": [
         { "name": "centerX", "type": "float" },
         { "name": "centerY", "type": "float" },
@@ -78,6 +79,7 @@
       "name": "contacts",
       "kind": "buffer",
       "stride": 16,
+      "countInput": "contactCount",
       "fields": [
         { "name": "x", "type": "float" },
         { "name": "y", "type": "float" },
@@ -356,6 +358,7 @@
         "name": "_TouchPos",
         "type": "vectorArray",
         "input": "contacts",
+        "countInput": "contactCount",
         "when": {
           "hasContacts": true
         }

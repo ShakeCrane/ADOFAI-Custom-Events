@@ -10,7 +10,7 @@ namespace PEV.Scripting
 {
     /// <summary>
     /// Experimental GPU groups. A replacement is staged behind the previous frame until
-    /// every changed group has a palette and its renderers have entered Unity's culling list.
+    /// every changed group has its textures and renderers in Unity's culling list.
     /// </summary>
     internal sealed class NoiseFieldGpuCoordinator : IDisposable
     {
@@ -21,7 +21,7 @@ namespace PEV.Scripting
             internal readonly JsonVectorTextureSet Vectors;
             internal readonly Dictionary<string, Texture> Textures = new Dictionary<string, Texture>(StringComparer.Ordinal);
             internal int ViewWidth, ViewHeight;
-            internal bool Colored, ShowDisabled, ShowActive;
+            internal int Layout;
 
             internal Group(ComputeShader shader, GpuGraphDefinition graph, CompositorDefinition compositor, VectorTextureDefinition textures,
                 GpuGraphDefinition.ControllerLimits limits, EventManifest manifest, NoiseFieldGpuPlan.Key key, string vectorSource)
@@ -135,42 +135,34 @@ namespace PEV.Scripting
                 if (!(commands["conditions"] is JObject conditions) || !(commands["buffers"] is JObject buffers) ||
                     !(commands["values"] is JObject values) || !(commands["compute"] is JObject compute))
                     throw new ArgumentException("Invalid package group commands");
-                bool showActive = Flag(conditions, "showPrimary"), showDisabled = Flag(conditions, "showSecondary");
-                bool colored = Flag(conditions, "colored");
-                var geometry = Rows(buffers["geometry"], 1024, 8);
-                var touches = Rows(buffers["contacts"], _inputLimits.Capacity, 4);
-                var positions = Rows(values["contacts"], _inputLimits.Capacity, 4);
-                if (Integer(compute["geometryCount"], 0, 1024) != geometry.Count ||
-                    Integer(compute["contactCount"], 0, _inputLimits.Capacity) != touches.Count ||
-                    Integer(values["contactCount"], 0, _inputLimits.Capacity) != positions.Count ||
-                    Flag(compute, "hasContacts") != (touches.Count > 0) || Flag(conditions, "hasContacts") != (positions.Count > 0))
-                    throw new ArgumentException("Inconsistent package group commands");
+                var vector = commands["vector"];
+                int layout = vector != null && vector.Type != JTokenType.Null ? 1 : 0;
+                foreach (var layer in _compositor.Layers)
+                {
+                    if (conditions[layer.Visible]?.Type != JTokenType.Boolean) throw new ArgumentException("Missing compositor visibility");
+                    layout = layout * 2 + (conditions.Value<bool>(layer.Visible) ? 1 : 0);
+                }
                 if (group == null)
                     _staging.SetPending(pair.Key, group = new Group(_compute, _graph, _compositor, _textures, _inputLimits, _manifest, pair.Key, _vectorProgram)
                     {
-                        ViewWidth = width, ViewHeight = height, Colored = colored,
-                        ShowDisabled = showDisabled, ShowActive = showActive
+                        ViewWidth = width, ViewHeight = height, Layout = layout
                     });
-                bool matches = group.ViewWidth == width && group.ViewHeight == height &&
-                    group.Colored == colored && group.ShowDisabled == showDisabled && group.ShowActive == showActive;
+                bool matches = group.ViewWidth == width && group.ViewHeight == height && group.Layout == layout;
                 if (!matches)
                 {
                     var replacement = new Group(_compute, _graph, _compositor, _textures, _inputLimits, _manifest, pair.Key, _vectorProgram)
                     {
-                        ViewWidth = width, ViewHeight = height, Colored = colored,
-                        ShowDisabled = showDisabled, ShowActive = showActive
+                        ViewWidth = width, ViewHeight = height, Layout = layout
                     };
                     _staging.SetPending(pair.Key, replacement);
                     group = replacement;
                 }
                 group.Masks.Render(camera.pixelWidth, camera.pixelHeight, songTime, buffers, compute, _images);
-                var vector = commands["vector"];
                 if (vector != null && vector.Type != JTokenType.Null)
                 {
                     if (!group.Vectors.Update(group.Masks.Width, group.Masks.Height, aspect, vector, group.Masks.RunExternal))
                     {
-                        // Do not silently render a colored group as default red while its
-                        // first palette or resized palette is still being calculated.
+                        // Keep the previous group until required textures are ready.
                         group.Layer.Hide();
                         ready = false;
                         continue;
@@ -193,25 +185,6 @@ namespace PEV.Scripting
             return true;
         }
 
-        private static bool Flag(JObject source, string name)
-        {
-            if (source[name]?.Type != JTokenType.Boolean) throw new ArgumentException("Invalid group command flag");
-            return source.Value<bool>(name);
-        }
-        private static int Integer(JToken token, int min, int max)
-        {
-            if (token?.Type != JTokenType.Integer) throw new ArgumentException("Invalid group command integer");
-            long value = token.Value<long>();
-            if (value < min || value > max) throw new ArgumentOutOfRangeException("Group command integer");
-            return (int)value;
-        }
-        private static JArray Rows(JToken token, int max, int width)
-        {
-            if (!(token is JArray rows) || rows.Count > max) throw new ArgumentException("Invalid group command rows");
-            foreach (var item in rows) if (!(item is JArray row) || row.Count != width)
-                throw new ArgumentException("Invalid group command row");
-            return rows;
-        }
 #if PEV_DIAGNOSTICS
         internal bool Render(IReadOnlyList<NoiseFieldRenderer.Entry> entries, Camera camera, float songTime,
             bool captureScene, Color fallbackBackground) =>

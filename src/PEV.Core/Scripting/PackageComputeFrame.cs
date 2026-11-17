@@ -49,6 +49,9 @@ namespace PEV.Scripting
             {
                 var spec = _definition.Resources[pair.Key];
                 if (!(buffers[pair.Key] is JArray rows) || rows.Count > 4096) throw new ArgumentException("Invalid compute records");
+                if (spec.CountInput != null && (inputs[spec.CountInput]?.Type != JTokenType.Integer ||
+                    inputs.Value<long>(spec.CountInput) != rows.Count))
+                    throw new ArgumentException("Compute record count does not match input");
                 pair.Value.Prepare(rows.Count);
                 for (int i = 0; i < rows.Count; i++)
                 {

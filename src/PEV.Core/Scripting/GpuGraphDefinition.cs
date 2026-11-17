@@ -16,7 +16,7 @@ namespace PEV.Scripting
     {
         internal sealed class Resource
         {
-            internal string Name;
+            internal string Name, CountInput;
             internal bool Buffer;
             internal int Stride;
             internal GraphicsFormat Format;
@@ -90,6 +90,7 @@ namespace PEV.Scripting
                 if (kind == "buffer")
                 {
                     resource.Buffer = true; resource.Stride = Int(item["stride"], 4, 256);
+                    if (item["countInput"] != null) resource.CountInput = Name(item["countInput"]);
                     if (resource.Stride % 4 != 0) throw new ArgumentException("compute buffer stride must be aligned");
                     if (item["fields"] != null)
                     {

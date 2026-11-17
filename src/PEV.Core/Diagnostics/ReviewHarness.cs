@@ -1520,6 +1520,15 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     var values = new JObject { ["contactCount"] = hover ? 1 : 0, ["contacts"] = contactValues };
                     var textures = new Dictionary<string, Texture>();
                     if (colored) { textures["primaryColors"] = first; textures["secondaryColors"] = second; }
+                    if (i == 0)
+                    {
+                        var invalid = (JObject)values.DeepClone(); invalid["contactCount"] = 1;
+                        bool rejected = false;
+                        try { current.Draw(camera, genericMasks, renamedImages, 1f, 1f,
+                            new Dictionary<string, bool> { ["customOption"] = captureScene }, conditions, invalid, Color.black, textures); }
+                        catch (ArgumentException) { rejected = true; }
+                        if (!rejected) { Row("GPU-compositor-parity", "FAIL", "mismatched array count accepted"); yield break; }
+                    }
                     current.Draw(camera, genericMasks, renamedImages, 1f, 1f,
                         new Dictionary<string, bool> { ["customOption"] = captureScene }, conditions, values, Color.black, textures);
                     yield return null;
@@ -1823,6 +1832,14 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     var inputs = new JObject { ["geometryCount"] = count, ["contactCount"] = touchCount,
                         ["aspect"] = 16f / 9f, ["screenAspect"] = (float)width / height, ["hasContacts"] = touchCount > 0 };
                     commands.Render(width, height, time, buffers, inputs, images);
+                    if (i == 0)
+                    {
+                        inputs["geometryCount"] = count + 1;
+                        bool rejected = false;
+                        try { commands.Render(width, height, time, buffers, inputs, images); }
+                        catch (ArgumentException) { rejected = true; }
+                        if (!rejected) return false;
+                    }
                     var outputs = commands.Outputs.ToDictionary(pair => pair.Key, pair => pair.Value);
                     if (!oldMain.SequenceEqual(ReadGpuPixels(outputs["main"])) || !oldAux.SequenceEqual(ReadGpuPixels(outputs["auxiliary"])))
                         return false;

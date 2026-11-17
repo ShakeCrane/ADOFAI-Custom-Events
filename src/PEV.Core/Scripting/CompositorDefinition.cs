@@ -19,7 +19,7 @@ namespace PEV.Scripting
         }
         internal sealed class Binding
         {
-            internal string Name, Type, Input;
+            internal string Name, Type, Input, CountInput;
             internal readonly Dictionary<string, bool> When = new Dictionary<string, bool>(StringComparer.Ordinal);
         }
         internal sealed class Variant
@@ -68,6 +68,11 @@ namespace PEV.Scripting
                 if (binding.Type != "texture" && binding.Type != "vector" && binding.Type != "color" &&
                     binding.Type != "int" && binding.Type != "float" && binding.Type != "vectorArray")
                     throw new ArgumentException("Unsupported compositor binding type");
+                if (spec["countInput"] != null)
+                {
+                    if (binding.Type != "vectorArray") throw new ArgumentException("Count input requires a vector array");
+                    binding.CountInput = Name(spec["countInput"]);
+                }
                 Conditions(spec["when"], binding.When); destination.Add(binding);
             }
         }

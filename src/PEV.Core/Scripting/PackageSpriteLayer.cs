@@ -14,6 +14,7 @@ namespace PEV.Scripting
         private readonly Dictionary<string, bool> _conditions = new Dictionary<string, bool>(StringComparer.Ordinal);
         private readonly Dictionary<string, object> _inputs = new Dictionary<string, object>(StringComparer.Ordinal);
         private readonly Dictionary<string, Vector4[]> _arrays = new Dictionary<string, Vector4[]>(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _arrayCounts = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly int _arrayCapacity;
 
         internal PackageSpriteLayer(EventManifest manifest, CompositorDefinition definition, int sortingLayer,
@@ -32,6 +33,12 @@ namespace PEV.Scripting
                 if (_types.TryGetValue(binding.Input, out var type) && type != binding.Type)
                     throw new ArgumentException("Inconsistent compositor input type");
                 _types[binding.Input] = binding.Type;
+                if (binding.CountInput != null)
+                {
+                    if (_arrayCounts.TryGetValue(binding.Input, out var count) && count != binding.CountInput)
+                        throw new ArgumentException("Inconsistent compositor array count");
+                    _arrayCounts[binding.Input] = binding.CountInput;
+                }
             }
         }
         internal bool Draw(Camera camera, IComputeFrame frame, IReadOnlyDictionary<string, Texture2D> images,
@@ -66,6 +73,9 @@ namespace PEV.Scripting
             foreach (var value in values.Properties())
             {
                 if (!_types.TryGetValue(value.Name, out var type)) throw new ArgumentException("Undeclared compositor input");
+                if (_arrayCounts.TryGetValue(value.Name, out var countInput) &&
+                    (!(value.Value is JArray items) || values[countInput]?.Type != JTokenType.Integer || values.Value<long>(countInput) != items.Count))
+                    throw new ArgumentException("Compositor array count does not match input");
                 _inputs.Add(value.Name, ConvertValue(value.Name, value.Value, type));
             }
             return _compositor.Draw(camera, _conditions, _inputs, time);
