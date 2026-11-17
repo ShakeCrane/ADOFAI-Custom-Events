@@ -44,5 +44,5 @@ function updateController(input) {
     if (value && typeof value==='object') { var o={}; Object.keys(value).forEach(function(k){o[k]=stable(value[k]);}); return o; }
     return value;
   }
-  return {request:request,key:JSON.stringify(stable(request)),margin:margin,bucket:bucket,alpha:alpha};
+  return {request:request,key:JSON.stringify(stable(request)),margin:margin,bucket:bucket,alpha:alpha,textureOffset:[0,0]};
 }

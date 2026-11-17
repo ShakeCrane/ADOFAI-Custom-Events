@@ -110,6 +110,7 @@ def main():
             pack(os.path.join(EVENTS, name), os.path.join(staging_root, name))
         print("packing...")
         with zipfile.ZipFile(zip_path, "x", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{MOD_ID}/Events/", b"")
             for dirpath, _dirnames, filenames in os.walk(stage):
                 for fn in filenames:
                     full = os.path.join(dirpath, fn)

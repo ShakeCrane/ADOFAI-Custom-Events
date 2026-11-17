@@ -1014,6 +1014,7 @@ namespace PEV.Scripting
             var input = new JObject { ["members"] = items, ["width"] = size.x, ["height"] = size.y,
                 ["centerX"] = centre.x, ["centerY"] = centre.y, ["pixelWidth"] = lead.PxWidthHint,
                 ["previousBucket"] = previousBucket, ["seed"] = StableSeed(lead.Scope),
+                ["uv"] = new JArray(lead.Uv.x, lead.Uv.y),
                 ["scene"] = new JArray(scene.r, scene.g, scene.b) };
             return controller.Update(input.ToString(Formatting.None));
         }
@@ -1053,14 +1054,20 @@ namespace PEV.Scripting
             if (!(prepared["request"] is JObject request) || prepared["key"]?.Type != JTokenType.String ||
                 prepared["bucket"]?.Type != JTokenType.Integer ||
                 (prepared["margin"]?.Type != JTokenType.Integer && prepared["margin"]?.Type != JTokenType.Float) ||
-                (prepared["alpha"]?.Type != JTokenType.Integer && prepared["alpha"]?.Type != JTokenType.Float))
+                (prepared["alpha"]?.Type != JTokenType.Integer && prepared["alpha"]?.Type != JTokenType.Float) ||
+                !(prepared["textureOffset"] is JArray offset) || offset.Count != 2 ||
+                (offset[0].Type != JTokenType.Integer && offset[0].Type != JTokenType.Float) ||
+                (offset[1].Type != JTokenType.Integer && offset[1].Type != JTokenType.Float))
                 throw new ArgumentException("Invalid package frame request");
             int pixelBucket = prepared.Value<int>("bucket");
             float margin = prepared.Value<float>("margin");
             float alpha = prepared.Value<float>("alpha");
+            float offsetX = offset[0].Value<float>(), offsetY = offset[1].Value<float>();
             string requestKey = prepared.Value<string>("key");
             if (pixelBucket < 1 || pixelBucket > 16384 || float.IsNaN(margin) || float.IsInfinity(margin) ||
                 margin < 0 || margin > 100000 || float.IsNaN(alpha) || float.IsInfinity(alpha) || alpha < 0 || alpha > 1 ||
+                float.IsNaN(offsetX) || float.IsInfinity(offsetX) || Math.Abs(offsetX) > 1000000 ||
+                float.IsNaN(offsetY) || float.IsInfinity(offsetY) || Math.Abs(offsetY) > 1000000 ||
                 string.IsNullOrEmpty(requestKey) || requestKey.Length > 131072)
                 throw new ArgumentException("Package frame request exceeds limits");
             layer.PixelBucket = pixelBucket;
@@ -1135,11 +1142,7 @@ namespace PEV.Scripting
             if (mat == null) mat = layer.Material = layer.Renderer.material;
             if (mat != null)
             {
-                // No offset. The baked set carries its own motion, and the border and coastline
-                // are part of the same texture — scrolling it slides the whole edge off the
-                // geometry, which is what made the field look like a drifting decal rather
-                // than a region of the scene.
-                mat.mainTextureOffset = Vector2.zero;
+                mat.mainTextureOffset = new Vector2(offsetX, offsetY);
                 mat.mainTextureScale = lead.Tiling;
             }
 

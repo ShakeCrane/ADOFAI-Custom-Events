@@ -44,7 +44,9 @@ class SplitReleaseTest(unittest.TestCase):
                 original = core_zip.read_bytes()
                 with zipfile.ZipFile(core_zip) as archive:
                     self.assertIn("PEV.Core/PEV.Core.dll", archive.namelist())
-                    self.assertFalse(any("/Events/" in name for name in archive.namelist()))
+                    self.assertIn("PEV.Core/Events/", archive.namelist())
+                    self.assertFalse(any(name.startswith("PEV.Core/Events/") and not name.endswith("/")
+                                         for name in archive.namelist()))
                 for name in ("NoiseField.event",):
                     with zipfile.ZipFile(output / name) as archive:
                         self.assertEqual(name, json.loads(archive.read("event.json"))["id"])
