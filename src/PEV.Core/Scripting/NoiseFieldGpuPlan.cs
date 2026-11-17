@@ -57,8 +57,10 @@ namespace PEV.Scripting
                 frame.Center += (Vector3)entry.OverrideOffset;
                 frame.Size *= entry.OverrideScale;
                 frame.Rotation += entry.OverrideRotation;
-                if (!NoiseFieldProjection.TryProject(camera, frame, aspect, out var area))
+                if (!ViewportRectangleProjection.TryProject(camera, frame, new Vector2(1f, aspect), out var projected))
                     throw new NotSupportedException("Field cannot be projected without shear or perspective");
+                var area = new NoiseFieldGpuMasks.Area { Center = projected.Center, HalfSize = projected.HalfSize,
+                    AngleRadians = projected.AngleRadians, YScale = 1f };
                 area.Opacity = Mathf.Clamp01(opacity);
                 var mode = modes.Resolve(values.At(entry.Provider?.SourcePath, modes.TagKey, entry.Tag));
                 uint shaderFlags = mode.Unsigned("shaderFlags", 65535), invertFlag = modes.Metadata.Unsigned("invertFlag", 65535);

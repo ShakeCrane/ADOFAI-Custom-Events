@@ -1883,17 +1883,21 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     cam.aspect = 16f / 9f;
                     go.transform.position = new Vector3(0, 0, -10);
                     var frame = new Placement.Frame { Center = Vector3.zero, Size = new Vector2(4, 2), Rotation = 0 };
-                    if (!NoiseFieldProjection.TryProject(cam, frame, cam.aspect, out var result)) return false;
+                    if (!ViewportRectangleProjection.TryProject(cam, frame, new Vector2(1f, cam.aspect), out var result)) return false;
                     float expected = 1f / (5f * cam.aspect);
                     if (result.Center.sqrMagnitude > 0.000001f || Mathf.Abs(result.HalfSize.x - 2 * expected) > 0.00001f ||
                         Mathf.Abs(result.HalfSize.y - expected) > 0.00001f || Mathf.Abs(result.AngleRadians) > 0.00001f) return false;
+                    if (!ViewportRectangleProjection.TryProject(cam, frame, new Vector2(2f, 2f * cam.aspect), out var scaled) ||
+                        (scaled.Center - result.Center * .5f).sqrMagnitude > 0.000001f ||
+                        (scaled.HalfSize - result.HalfSize * .5f).sqrMagnitude > 0.000001f ||
+                        ViewportRectangleProjection.TryProject(cam, frame, new Vector2(0f, cam.aspect), out _)) return false;
                     frame.Rotation = 45;
-                    if (!NoiseFieldProjection.TryProject(cam, frame, cam.aspect, out result) ||
+                    if (!ViewportRectangleProjection.TryProject(cam, frame, new Vector2(1f, cam.aspect), out result) ||
                         Mathf.Abs(result.AngleRadians - Mathf.PI / 4) > 0.0001f) return false;
                     frame.Center = go.transform.position;
-                    if (!NoiseFieldProjection.TryProject(cam, frame, cam.aspect, out result)) return false;
+                    if (!ViewportRectangleProjection.TryProject(cam, frame, new Vector2(1f, cam.aspect), out result)) return false;
                     cam.orthographic = false;
-                    return !NoiseFieldProjection.TryProject(cam, frame, cam.aspect, out _);
+                    return !ViewportRectangleProjection.TryProject(cam, frame, new Vector2(1f, cam.aspect), out _);
                 }
                 finally { UnityEngine.Object.Destroy(go); }
             });
