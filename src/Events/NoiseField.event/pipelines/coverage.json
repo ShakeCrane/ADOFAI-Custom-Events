@@ -290,7 +290,7 @@
       },
       { "name": "coloredDisabled", "filter": "point", "wrap": "clamp", "linear": true }
     ],
-    "roles": { "primary": "coloredActive", "secondary": "coloredDisabled" }
+    "roles": { "primaryColors": "coloredActive", "secondaryColors": "coloredDisabled" }
   },
   "tagValues": {
     "tagKey": "phase"

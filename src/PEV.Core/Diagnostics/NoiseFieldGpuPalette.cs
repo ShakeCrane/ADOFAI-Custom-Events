@@ -20,13 +20,13 @@ namespace PEV.Scripting
         {
             _provider = provider ?? throw new ArgumentNullException(nameof(provider));
             _definition = definition ?? throw new ArgumentNullException(nameof(definition));
-            _primary = definition.Role("primary"); _secondary = definition.Role("secondary");
+            _primary = definition.Role("primaryColors"); _secondary = definition.Role("secondaryColors");
         }
         internal bool Update(IComputeFrame masks, float aspect, NoiseFieldColorOwnership.Zone[] zones, int defaultRgb)
         {
             if (_textures == null)
             {
-                if (!_provider.TryRuntimeResource("colorProgram", _provider.VectorPrograms, out var path))
+                if (!_provider.TryRuntimeResource("vectorProgram", _provider.VectorPrograms, out var path))
                     throw new InvalidOperationException("Package color program is not declared");
                 byte[] bytes = EventLoader.ReadResource(_provider.SourcePath, path, 262144);
                 if (bytes == null) throw new InvalidOperationException("Package color program is missing or too large");

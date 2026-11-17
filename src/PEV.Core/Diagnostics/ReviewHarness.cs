@@ -1141,7 +1141,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             string json = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(original.SourcePath, "event.json"));
             var manifest = EventManifest.Parse(json, original.SourcePath, out string error);
             if (manifest == null) throw new InvalidOperationException(error);
-            foreach (string binding in new[] { "renderGraph", "renderPlan", "inputController", "colorProgram", "framePlan", "frameProgram", "frameKey" })
+            foreach (string binding in new[] { "renderGraph", "renderPlan", "inputController", "vectorProgram", "framePlan", "frameProgram", "frameKey" })
             {
                 var resources = binding == "renderGraph" ? manifest.ComputeGraphs : binding == "frameKey" ? manifest.KeySpecs : manifest.VectorPrograms;
                 string old = manifest.RuntimeBindings[binding], renamed = "custom_" + binding;
@@ -1336,7 +1336,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             var spec = (JObject)root["vectorTextures"];
             var graph = GpuGraphDefinition.Parse(changed);
             var definition = VectorTextureDefinition.Parse(changed, graph);
-            if (definition.Role("primary") != "renamedOutput" || definition.Outputs[0].Input != "renamedInput" ||
+            if (definition.Role("primaryColors") != "renamedOutput" || definition.Outputs[0].Input != "renamedInput" ||
                 definition.Outputs[0].Target != "renamedTarget") return false;
             spec["outputs"][1]["name"] = "renamedOutput";
             try { VectorTextureDefinition.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString()), graph); return false; }
@@ -1348,7 +1348,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             var root = JObject.Parse(System.Text.Encoding.UTF8.GetString(bytes));
             var spec = (JObject)root["vectorTextures"];
             spec["outputs"][0]["name"] = "renamedOutput";
-            spec["roles"]["primary"] = "renamedOutput";
+            spec["roles"]["primaryColors"] = "renamedOutput";
             spec["outputs"][0]["transform"]["input"] = "renamedInput";
             spec["outputs"][0]["transform"]["output"] = "renamedTarget";
             root["entries"]["colors"][0]["textures"]["_RawActiveColors"] = "$renamedInput";
@@ -1377,10 +1377,14 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             var touch = ReferenceNoiseTextures.Load(manifest, "touch", out error);
             if (shader == null || displacement == null || touch == null) throw new InvalidOperationException(error);
             var images = new Dictionary<string, Texture2D> { ["displacement"] = displacement, ["touch"] = touch };
+            if (!manifest.TryRuntimeResource("vectorProgram", manifest.VectorPrograms, out var vectorPath))
+                throw new InvalidOperationException("Missing vector program");
+            var vectorSource = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, vectorPath, 262144));
             using (var firstMasks = new NoiseFieldGpuMasks(shader, graph))
             using (var secondMasks = new NoiseFieldGpuMasks(shader, changed))
             using (var first = new NoiseFieldGpuPalette(manifest, VectorTextureDefinition.Parse(bytes, graph)))
             using (var second = new NoiseFieldGpuPalette(manifest, VectorTextureDefinition.Parse(alternate, changed)))
+            using (var generic = new JsonVectorTextureSet(vectorSource, VectorTextureDefinition.Parse(bytes, graph)))
             {
                 var areas = new[] { new NoiseFieldGpuMasks.Area { Center = Vector2.zero, HalfSize = new Vector2(.5f, .4f),
                     YScale = 1, Opacity = 1, Flags = 1 } };
@@ -1389,16 +1393,20 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 secondMasks.Render(areas, 1, 128, 128, 1, .37f, images, contacts, 0);
                 var zones = new[] { new NoiseFieldColorOwnership.Zone { CenterX = 0, CenterY = 0, HalfX = .5f, HalfY = .4f,
                     YScale = 1, Opacity = 1, Active = true, Red = .2f, Green = .8f, Blue = .3f } };
-                bool readyFirst = false, readySecond = false; float deadline = Time.realtimeSinceStartup + 10f;
-                while ((!readyFirst || !readySecond) && Time.realtimeSinceStartup < deadline)
+                var request = new JObject { ["Items"] = JArray.FromObject(zones), ["Options"] = 0xff5454 };
+                bool readyFirst = false, readySecond = false, readyGeneric = false; float deadline = Time.realtimeSinceStartup + 10f;
+                while ((!readyFirst || !readySecond || !readyGeneric) && Time.realtimeSinceStartup < deadline)
                 {
                     readyFirst = first.Update(firstMasks, 1, zones, 0xff5454); readySecond = second.Update(secondMasks, 1, zones, 0xff5454);
+                    readyGeneric = generic.Update(firstMasks.Width, firstMasks.Height, 1, request, firstMasks.RunExternal);
                     yield return null;
                 }
-                bool matches = readyFirst && readySecond && first.Active is RenderTexture a && second.Active is RenderTexture b &&
+                bool matches = readyFirst && readySecond && readyGeneric && first.Active is RenderTexture a && second.Active is RenderTexture b &&
                     ReadGpuPixels(a).SequenceEqual(ReadGpuPixels(b)) && first.Disabled is Texture2D c && second.Disabled is Texture2D d &&
-                    c.GetPixels32().SequenceEqual(d.GetPixels32());
-                Row("VECTOR-texture-remap-parity", matches ? "PASS" : "FAIL", "renamed output and compute texture bindings, byte-for-byte GPU outputs");
+                    c.GetPixels32().SequenceEqual(d.GetPixels32()) && generic.Get("coloredActive") is RenderTexture ga &&
+                    generic.Get("coloredDisabled") is Texture2D gd && ReadGpuPixels(a).SequenceEqual(ReadGpuPixels(ga)) &&
+                    c.GetPixels32().SequenceEqual(gd.GetPixels32());
+                Row("VECTOR-texture-remap-parity", matches ? "PASS" : "FAIL", "JSON and typed inputs; renamed output and compute bindings; byte-for-byte GPU outputs");
             }
         }
 

@@ -6,33 +6,37 @@ namespace PEV.Scripting
 {
     // Uploads bounded vector outputs and optionally runs package-declared GPU passes.
     // Existing textures stay live until all replacements are ready.
-    internal sealed class VectorTextureSet<TItem, TOptions> : IDisposable where TItem : struct where TOptions : struct
+    internal sealed class VectorTextureStorage : IDisposable
     {
-        private readonly StructuredVectorWorker<TItem, TOptions> _worker;
         private readonly VectorTextureDefinition _definition;
         private Texture2D[] _raw;
         private RenderTexture[] _transformed;
 
-        internal VectorTextureSet(string source, VectorTextureDefinition definition)
+        internal VectorTextureStorage(VectorTextureDefinition definition)
         {
             _definition = definition ?? throw new ArgumentNullException(nameof(definition));
-            _worker = new StructuredVectorWorker<TItem, TOptions>(source, definition.Outputs.Count);
         }
-        internal bool Update(int width, int height, float aspect, TItem[] items, TOptions options,
+        internal bool Update(int width, int height, float aspect, bool updated, byte[][] latest,
+            int latestWidth, int latestHeight, float latestAspect,
             Action<string, string, Texture, string, RenderTexture> transform)
         {
-            bool updated = _worker.Update(width, height, aspect, items, options);
-            if (_worker.LastError != null) throw new InvalidOperationException("Vector texture worker failed", _worker.LastError);
+            if (latest != null)
+            {
+                if (latest.Length != _definition.Outputs.Count) throw new InvalidOperationException("Invalid vector output count");
+                int expected = checked(latestWidth * latestHeight * 4);
+                foreach (var buffer in latest) if (buffer == null || buffer.Length != expected)
+                    throw new InvalidOperationException("Invalid vector output size");
+            }
             bool matches = Matches(width, height);
-            if (!updated && !matches && _worker.Latest != null && _worker.LatestWidth == width &&
-                _worker.LatestHeight == height && _worker.LatestAspect == aspect) updated = true;
+            if (!updated && !matches && latest != null && latestWidth == width &&
+                latestHeight == height && latestAspect == aspect) updated = true;
             if (updated)
             {
                 if (matches)
                 {
-                    for (int i = 0; i < _raw.Length; i++) Upload(_raw[i], _worker.Latest[i]);
+                    for (int i = 0; i < _raw.Length; i++) Upload(_raw[i], latest[i]);
                 }
-                else Allocate(width, height, _worker.Latest);
+                else Allocate(width, height, latest);
             }
             if (!Matches(width, height)) return false;
             for (int i = 0; i < _definition.Outputs.Count; i++)
@@ -101,6 +105,29 @@ namespace PEV.Scripting
             if (transformed != null) foreach (var texture in transformed)
                 if (texture != null) { texture.Release(); UnityEngine.Object.Destroy(texture); }
         }
-        public void Dispose() { _worker.Dispose(); ReleaseTextures(); }
+        public void Dispose() => ReleaseTextures();
+    }
+
+    internal sealed class VectorTextureSet<TItem, TOptions> : IDisposable where TItem : struct where TOptions : struct
+    {
+        private readonly StructuredVectorWorker<TItem, TOptions> _worker;
+        private readonly VectorTextureStorage _storage;
+        internal VectorTextureSet(string source, VectorTextureDefinition definition)
+        {
+            _worker = new StructuredVectorWorker<TItem, TOptions>(source, definition.Outputs.Count);
+            _storage = new VectorTextureStorage(definition);
+        }
+        internal bool Update(int width, int height, float aspect, TItem[] items, TOptions options,
+            Action<string, string, Texture, string, RenderTexture> transform)
+        {
+            bool updated = _worker.Update(width, height, aspect, items, options);
+            if (_worker.LastError != null) throw new InvalidOperationException("Vector texture worker failed", _worker.LastError);
+            return _storage.Update(width, height, aspect, updated, _worker.Latest, _worker.LatestWidth,
+                _worker.LatestHeight, _worker.LatestAspect, transform);
+        }
+        internal Texture Get(string name) => _storage.Get(name);
+        internal static Texture2D MakeTexture(int width, int height, string name, byte[] bytes,
+            FilterMode filter, TextureWrapMode wrap, bool linear) => VectorTextureStorage.MakeTexture(width, height, name, bytes, filter, wrap, linear);
+        public void Dispose() { _worker.Dispose(); _storage.Dispose(); }
     }
 }

@@ -18,21 +18,23 @@ namespace PEV.Scripting
         {
             internal readonly PackageComputeFrame Masks;
             internal readonly PackageSpriteLayer Layer;
-            internal readonly NoiseFieldGpuPalette Palette;
+            internal readonly JsonVectorTextureSet Vectors;
             internal readonly Dictionary<string, Texture> Textures = new Dictionary<string, Texture>(StringComparer.Ordinal);
-            internal NoiseFieldColorOwnership.Zone[] Colors = Array.Empty<NoiseFieldColorOwnership.Zone>();
             internal int ViewWidth, ViewHeight;
             internal bool Colored, ShowDisabled, ShowActive;
 
             internal Group(ComputeShader shader, GpuGraphDefinition graph, CompositorDefinition compositor, VectorTextureDefinition textures,
-                GpuGraphDefinition.ControllerLimits limits, EventManifest manifest, NoiseFieldGpuPlan.Key key)
+                GpuGraphDefinition.ControllerLimits limits, EventManifest manifest, NoiseFieldGpuPlan.Key key, string vectorSource)
             {
-                Palette = new NoiseFieldGpuPalette(manifest, textures);
-                Masks = new PackageComputeFrame(shader, graph);
-                try { Layer = new PackageSpriteLayer(manifest, compositor, key.SortingLayer, key.SortingOrder, key.UnityLayer, limits.Capacity); }
-                catch { Masks.Dispose(); throw; }
+                Vectors = new JsonVectorTextureSet(vectorSource, textures);
+                try
+                {
+                    Masks = new PackageComputeFrame(shader, graph);
+                    Layer = new PackageSpriteLayer(manifest, compositor, key.SortingLayer, key.SortingOrder, key.UnityLayer, limits.Capacity);
+                }
+                catch { Masks?.Dispose(); Vectors.Dispose(); throw; }
             }
-            public void Dispose() { Layer.Dispose(); Palette.Dispose(); Masks.Dispose(); }
+            public void Dispose() { Layer.Dispose(); Vectors.Dispose(); Masks.Dispose(); }
         }
 
         private readonly EventManifest _manifest;
@@ -42,6 +44,7 @@ namespace PEV.Scripting
         private readonly VectorTextureDefinition _textures;
         private readonly GpuGraphDefinition.ControllerLimits _inputLimits;
         private readonly string _groupProgram;
+        private readonly string _vectorProgram;
         private readonly Dictionary<string, Texture2D> _images = new Dictionary<string, Texture2D>(StringComparer.Ordinal);
         private readonly NoiseFieldGpuPlan _plan;
         private readonly ResourceGroupStaging<NoiseFieldGpuPlan.Key, Group> _staging =
@@ -76,6 +79,11 @@ namespace PEV.Scripting
             if (groupBytes == null) throw new InvalidOperationException("Package group program is missing");
             _groupProgram = new UTF8Encoding(false, true).GetString(contactBytes) + "\n" + new UTF8Encoding(false, true).GetString(groupBytes);
             if (_groupProgram.Length > 262144) throw new InvalidOperationException("Package group program is too large");
+            if (!manifest.TryRuntimeResource("vectorProgram", manifest.VectorPrograms, out var vectorPath))
+                throw new InvalidOperationException("Package vector program is not declared");
+            var vectorBytes = EventLoader.ReadResource(manifest.SourcePath, vectorPath, 262144);
+            if (vectorBytes == null) throw new InvalidOperationException("Package vector program is missing");
+            _vectorProgram = new UTF8Encoding(false, true).GetString(vectorBytes);
         }
 
         private bool EnsureImages()
@@ -138,7 +146,7 @@ namespace PEV.Scripting
                     Flag(compute, "hasContacts") != (touches.Count > 0) || Flag(conditions, "hasContacts") != (positions.Count > 0))
                     throw new ArgumentException("Inconsistent package group commands");
                 if (group == null)
-                    _staging.SetPending(pair.Key, group = new Group(_compute, _graph, _compositor, _textures, _inputLimits, _manifest, pair.Key)
+                    _staging.SetPending(pair.Key, group = new Group(_compute, _graph, _compositor, _textures, _inputLimits, _manifest, pair.Key, _vectorProgram)
                     {
                         ViewWidth = width, ViewHeight = height, Colored = colored,
                         ShowDisabled = showDisabled, ShowActive = showActive
@@ -147,7 +155,7 @@ namespace PEV.Scripting
                     group.Colored == colored && group.ShowDisabled == showDisabled && group.ShowActive == showActive;
                 if (!matches)
                 {
-                    var replacement = new Group(_compute, _graph, _compositor, _textures, _inputLimits, _manifest, pair.Key)
+                    var replacement = new Group(_compute, _graph, _compositor, _textures, _inputLimits, _manifest, pair.Key, _vectorProgram)
                     {
                         ViewWidth = width, ViewHeight = height, Colored = colored,
                         ShowDisabled = showDisabled, ShowActive = showActive
@@ -156,14 +164,10 @@ namespace PEV.Scripting
                     group = replacement;
                 }
                 group.Masks.Render(camera.pixelWidth, camera.pixelHeight, songTime, buffers, compute, _images);
-                if (colored)
+                var vector = commands["vector"];
+                if (vector != null && vector.Type != JTokenType.Null)
                 {
-                    if (!(commands["vector"] is JObject vector) || !(vector["Items"] is JArray colors) || colors.Count > 1024)
-                        throw new ArgumentException("Invalid package vector input");
-                    if (group.Colors.Length != colors.Count) Array.Resize(ref group.Colors, colors.Count);
-                    for (int i = 0; i < colors.Count; i++) group.Colors[i] = ColorRecord(colors[i]);
-                    int defaultRgb = Integer(vector["Options"], 0, 0xffffff);
-                    if (!group.Palette.Update(group.Masks, aspect, group.Colors, defaultRgb))
+                    if (!group.Vectors.Update(group.Masks.Width, group.Masks.Height, aspect, vector, group.Masks.RunExternal))
                     {
                         // Do not silently render a colored group as default red while its
                         // first palette or resized palette is still being calculated.
@@ -173,11 +177,8 @@ namespace PEV.Scripting
                     }
                 }
                 group.Textures.Clear();
-                if (colored)
-                {
-                    group.Textures.Add("primaryColors", group.Palette.Active);
-                    group.Textures.Add("secondaryColors", group.Palette.Disabled);
-                }
+                if (vector != null && vector.Type != JTokenType.Null)
+                    foreach (var role in _textures.Roles) group.Textures.Add(role.Key, group.Vectors.Get(role.Value));
                 ready &= group.Layer.Draw(camera, group.Masks, _images, aspect, songTime,
                     settings, conditions, values, fallbackBackground, group.Textures);
             }
@@ -204,15 +205,6 @@ namespace PEV.Scripting
             if (value < min || value > max) throw new ArgumentOutOfRangeException("Group command integer");
             return (int)value;
         }
-        private static float Number(JToken token)
-        {
-            if (token == null || (token.Type != JTokenType.Integer && token.Type != JTokenType.Float))
-                throw new ArgumentException("Invalid group command number");
-            float value = token.Value<float>();
-            if (float.IsNaN(value) || float.IsInfinity(value) || Math.Abs(value) > 1000000f)
-                throw new ArgumentOutOfRangeException("Group command number");
-            return value;
-        }
         private static JArray Rows(JToken token, int max, int width)
         {
             if (!(token is JArray rows) || rows.Count > max) throw new ArgumentException("Invalid group command rows");
@@ -220,15 +212,6 @@ namespace PEV.Scripting
                 throw new ArgumentException("Invalid group command row");
             return rows;
         }
-        private static NoiseFieldColorOwnership.Zone ColorRecord(JToken token)
-        {
-            if (!(token is JObject item)) throw new ArgumentException("Invalid group vector record");
-            return new NoiseFieldColorOwnership.Zone { CenterX = Number(item["CenterX"]), CenterY = Number(item["CenterY"]),
-                HalfX = Number(item["HalfX"]), HalfY = Number(item["HalfY"]), Angle = Number(item["Angle"]),
-                YScale = Number(item["YScale"]), Opacity = Number(item["Opacity"]), Red = Number(item["Red"]),
-                Green = Number(item["Green"]), Blue = Number(item["Blue"]), Active = Flag(item, "Active"), Inverted = Flag(item, "Inverted") };
-        }
-
 #if PEV_DIAGNOSTICS
         internal bool Render(IReadOnlyList<NoiseFieldRenderer.Entry> entries, Camera camera, float songTime,
             bool captureScene, Color fallbackBackground) =>
