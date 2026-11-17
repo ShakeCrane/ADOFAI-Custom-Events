@@ -214,8 +214,8 @@ namespace PEV.Scripting
             public GameObject GameObject;
             public SpriteRenderer Renderer;
             public Material Material;
-            public NoiseTextureFactory.Frames Frames;
-            public NoiseTextureFactory.Frames PendingFrames;
+            public BakedFrameCache.Frames Frames;
+            public BakedFrameCache.Frames PendingFrames;
             public bool ErrorReported;
             public string StructureKey;
             /// <summary>

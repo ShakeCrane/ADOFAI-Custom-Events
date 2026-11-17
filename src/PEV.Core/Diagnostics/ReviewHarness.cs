@@ -128,6 +128,7 @@ namespace PEV.Diagnostics
             Check("PIXEL-package-resource-limits", CheckPackagePixelResourceLimits);
             Check("PIXEL-kernel-mono-performance", CheckPixelKernelPerformance);
             CheckKeys();
+            yield return CheckGenericBakedFrameCacheSafe();
             yield return CheckTextures();
             yield return CheckFieldsWithoutGpuDriver();
             string vectorProbe = Environment.GetEnvironmentVariable("PEV_TEST_VECTOR_SCRIPT");
@@ -151,11 +152,69 @@ namespace PEV.Diagnostics
             Row("DONE", "ok");
         }
 
+        private static IEnumerator CheckGenericBakedFrameCacheSafe()
+        {
+            var probe = CheckGenericBakedFrameCache();
+            while (true)
+            {
+                bool next;
+                try { next = probe.MoveNext(); }
+                catch (Exception e) { Row("FRAME-cache-generic-lifecycle", "FAIL", e.ToString()); yield break; }
+                if (!next) yield break;
+                yield return probe.Current;
+            }
+        }
+
+        private static IEnumerator CheckGenericBakedFrameCache()
+        {
+            var cache = new BakedFrameCache(100f);
+            try
+            {
+                int jobs = 0;
+                Func<System.Threading.CancellationToken, BakedFrameCache.Plan> plan = token =>
+                { System.Threading.Interlocked.Increment(ref jobs); return new BakedFrameCache.Plan { Width = 4, Height = 3, Count = 3 }; };
+                Action<Color32[][], int, int, System.Threading.CancellationToken> render = (frames, width, height, token) =>
+                {
+                    for (int k = 0; k < frames.Length; k++)
+                        frames[k] = Enumerable.Repeat(new Color32((byte)(k + 1), 2, 3, 255), width * height).ToArray();
+                };
+                var first = cache.Begin("generic", plan, render);
+                var second = cache.Begin("generic", plan, render);
+                if (!ReferenceEquals(first, second) || first.Refs != 2) throw new InvalidOperationException("Frame set was not shared");
+                var other = new BakedFrameCache(100f);
+                try { other.Release(first); throw new InvalidOperationException("Foreign cache accepted the frame set"); }
+                catch (ArgumentException) { }
+                cache.Release(first);
+                float deadline = Time.realtimeSinceStartup + 5f;
+                while (!second.Ready && second.Error == null && Time.realtimeSinceStartup < deadline)
+                { cache.Pump(2f); yield return null; }
+                bool ok = second.Ready && jobs == 1 && second.Sprites.Length == 3 && second.Textures[2] != null &&
+                    second.Textures[2].GetPixels32()[0].r == 3;
+                cache.Release(second);
+                cache.Release(second);
+                ok &= cache.Cache.Count == 0 && second.Cancelled;
+                var invalid = cache.Begin("too-large", token => new BakedFrameCache.Plan { Width = 4097, Height = 1, Count = 1 }, render);
+                deadline = Time.realtimeSinceStartup + 5f;
+                while (invalid.Worker.IsAlive && Time.realtimeSinceStartup < deadline) yield return null;
+                ok &= invalid.Error != null && invalid.Textures == null;
+                cache.Release(invalid);
+                var incomplete = cache.Begin("incomplete", token => new BakedFrameCache.Plan { Width = 4, Height = 3, Count = 1 },
+                    (frames, width, height, token) => { });
+                deadline = Time.realtimeSinceStartup + 5f;
+                while (incomplete.Worker.IsAlive && Time.realtimeSinceStartup < deadline) yield return null;
+                ok &= incomplete.Error != null && !incomplete.PixelsReady;
+                cache.Release(incomplete);
+                Row("FRAME-cache-generic-lifecycle", ok && cache.Cache.Count == 0 ? "PASS" : "FAIL",
+                    "sharing, ownership, partial and duplicate release, upload, cleanup and invalid output rejection");
+            }
+            finally { cache.Clear(); }
+        }
+
         private static IEnumerator CheckCpuBakePlanCancellation()
         {
             if (!EventRegistry.TryGetById("pev.noise-field", out var manifest)) yield break;
             var request = Request(); request.Provider = manifest; request.FrameCount = 96;
-            var released = new List<NoiseTextureFactory.Frames>();
+            var released = new List<BakedFrameCache.Frames>();
             for (int i = 0; i < 20; i++)
             {
                 request.Seed = i;
@@ -2518,7 +2577,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 var details = new List<string>();
                 foreach (System.Collections.DictionaryEntry item in cache)
                 {
-                    var set = (NoiseTextureFactory.Frames)item.Value;
+                    var set = (BakedFrameCache.Frames)item.Value;
                     details.Add($"{set.TexW}x{set.TexH} frames={set.Pixels?.Length} built={set.Pixels?.Count(x => x != null)} " +
                         $"ready={set.PixelsReady}/{set.Ready} worker={set.Worker?.IsAlive} error={set.Error}");
                 }
