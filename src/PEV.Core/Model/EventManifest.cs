@@ -17,23 +17,10 @@ namespace PEV.Model
             Labels.TryGetValue("English", out var english) ? english : Name;
     }
 
-    public sealed class FieldUniformSpec
-    {
-        public string Name;
-        public float[] Values;
-    }
-
     public sealed class ImageAssetSpec
     {
         public string Path, Wrap, Filter;
         public bool FlipY, Linear;
-    }
-
-    public sealed class FieldWaveSpec
-    {
-        public string Name;
-        public float Base, Amplitude, Frequency, Scale;
-        public float At(float time) => (Base + Amplitude * (UnityEngine.Mathf.Sin(time * Frequency) * 0.5f + 0.5f)) * Scale;
     }
 
     public sealed class DecorationMigrationBinding
@@ -189,8 +176,6 @@ namespace PEV.Model
         public string DecorationDefaultColor;
         public string DecorationDefaultTag;
         public string HostPrimitive;
-        public readonly List<FieldUniformSpec> FieldUniforms = new List<FieldUniformSpec>();
-        public readonly List<FieldWaveSpec> FieldWaves = new List<FieldWaveSpec>();
         public readonly Dictionary<string, ImageAssetSpec> ImageAssets = new Dictionary<string, ImageAssetSpec>(StringComparer.Ordinal);
         public readonly Dictionary<string, string> ShaderAssets = new Dictionary<string, string>(StringComparer.Ordinal);
         public string FieldPreviewKey;
@@ -454,35 +439,6 @@ namespace PEV.Model
                 }
             }
 
-            if (root["fieldUniforms"] != null)
-            {
-                if (m.SchemaVersion < 3 || m.HostPrimitive != "fx.field" || !(root["fieldUniforms"] is JObject uniforms) || uniforms.Count > 128)
-                { error = "fieldUniforms requires a schema 3 fx.field event and an object with at most 128 entries"; return null; }
-                var reserved = new HashSet<string>(StringComparer.Ordinal)
-                {
-                    "uView", "uUnityTime", "_PEVScreenParams", "_EffectRT_TexelSize", "_TouchPosCount", "_TouchPos", "_TouchPosShine",
-                    "uMasks", "uAuxMasks", "uDisplaceTex", "uSparkTex", "uNoiseTex", "uActiveColors", "uDisabledColors", "_PEVBackground", "_GrabTexture"
-                };
-                foreach (var property in uniforms.Properties())
-                {
-                    if (!System.Text.RegularExpressions.Regex.IsMatch(property.Name, "^[A-Za-z_][A-Za-z0-9_]{0,63}$") || reserved.Contains(property.Name))
-                    { error = "invalid or reserved field uniform '" + property.Name + "'"; return null; }
-                    var values = property.Value is JArray array ? array.ToArray() : new[] { property.Value };
-                    if ((property.Value is JArray ? values.Length != 4 : values.Length != 1) ||
-                        values.Any(v => v.Type != JTokenType.Float && v.Type != JTokenType.Integer))
-                    { error = "field uniform '" + property.Name + "' must be a number or four numbers"; return null; }
-                    var converted = new float[values.Length];
-                    for (int i = 0; i < values.Length; i++)
-                    {
-                        double number = values[i].Value<double>();
-                        converted[i] = (float)number;
-                        if (double.IsNaN(number) || double.IsInfinity(number) || float.IsInfinity(converted[i]))
-                        { error = "field uniform values must be finite"; return null; }
-                    }
-                    m.FieldUniforms.Add(new FieldUniformSpec { Name = property.Name, Values = converted });
-                }
-            }
-
             if (root["fieldPreview"] != null)
             {
                 if (m.SchemaVersion < 3 || m.HostPrimitive != "fx.field" || !(root["fieldPreview"] is JObject preview) ||
@@ -499,35 +455,6 @@ namespace PEV.Model
                     m.FieldParameterBindings.Add(property.Name, target);
                 }
                 m.FieldPreviewKey = preview.Value<string>("key");
-            }
-
-            if (root["fieldWaves"] != null)
-            {
-                if (m.SchemaVersion < 3 || m.HostPrimitive != "fx.field" || !(root["fieldWaves"] is JObject waves) || waves.Count > 16)
-                { error = "fieldWaves requires a schema 3 fx.field event and at most 16 entries"; return null; }
-                var reserved = new HashSet<string>(StringComparer.Ordinal)
-                {
-                    "uView", "uUnityTime", "_PEVScreenParams", "_EffectRT_TexelSize", "_TouchPosCount", "_TouchPos",
-                    "uMasks", "uAuxMasks", "uDisplaceTex", "uSparkTex", "uNoiseTex", "uActiveColors", "uDisabledColors", "_PEVBackground", "_GrabTexture"
-                };
-                foreach (var property in waves.Properties())
-                {
-                    if (!System.Text.RegularExpressions.Regex.IsMatch(property.Name, "^[A-Za-z_][A-Za-z0-9_]{0,63}$") || reserved.Contains(property.Name) ||
-                        m.FieldUniforms.Any(u => u.Name == property.Name) || !(property.Value is JObject wave) || wave.Count != 4)
-                    { error = "invalid or reserved field wave '" + property.Name + "'"; return null; }
-                    var numbers = new float[4];
-                    string[] names = { "base", "amplitude", "frequency", "scale" };
-                    for (int i = 0; i < names.Length; i++)
-                    {
-                        var value = wave[names[i]];
-                        if (value == null || (value.Type != JTokenType.Float && value.Type != JTokenType.Integer))
-                        { error = "field wave values must be finite numbers"; return null; }
-                        double number = value.Value<double>(); numbers[i] = (float)number;
-                        if (double.IsNaN(number) || double.IsInfinity(number) || float.IsInfinity(numbers[i]))
-                        { error = "field wave values must be finite numbers"; return null; }
-                    }
-                    m.FieldWaves.Add(new FieldWaveSpec { Name = property.Name, Base = numbers[0], Amplitude = numbers[1], Frequency = numbers[2], Scale = numbers[3] });
-                }
             }
 
             if (root["params"] != null && !(root["params"] is JArray))

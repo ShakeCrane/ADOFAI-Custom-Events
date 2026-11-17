@@ -19,10 +19,10 @@ namespace PEV.Scripting
         private readonly SortingGroup _sorting;
         private readonly SpriteRenderer _disabled, _active;
         private readonly Material[] _materials;
-        private readonly System.Collections.Generic.IReadOnlyList<FieldWaveSpec> _waves;
+        private readonly System.Collections.Generic.IReadOnlyList<CompositorDefinition.Wave> _waves;
         private VisibilityActivationGate _activation, _disabledActivation, _activeActivation;
 
-        internal LegacyGpuLayerReference(EventManifest manifest, int sortingLayer, int sortingOrder, int unityLayer)
+        internal LegacyGpuLayerReference(EventManifest manifest, CompositorDefinition definition, int sortingLayer, int sortingOrder, int unityLayer)
         {
             var materials = new Material[10];
             GameObject root = null;
@@ -38,7 +38,7 @@ namespace PEV.Scripting
                     Shader shader = ShaderBundleCache.Load(manifest, path, out string error);
                     if (shader == null) throw new InvalidOperationException(error);
                     materials[i] = new Material(shader) { name = "PEV." + names[i] };
-                    ApplyUniforms(materials[i], manifest.FieldUniforms);
+                    ApplyUniforms(materials[i], definition.Constants);
                 }
                 root = new GameObject("PEV.NoiseGpuLayer");
                 root.layer = unityLayer;
@@ -50,7 +50,7 @@ namespace PEV.Scripting
                 _active = CreateRenderer(root.transform, "Active", unityLayer, 1);
                 _root = root;
                 _materials = materials;
-                _waves = manifest.FieldWaves;
+                _waves = definition.Waves;
             }
             catch
             {
@@ -60,7 +60,7 @@ namespace PEV.Scripting
             }
         }
 
-        internal static void ApplyUniforms(Material material, System.Collections.Generic.IReadOnlyList<FieldUniformSpec> uniforms)
+        internal static void ApplyUniforms(Material material, System.Collections.Generic.IReadOnlyList<CompositorDefinition.Constant> uniforms)
         {
             foreach (var uniform in uniforms)
             {

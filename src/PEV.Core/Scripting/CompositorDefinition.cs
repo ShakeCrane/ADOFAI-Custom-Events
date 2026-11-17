@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
@@ -9,6 +10,13 @@ namespace PEV.Scripting
     // Declarative material selection and input binding; shader code remains package-owned.
     internal sealed class CompositorDefinition
     {
+        internal sealed class Constant { internal string Name; internal float[] Values; }
+        internal sealed class Wave
+        {
+            internal string Name;
+            internal float Base, Amplitude, Frequency, Scale;
+            internal float At(float time) => (Base + Amplitude * (UnityEngine.Mathf.Sin(time * Frequency) * .5f + .5f)) * Scale;
+        }
         internal sealed class Binding
         {
             internal string Name, Type, Input;
@@ -28,6 +36,8 @@ namespace PEV.Scripting
         }
         internal readonly List<Binding> Bindings = new List<Binding>();
         internal readonly List<Layer> Layers = new List<Layer>();
+        internal readonly List<Constant> Constants = new List<Constant>();
+        internal readonly List<Wave> Waves = new List<Wave>();
         private static readonly Regex Identifier = new Regex("^[A-Za-z_][A-Za-z0-9_]{0,63}$", RegexOptions.CultureInvariant);
         private static string Name(JToken token)
         {
@@ -68,6 +78,33 @@ namespace PEV.Scripting
             if (!(root["compositor"] is JObject definition) || !(definition["layers"] is JArray layers) || layers.Count < 1 || layers.Count > 4)
                 throw new ArgumentException("Invalid compositor layers");
             var result = new CompositorDefinition();
+            if (definition["constants"] != null)
+            {
+                if (!(definition["constants"] is JObject constants) || constants.Count > 128) throw new ArgumentException("Invalid compositor constants");
+                foreach (var property in constants.Properties())
+                {
+                    string name = Name(new JValue(property.Name));
+                    var values = property.Value is JArray array ? array.ToArray() : new[] { property.Value };
+                    if ((property.Value is JArray ? values.Length != 4 : values.Length != 1)) throw new ArgumentException("Invalid compositor constant");
+                    var converted = new float[values.Length];
+                    for (int i = 0; i < values.Length; i++) converted[i] = Number(values[i]);
+                    result.Constants.Add(new Constant { Name = name, Values = converted });
+                }
+            }
+            if (definition["waves"] != null)
+            {
+                if (!(definition["waves"] is JObject waves) || waves.Count > 16) throw new ArgumentException("Invalid compositor waves");
+                var uniformNames = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var constant in result.Constants) uniformNames.Add(constant.Name);
+                foreach (var property in waves.Properties())
+                {
+                    string name = Name(new JValue(property.Name));
+                    if (!uniformNames.Add(name) || !(property.Value is JObject wave) || wave.Count != 4)
+                        throw new ArgumentException("Invalid compositor wave");
+                    result.Waves.Add(new Wave { Name = name, Base = Number(wave["base"]), Amplitude = Number(wave["amplitude"]),
+                        Frequency = Number(wave["frequency"]), Scale = Number(wave["scale"]) });
+                }
+            }
             BindingsFrom(definition["bindings"], result.Bindings);
             var names = new HashSet<string>(StringComparer.Ordinal);
             foreach (var item in layers)
@@ -85,6 +122,14 @@ namespace PEV.Scripting
                 BindingsFrom(spec["bindings"], layer.Bindings); result.Layers.Add(layer);
             }
             return result;
+        }
+        private static float Number(JToken token)
+        {
+            if (token == null || (token.Type != JTokenType.Integer && token.Type != JTokenType.Float))
+                throw new ArgumentException("Invalid compositor number");
+            float value = token.Value<float>();
+            if (float.IsNaN(value) || float.IsInfinity(value)) throw new ArgumentException("Invalid compositor number");
+            return value;
         }
     }
 }

@@ -471,7 +471,116 @@
           }
         ]
       }
-    ]
+    ],
+    "constants": {
+      "_EdgeOpacity": 0.8,
+      "_FillStrength": 0.667,
+      "_FillOpacity": 0.667,
+      "_GlowIntensity": 0.8,
+      "_SparkMapOpacity": 5.69,
+      "_SparkHueShiftAmount": 0.2,
+      "_SparkDisplaceIntensity": 2.39,
+      "_DisplaceBlendIntensity": 0.411,
+      "_DisplaceSpeed": 1.5,
+      "_DisplaceStrength": 0.15,
+      "_TouchPosRadius": 0.5,
+      "_TouchPosSDFSmoothness": 0.47,
+      "_TouchPosSDFFalloff": 0.41,
+      "_BackgroundPixelScale": 6,
+      "uDisabledFillOpacity": 0.4,
+      "uDisabledSparkOpacity": 3.5,
+      "uDisabledSparkIntensity": 2.29,
+      "uDisabledSpeed": 0.3,
+      "_ShineSpeed": 37.9,
+      "_ShineBrightness": 0.12,
+      "_TouchDisplaceSpeed": 2.9,
+      "_TouchDisplaceStrength": 0.08,
+      "_NoiseEvoSpeed": 0.03,
+      "_NoiseDirChangeSpeed": 60,
+      "_NoiseDisplaceStrength": 1,
+      "_NoiseRadius": 0.48,
+      "_NoiseSmoothness": 1,
+      "_SDFCellSize": 0.11,
+      "_SDFSmoothness": 0.63,
+      "_SDFFalloff": 0.34,
+      "_SDFMoveSpeed": 9.3,
+      "_TouchBackgroundPixelScale": 8,
+      "uReadyExtra": 0,
+      "_EdgeColor": [
+        1,
+        0.33018857,
+        0.33018857,
+        1
+      ],
+      "_FillColor": [
+        0.7132075,
+        0.23549296,
+        0.23549296,
+        1
+      ],
+      "_GlowColor": [
+        1,
+        0.17924517,
+        0.17924517,
+        1
+      ],
+      "_DisplaceDirection": [
+        1,
+        1,
+        0,
+        0
+      ],
+      "uDisabledFillColor": [
+        0.497,
+        0.13766898,
+        0.13766898,
+        1
+      ],
+      "_ShineColor": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "_TouchDisplaceDirection": [
+        1,
+        1,
+        0,
+        0
+      ],
+      "_NoiseTint": [
+        1,
+        0,
+        0,
+        1
+      ],
+      "_TouchGlowColor": [
+        1,
+        0,
+        0,
+        1
+      ],
+      "_SparkTint": [
+        1,
+        0.28490567,
+        0.28490567,
+        0
+      ],
+      "uDisabledSparkTint": [
+        0.31132078,
+        0.077830195,
+        0.077830195,
+        0
+      ]
+    },
+    "waves": {
+      "_TouchPosShine": {
+        "base": 0.63,
+        "amplitude": 0.37,
+        "frequency": 43,
+        "scale": 2
+      }
+    }
   },
   "shader": "compute"
 }

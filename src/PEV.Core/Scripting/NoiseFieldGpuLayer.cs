@@ -17,8 +17,6 @@ namespace PEV.Scripting
         {
             _compositor = new SpriteCompositor(manifest, definition, sortingLayer, sortingOrder, unityLayer);
         }
-        internal static void ApplyUniforms(Material material, IReadOnlyList<FieldUniformSpec> uniforms) =>
-            SpriteCompositor.ApplyUniforms(material, uniforms);
         internal bool Draw(Camera camera, NoiseFieldGpuMasks masks, IReadOnlyDictionary<string, Texture2D> images,
             float chartAspect, float songTime, IReadOnlyDictionary<string, bool> settings,
             bool hover, bool showDisabled, bool showActive, Color fallbackBackground,

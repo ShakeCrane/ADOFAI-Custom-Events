@@ -16,7 +16,6 @@ namespace PEV.Scripting
             internal VisibilityActivationGate Activation;
         }
         private readonly CompositorDefinition _definition;
-        private readonly IReadOnlyList<FieldWaveSpec> _waves;
         private readonly Dictionary<string, Material> _materials = new Dictionary<string, Material>(StringComparer.Ordinal);
         private readonly List<Layer> _layers = new List<Layer>();
         private GameObject _root;
@@ -25,7 +24,6 @@ namespace PEV.Scripting
         internal SpriteCompositor(EventManifest manifest, CompositorDefinition definition, int sortingLayer, int sortingOrder, int unityLayer)
         {
             _definition = definition ?? throw new ArgumentNullException(nameof(definition));
-            _waves = manifest.FieldWaves;
             try
             {
                 foreach (var layer in definition.Layers)
@@ -38,7 +36,7 @@ namespace PEV.Scripting
                         if (shader == null) throw new InvalidOperationException(error);
                         var material = new Material(shader) { name = "PEV." + variant.Shader };
                         _materials.Add(variant.Shader, material);
-                        ApplyUniforms(material, manifest.FieldUniforms);
+                        ApplyConstants(material, definition.Constants);
                     }
                 _root = new GameObject("PEV.SpriteCompositor");
                 _root.layer = unityLayer; _root.SetActive(false);
@@ -56,7 +54,7 @@ namespace PEV.Scripting
             catch { Dispose(); throw; }
         }
 
-        internal static void ApplyUniforms(Material material, IReadOnlyList<FieldUniformSpec> uniforms)
+        internal static void ApplyConstants(Material material, IReadOnlyList<CompositorDefinition.Constant> uniforms)
         {
             foreach (var uniform in uniforms)
             {
@@ -96,7 +94,7 @@ namespace PEV.Scripting
                 layer.Renderer.sharedMaterial = material;
                 Bind(material, _definition.Bindings, conditions, inputs);
                 Bind(material, layer.Definition.Bindings, conditions, inputs);
-                foreach (var wave in _waves) material.SetFloat(wave.Name, wave.At(time));
+                foreach (var wave in _definition.Waves) material.SetFloat(wave.Name, wave.At(time));
             }
             return settled;
         }

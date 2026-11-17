@@ -1045,7 +1045,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 activeColors.SetPixels32(Enumerable.Repeat(new Color32(20, 220, 80, 255), masks.Width * masks.Height).ToArray());
                 auxiliaryColors.SetPixels32(Enumerable.Repeat(new Color32(30, 70, 220, 255), masks.Width * masks.Height).ToArray());
                 activeColors.Apply(false, false); auxiliaryColors.Apply(false, false);
-                legacy = new LegacyGpuLayerReference(manifest, 0, 0, 30);
+                legacy = new LegacyGpuLayerReference(manifest, CompositorDefinition.Parse(graphData), 0, 0, 30);
                 current = new NoiseFieldGpuLayer(manifest, compositor, 0, 0, 31);
                 var positions = new Vector4[FieldContactController.Capacity];
                 positions[0] = NoiseFieldGpuLayer.TouchPosition(new Vector2(.5f, .5f), 128, 128);
@@ -1619,23 +1619,23 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             });
             Check("FIELD-event-uniform-declarations", () =>
             {
-                const string valid = "{\"id\":\"example.shader\",\"schemaVersion\":3,\"hostPrimitive\":\"fx.field\",\"fieldWaves\":{\"_Pulse\":{\"base\":0.63,\"amplitude\":0.37,\"frequency\":43,\"scale\":2}},\"fieldUniforms\":{\"_Intensity\":0.5,\"_Tint\":[1,0,0.25,1]}}";
-                var manifest = EventManifest.Parse(valid, "", out _);
-                return manifest != null && manifest.FieldUniforms.Count == 2 && manifest.FieldWaves.Count == 1 &&
-                    Mathf.Abs(manifest.FieldWaves[0].At(0) - 1.63f) < 0.00001f &&
-                    manifest.FieldUniforms[0].Values[0] == 0.5f && manifest.FieldUniforms[1].Values[2] == 0.25f &&
-                    EventManifest.Parse(valid.Replace("_Intensity", "uView"), "", out _) == null &&
-                    EventManifest.Parse(valid.Replace("[1,0,0.25,1]", "[1,2]"), "", out _) == null;
+                const string valid = "{\"compositor\":{\"layers\":[{\"name\":\"base\",\"visible\":\"show\",\"order\":0,\"variants\":[{\"shader\":\"x\"}]}],\"waves\":{\"_Pulse\":{\"base\":0.63,\"amplitude\":0.37,\"frequency\":43,\"scale\":2}},\"constants\":{\"_Intensity\":0.5,\"_Tint\":[1,0,0.25,1]}}}";
+                var definition = CompositorDefinition.Parse(System.Text.Encoding.UTF8.GetBytes(valid));
+                if (definition.Constants.Count != 2 || definition.Waves.Count != 1 ||
+                    Mathf.Abs(definition.Waves[0].At(0) - 1.63f) > .00001f ||
+                    definition.Constants[0].Values[0] != .5f || definition.Constants[1].Values[2] != .25f) return false;
+                try { CompositorDefinition.Parse(System.Text.Encoding.UTF8.GetBytes(valid.Replace("[1,0,0.25,1]", "[1,2]"))); return false; }
+                catch (ArgumentException) { }
+                return true;
             });
             Check("FIELD-event-uniform-material", () =>
             {
-                var manifest = EventManifest.Parse("{\"id\":\"example\",\"schemaVersion\":3,\"hostPrimitive\":\"fx.field\",\"fieldUniforms\":{\"_Color\":[0.25,0.5,0.75,1]}}", "", out _);
                 var shader = Shader.Find("Hidden/BlendModes/VisualDeco/Grab");
-                if (manifest == null || shader == null) return false;
+                if (shader == null) return false;
                 var material = new Material(shader);
                 try
                 {
-                    NoiseFieldGpuLayer.ApplyUniforms(material, manifest.FieldUniforms);
+                    SpriteCompositor.ApplyConstants(material, new[] { new CompositorDefinition.Constant { Name = "_Color", Values = new[] { .25f,.5f,.75f,1f } } });
                     var value = material.GetVector("_Color");
                     return value == new Vector4(0.25f, 0.5f, 0.75f, 1f);
                 }
@@ -1865,7 +1865,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Check("FIELD-touch-shader-uniforms", () =>
             {
                 var p = NoiseFieldGpuLayer.TouchPosition(new Vector2(0.5f, 0.25f), 1600, 900);
-                var wave = new FieldWaveSpec { Base = 0.63f, Amplitude = 0.37f, Frequency = 43f, Scale = 2f };
+                var wave = new CompositorDefinition.Wave { Base = 0.63f, Amplitude = 0.37f, Frequency = 43f, Scale = 2f };
                 return Mathf.Abs(p.x - 8f / 9f) < 0.00001f && Mathf.Abs(p.y - 0.25f) < 0.00001f &&
                        Mathf.Abs(wave.At(0f) - 1.63f) < 0.00001f &&
                        Mathf.Abs(wave.At(Mathf.PI / 86f) - 2f) < 0.00001f;
