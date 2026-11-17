@@ -106,6 +106,19 @@ def validate(root, manifest, _included=False):
                         not os.path.isfile(os.path.join(root, normalized))):
                     problems.append(f"invalid or missing {declaration} resource '{name}'")
 
+    if "runtimeBindings" in manifest:
+        bindings = manifest["runtimeBindings"]
+        if manifest.get("schemaVersion") != 4 or not isinstance(bindings, dict) or not 1 <= len(bindings) <= 16:
+            problems.append("runtimeBindings requires schemaVersion 4 and 1-16 named resource roles")
+        else:
+            programs = manifest.get("vectorPrograms")
+            graphs = manifest.get("computeGraphs")
+            roles = set(programs if isinstance(programs, dict) else ()) | set(graphs if isinstance(graphs, dict) else ())
+            for name, role in bindings.items():
+                if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name) or
+                        name in ("__proto__", "constructor", "prototype") or not isinstance(role, str) or role not in roles):
+                    problems.append("invalid runtime resource binding")
+
     if "shaderAssets" in manifest:
         assets = manifest["shaderAssets"]
         if (manifest.get("schemaVersion") != 4 or not manifest.get("shaderBundle") or not isinstance(assets, dict) or

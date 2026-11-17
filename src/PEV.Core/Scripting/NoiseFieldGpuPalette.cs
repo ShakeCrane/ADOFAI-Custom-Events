@@ -28,7 +28,7 @@ namespace PEV.Scripting
         {
             if (_worker == null)
             {
-                if (!_provider.VectorPrograms.TryGetValue("palette", out var path))
+                if (!_provider.TryRuntimeResource("colorProgram", _provider.VectorPrograms, out var path))
                     throw new InvalidOperationException("field package does not declare a palette vector program; update the event package");
                 byte[] bytes = PEV.Loading.EventLoader.ReadResource(_provider.SourcePath, path, 262144);
                 if (bytes == null || bytes.Length == 0 || bytes.Length > 262144)

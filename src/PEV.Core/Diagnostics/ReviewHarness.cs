@@ -826,6 +826,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 var second = ShaderBundleCache.LoadCompute(clone, clone.ShaderAssets["compute"], out _);
                 return first != null && first == second;
             });
+            yield return CheckRuntimeBindingsSafe(manifest);
             yield return CheckPackageImages(manifest);
             Check("GPU-package-graph-parity", () => CheckGpuGraphParity(manifest));
             Check("GPU-package-graph-limits", () => CheckGpuGraphLimits(manifest));
@@ -873,6 +874,69 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             yield return CheckRealFieldDepthSafe(manifest);
             yield return CheckRealFieldDriver(manifest);
             yield return CheckRealGpuFailureFallback(manifest);
+        }
+
+        private static IEnumerator CheckRuntimeBindingsSafe(EventManifest manifest)
+        {
+            var probe = CheckRuntimeBindings(manifest);
+            while (true)
+            {
+                bool next;
+                try { next = probe.MoveNext(); }
+                catch (Exception e) { Row("GPU-runtime-binding-renames", "FAIL", e.ToString()); yield break; }
+                if (!next) yield break;
+                yield return probe.Current;
+            }
+        }
+
+        private static IEnumerator CheckRuntimeBindings(EventManifest original)
+        {
+            string json = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(original.SourcePath, "event.json"));
+            var manifest = EventManifest.Parse(json, original.SourcePath, out string error);
+            if (manifest == null) throw new InvalidOperationException(error);
+            foreach (string binding in new[] { "renderGraph", "inputController", "colorProgram", "framePlan", "frameProgram" })
+            {
+                var resources = binding == "renderGraph" ? manifest.ComputeGraphs : manifest.VectorPrograms;
+                string old = manifest.RuntimeBindings[binding], renamed = "custom_" + binding;
+                string path = resources[old]; resources.Remove(old); resources.Add(renamed, path);
+                manifest.RuntimeBindings[binding] = renamed;
+            }
+            var request = Request(); request.Provider = manifest; request.EvolveSpeed = 24f;
+            var task = System.Threading.Tasks.Task.Run(() =>
+            {
+                var plan = CpuPackageBake.Prepare(request, System.Threading.CancellationToken.None);
+                var frames = new Color32[2][];
+                CpuPackageBake.Render(request, frames, 32, 32, System.Threading.CancellationToken.None);
+                return plan.Frames == 2 && frames.All(f => f != null && f.Length == 1024);
+            });
+            var go = new GameObject("PEV.ReviewRenamedBindings");
+            RenderTexture target = null;
+            NoiseFieldGpuCoordinator coordinator = null;
+            try
+            {
+                var camera = go.AddComponent<Camera>(); camera.enabled = false; camera.orthographic = true;
+                camera.orthographicSize = 1; camera.aspect = 1; go.transform.position = new Vector3(0, 0, -10);
+                target = new RenderTexture(64, 64, 0); target.Create(); camera.targetTexture = target;
+                coordinator = new NoiseFieldGpuCoordinator(manifest);
+                var entry = new NoiseFieldRenderer.Entry { Provider = manifest, Visible = true, Renderable = true,
+                    Opacity = 1, FillColor = Color.blue, SortingLayerID = 0, UnityLayer = 31,
+                    World = new Placement.Frame { Size = new Vector2(1, 1) } };
+                bool ready = false; float deadline = Time.realtimeSinceStartup + 15f;
+                var settings = new Dictionary<string, bool> { ["captureScene"] = false };
+                while ((!ready || !task.IsCompleted) && Time.realtimeSinceStartup < deadline)
+                {
+                    if (!ready) ready = coordinator.Render(new[] { entry }, camera, 0, settings, Color.black);
+                    yield return null;
+                }
+                Row("GPU-runtime-binding-renames", ready && task.IsCompleted && !task.IsFaulted && task.Result ? "PASS" : "FAIL",
+                    "renamed graph, input controller, color worker, CPU plan and CPU program; " + task.Exception);
+            }
+            finally
+            {
+                coordinator?.Dispose();
+                if (target != null) { target.Release(); UnityEngine.Object.Destroy(target); }
+                UnityEngine.Object.Destroy(go);
+            }
         }
 
         private static bool CheckGpuPackageRecordLayout(EventManifest manifest)
@@ -2403,6 +2467,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Check("FIELD-gpu-failure-restores-legacy", () => NoiseFieldRenderer.LayerCount == 1 && NoiseFieldRenderer.LiveCount == 1);
             var other = new EventManifest { Id = "example.other", SourcePath = first.SourcePath, Version = "other" };
             foreach (var item in first.VectorPrograms) other.VectorPrograms[item.Key] = item.Value;
+            foreach (var item in first.RuntimeBindings) other.RuntimeBindings[item.Key] = item.Value;
             foreach (var item in first.PixelResources) other.PixelResources[item.Key] = item.Value;
             var otherArgs = new Dictionary<string, object>(args) { ["__instance"] = "review/other", ["__manifest"] = other };
             NoiseFieldRenderer.Set("field", otherArgs, out _);

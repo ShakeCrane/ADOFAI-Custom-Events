@@ -109,7 +109,7 @@ Core 按已加载事件自动生成面板，按事件 ID 和设置名隔离数�
 
 API 2 的脚本通过 `ctx.settings.enabled` 读取本包的当前值。`ctx.settings` 是冻结的普通 JavaScript 数据快照；开关变更后，下一次 `update` 会收到新快照，脚本应在 `update` 内读取，而不是永久缓存初始值。脚本不能借此修改持久化设置或读取其他包的设置。API 1 和旧包保持原有行为。
 
-`hostPrimitive` 和 `fieldPreview` 是当前字段原语的内部接线，并非稳定的通用脚本 API。GPU 资源、计算流程、合成常量与波形和 CPU 回退程序由事件包声明；旧版 `fieldUniforms`、`fieldWaves`、`legacyFieldTextures`、`legacyFieldProfile`、`fieldTextures`、`fieldShaders` 已不再用于当前核心。事件包的布尔设置可以直接作为合成条件，不需要核心为具体开关预设绑定。脚本不能自行加载 shader。多个不同有效 bundle 同时运行仍需实机验证。
+`hostPrimitive`、`fieldPreview` 和 `runtimeBindings` 是当前字段原语的内部接线，并非稳定的通用脚本 API。GPU 资源、计算流程、合成常量与波形和 CPU 回退程序由事件包声明；旧版 `fieldUniforms`、`fieldWaves`、`legacyFieldTextures`、`legacyFieldProfile`、`fieldTextures`、`fieldShaders` 已不再用于当前核心。事件包的布尔设置可以直接作为合成条件，不需要核心为具体开关预设绑定。脚本不能自行加载 shader。多个不同有效 bundle 同时运行仍需实机验证。
 
 `decorationDefaults` 用于新建装饰和旧事件迁移，不覆盖已有装饰行的原生属性。升级本版 Core 时必须同时升级噪域事件包至 1.0.1 或更新版本：1.0.0 包缺少迁移到包内的纹理，无法单独搭配新 Core 渲染；旧谱面数据由升级后的同 ID 事件包读取。详细边界及未验证项见 [Core 边界审计](CORE-BOUNDARY-AUDIT.md)。
 

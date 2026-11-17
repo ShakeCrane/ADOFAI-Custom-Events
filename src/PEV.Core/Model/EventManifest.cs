@@ -164,6 +164,7 @@ namespace PEV.Model
         public readonly List<string> IncludedEvents = new List<string>();
         public readonly Dictionary<string, string> VectorPrograms = new Dictionary<string, string>(StringComparer.Ordinal);
         public readonly Dictionary<string, string> ComputeGraphs = new Dictionary<string, string>(StringComparer.Ordinal);
+        public readonly Dictionary<string, string> RuntimeBindings = new Dictionary<string, string>(StringComparer.Ordinal);
         public readonly Dictionary<string, string> PixelResources = new Dictionary<string, string>(StringComparer.Ordinal);
         public string Id;
         public string Version = "1.0.0";
@@ -188,6 +189,12 @@ namespace PEV.Model
 
         /// <summary>Host-owned package path (ZIP or directory); never exposed directly to scripts.</summary>
         public string SourcePath;
+
+        internal bool TryRuntimeResource(string binding, IReadOnlyDictionary<string, string> resources, out string path)
+        {
+            path = null;
+            return RuntimeBindings.TryGetValue(binding, out var role) && resources.TryGetValue(role, out path);
+        }
 
         /// <summary>Per-locale display name and description, keyed by SystemLanguage name.</summary>
         public Dictionary<string, string> Names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -330,6 +337,20 @@ namespace PEV.Model
                         entry.Value.Type != JTokenType.String || !PEV.Loading.EventLoader.IsPackageRelativePath(entry.Value.Value<string>()))
                     { error = "invalid compute graph declaration"; return null; }
                     m.ComputeGraphs.Add(entry.Name, entry.Value.Value<string>().Replace('\\', '/'));
+                }
+            }
+            if (root["runtimeBindings"] != null)
+            {
+                if (m.SchemaVersion < 4 || !(root["runtimeBindings"] is JObject bindings) || bindings.Count < 1 || bindings.Count > 16)
+                { error = "runtimeBindings requires schemaVersion 4 and 1-16 named resource roles"; return null; }
+                foreach (var entry in bindings.Properties())
+                {
+                    string role = entry.Value.Type == JTokenType.String ? entry.Value.Value<string>() : null;
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(entry.Name, "^[A-Za-z_][A-Za-z0-9_]{0,63}$") ||
+                        entry.Name == "__proto__" || entry.Name == "constructor" || entry.Name == "prototype" ||
+                        role == null || (!m.VectorPrograms.ContainsKey(role) && !m.ComputeGraphs.ContainsKey(role)))
+                    { error = "invalid runtime resource binding"; return null; }
+                    m.RuntimeBindings.Add(entry.Name, role);
                 }
             }
             if (root["pixelResources"] != null)

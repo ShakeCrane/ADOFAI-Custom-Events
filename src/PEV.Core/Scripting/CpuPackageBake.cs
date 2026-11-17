@@ -17,7 +17,7 @@ namespace PEV.Scripting
         internal static Plan Prepare(NoiseTextureFactory.Request req, CancellationToken cancellation)
         {
             var manifest = req.Provider ?? throw new ArgumentException("Missing package provider");
-            if (!manifest.VectorPrograms.TryGetValue("bakePlan", out var path)) throw new InvalidOperationException("Package bake plan is missing");
+            if (!manifest.TryRuntimeResource("framePlan", manifest.VectorPrograms, out var path)) throw new InvalidOperationException("Package bake plan is missing");
             byte[] bytes = EventLoader.ReadResource(manifest.SourcePath, path, 262144);
             if (bytes == null) throw new InvalidOperationException("Package bake plan is missing or too large");
             cancellation.ThrowIfCancellationRequested();
@@ -61,7 +61,9 @@ namespace PEV.Scripting
                 req.FillOpacity, req.FillStrength, req.Exposure, req.EdgeOpacity, req.GlowOpacity, req.SparkOpacity, req.Glitch,
                 pieces
             };
-            PixelFrameBatch.Render(manifest, "bake", frames, width, height, k => JsonConvert.SerializeObject(new
+            if (!manifest.RuntimeBindings.TryGetValue("frameProgram", out var frameProgram))
+                throw new InvalidOperationException("Package frame program binding is missing");
+            PixelFrameBatch.Render(manifest, frameProgram, frames, width, height, k => JsonConvert.SerializeObject(new
             {
                 stage = "frame", width, height, frameCount = frames.Length, frameIndex = k, request
             }), cancellation);

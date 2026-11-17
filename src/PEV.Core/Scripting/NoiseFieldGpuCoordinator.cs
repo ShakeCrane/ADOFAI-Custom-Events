@@ -53,7 +53,7 @@ namespace PEV.Scripting
         internal NoiseFieldGpuCoordinator(EventManifest manifest)
         {
             _manifest = manifest ?? throw new ArgumentNullException(nameof(manifest));
-            if (!manifest.ComputeGraphs.TryGetValue("coverage", out var graphPath))
+            if (!manifest.TryRuntimeResource("renderGraph", manifest.ComputeGraphs, out var graphPath))
                 throw new InvalidOperationException("Field compute graph is not declared");
             var graphBytes = EventLoader.ReadResource(manifest.SourcePath, graphPath, 131072);
             _graph = GpuGraphDefinition.Parse(graphBytes);
@@ -63,7 +63,7 @@ namespace PEV.Scripting
                 throw new InvalidOperationException("Compute shader role is not declared");
             _compute = ShaderBundleCache.LoadCompute(manifest, computePath, out string error);
             if (_compute == null) throw new InvalidOperationException(error);
-            if (!manifest.VectorPrograms.TryGetValue("contacts", out var contactPath))
+            if (!manifest.TryRuntimeResource("inputController", manifest.VectorPrograms, out var contactPath))
                 throw new InvalidOperationException("Field contact controller is not declared");
             var contactBytes = EventLoader.ReadResource(manifest.SourcePath, contactPath, 262144);
             if (contactBytes == null) throw new InvalidOperationException("Field contact controller is missing");

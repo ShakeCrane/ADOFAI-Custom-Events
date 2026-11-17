@@ -30,6 +30,16 @@ class PackageValidationTests(unittest.TestCase):
                 self.assertTrue(validate(self.root, dict(valid, computeGraphs=graphs)))
         self.assertTrue(validate(self.root, dict(valid, schemaVersion=3)))
 
+    def test_runtime_bindings_reference_named_package_resources(self):
+        (self.root / "graph.json").write_text("{}", encoding="utf-8")
+        valid = dict(self.manifest, schemaVersion=4, vectorPrograms={"program": "main.js"},
+                     computeGraphs={"graph": "graph.json"}, runtimeBindings={"mainGraph": "graph", "worker": "program"})
+        self.assertEqual([], validate(self.root, valid))
+        for bindings in ({}, {"worker": "missing"}, {"__proto__": "program"}, {"worker": None}, []):
+            with self.subTest(bindings=bindings):
+                self.assertTrue(validate(self.root, dict(valid, runtimeBindings=bindings)))
+        self.assertTrue(validate(self.root, dict(valid, schemaVersion=3)))
+
     def test_pixel_resources_are_package_local(self):
         (self.root / "texture.png").write_bytes(b"png fixture")
         valid = dict(self.manifest, schemaVersion=4, pixelResources={"texture": "texture.png"})

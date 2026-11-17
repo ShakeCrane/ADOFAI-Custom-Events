@@ -340,8 +340,8 @@ namespace PEV.Scripting
                 return hit;
             }
 
-            if (req.Provider == null || !req.Provider.VectorPrograms.ContainsKey("bake") ||
-                !req.Provider.VectorPrograms.ContainsKey("bakePlan"))
+            if (req.Provider == null || !req.Provider.TryRuntimeResource("frameProgram", req.Provider.VectorPrograms, out _) ||
+                !req.Provider.TryRuntimeResource("framePlan", req.Provider.VectorPrograms, out _))
             { error = "package does not declare its CPU bake program and plan; update the event package"; return null; }
             var frames = new Frames { Key = key, Refs = 1 };
 
