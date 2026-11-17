@@ -11,7 +11,6 @@ namespace PEV.Scripting
     internal sealed class FieldContactController
     {
         internal const int Capacity = 10;
-        internal struct Contact { internal long Id; internal Vector2 Position; }
         internal struct Area
         {
             internal Vector2 Center, HalfSize;
@@ -20,12 +19,12 @@ namespace PEV.Scripting
         }
         internal struct Slot { internal Vector2 Position; internal float Scale; }
         private readonly JsonController _controller;
-        internal readonly List<Contact> Contacts = new List<Contact>();
+        internal readonly List<ViewportPoint> Contacts = new List<ViewportPoint>();
         internal readonly List<Slot> Slots = new List<Slot>();
         internal bool Visible { get; private set; }
         internal FieldContactController(string source) { _controller = new JsonController(source); }
 
-        internal void Update(IReadOnlyList<Area> areas, IReadOnlyList<Contact> points, float aspect, float time)
+        internal void Update(IReadOnlyList<Area> areas, IReadOnlyList<ViewportPoint> points, float aspect, float time)
         {
             if (areas.Count > 1024 || points.Count > 1024 || !Finite(aspect) || aspect <= 0 || !Finite(time))
                 throw new ArgumentException("Invalid contact controller input");
@@ -40,12 +39,12 @@ namespace PEV.Scripting
             if (result["visible"]?.Type != JTokenType.Boolean || !(result["contacts"] is JArray contacts) ||
                 !(result["slots"] is JArray slots) || contacts.Count > Capacity || slots.Count > Capacity)
                 throw new ArgumentException("Invalid contact controller output");
-            var nextContacts = new List<Contact>(contacts.Count);
+            var nextContacts = new List<ViewportPoint>(contacts.Count);
             var nextSlots = new List<Slot>(slots.Count);
             foreach (var token in contacts)
             {
                 if (!(token is JObject item) || item["id"]?.Type != JTokenType.Integer) throw new ArgumentException("Invalid contact");
-                nextContacts.Add(new Contact { Id = item.Value<long>("id"), Position = new Vector2(Number(item, "x"), Number(item, "y")) });
+                nextContacts.Add(new ViewportPoint { Id = item.Value<long>("id"), Position = new Vector2(Number(item, "x"), Number(item, "y")) });
             }
             foreach (var token in slots)
             {

@@ -1128,9 +1128,9 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             for (int frame = 0; frame < 200; frame++)
             {
                 float time = frame < 130 ? frame * .013f : (frame - 130) * .02f;
-                var points = new List<FieldContactController.Contact>();
+                var points = new List<ViewportPoint>();
                 for (int i = 0; i < frame % 13; i++)
-                    points.Add(new FieldContactController.Contact { Id = i, Position = new Vector2((float)random.NextDouble(), (float)random.NextDouble()) });
+                    points.Add(new ViewportPoint { Id = i, Position = new Vector2((float)random.NextDouble(), (float)random.NextDouble()) });
                 var hits = points.Where(p => NoiseFieldTouchGeometry.Contains(legacyAreas,
                     new Vector2(p.Position.x * 2f - 1f, (p.Position.y * 2f - 1f) / (16f / 9f)))).ToArray();
                 expected.Update(hits.Select(p => new NoiseFieldTouchHistory.Contact { Id = p.Id, Position = p.Position }).ToArray(), time);

@@ -48,7 +48,7 @@ namespace PEV.Scripting
         private readonly NoiseFieldGpuPlan _plan = new NoiseFieldGpuPlan();
         private readonly NoiseFieldGroupStaging<NoiseFieldGpuPlan.Key, Group> _staging =
             new NoiseFieldGroupStaging<NoiseFieldGpuPlan.Key, Group>();
-        private readonly List<FieldContactController.Contact> _planets = new List<FieldContactController.Contact>();
+        private readonly List<ViewportPoint> _planets = new List<ViewportPoint>();
 
         internal NoiseFieldGpuCoordinator(EventManifest manifest)
         {
@@ -91,7 +91,7 @@ namespace PEV.Scripting
             if (!EnsureImages()) return _staging.Committed;
             float aspect = Mathf.Min(camera.aspect, 16f / 9f);
             _plan.Build(entries, camera, aspect, _modes, GameBridge.Values);
-            NoiseFieldPlanetInputs.Collect(camera, _planets);
+            LivePlanetPositions.Collect(camera, _planets);
             _staging.DiscardPendingExcept(_plan.Groups);
 
             bool ready = true;
