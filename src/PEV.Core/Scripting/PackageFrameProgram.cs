@@ -14,14 +14,18 @@ namespace PEV.Scripting
     {
         internal struct Plan { internal int Width, Height, Frames; }
         internal static Plan Prepare<T>(EventManifest manifest, T request, string planBinding, CancellationToken cancellation) where T : struct
+            => PrepareJson(manifest, PublicFieldsSnapshot.Serialize(request), planBinding, cancellation);
+
+        internal static Plan PrepareJson(EventManifest manifest, string request, string planBinding, CancellationToken cancellation)
         {
             if (manifest == null) throw new ArgumentNullException(nameof(manifest));
+            if (string.IsNullOrEmpty(request) || request.Length > 131072) throw new ArgumentException("Invalid frame request");
             if (!manifest.TryRuntimeResource(planBinding, manifest.VectorPrograms, out var path)) throw new InvalidOperationException("Package frame plan is missing");
             byte[] bytes = EventLoader.ReadResource(manifest.SourcePath, path, 262144);
             if (bytes == null) throw new InvalidOperationException("Package bake plan is missing or too large");
             cancellation.ThrowIfCancellationRequested();
             var controller = new JsonController(new UTF8Encoding(false, true).GetString(bytes), 500);
-            string input = "{\"request\":" + PublicFieldsSnapshot.Serialize(request) + "}";
+            string input = "{\"request\":" + request + "}";
             var result = controller.Update(input);
             var plan = ValidatePlan(result);
             cancellation.ThrowIfCancellationRequested();
@@ -45,9 +49,13 @@ namespace PEV.Scripting
         }
         internal static void Render<T>(EventManifest manifest, T snapshot, string programBinding, Color32[][] frames,
             int width, int height, CancellationToken cancellation) where T : struct
+            => RenderJson(manifest, PublicFieldsSnapshot.Serialize(snapshot), programBinding, frames, width, height, cancellation);
+
+        internal static void RenderJson(EventManifest manifest, string request, string programBinding, Color32[][] frames,
+            int width, int height, CancellationToken cancellation)
         {
             if (manifest == null) throw new ArgumentNullException(nameof(manifest));
-            string request = PublicFieldsSnapshot.Serialize(snapshot);
+            if (string.IsNullOrEmpty(request) || request.Length > 131072) throw new ArgumentException("Invalid frame request");
             if (!manifest.RuntimeBindings.TryGetValue(programBinding, out var frameProgram))
                 throw new InvalidOperationException("Package frame program binding is missing");
             PixelFrameBatch.Render(manifest, frameProgram, frames, width, height, k =>

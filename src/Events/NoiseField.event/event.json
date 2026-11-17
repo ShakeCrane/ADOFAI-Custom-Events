@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "id": "pev.noise-field",
-  "version": "1.29.0",
+  "version": "1.30.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
@@ -468,7 +468,8 @@
     "renderPlan": "workers/render-plan.js",
     "renderGroup": "workers/render-group.js",
     "bake": "workers/legacy-bake.js",
-    "bakePlan": "workers/legacy-plan.js"
+    "bakePlan": "workers/legacy-plan.js",
+    "frameRequest": "workers/frame-request.js"
   },
   "computeGraphs": {
     "coverage": "pipelines/coverage.json"
@@ -484,7 +485,8 @@
     "vectorProgram": "palette",
     "framePlan": "bakePlan",
     "frameProgram": "bake",
-    "frameKey": "frames"
+    "frameKey": "frames",
+    "frameRequest": "frameRequest"
   },
   "pixelResources": {
     "block": "assets/legacy/block.png",

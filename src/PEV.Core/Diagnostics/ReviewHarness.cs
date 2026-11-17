@@ -183,6 +183,7 @@ return [run({op:'pixelPack',channels:[p,p,p,p]})];}";
                 yield return CheckPackagedVectorWorker();
                 yield return CheckPackagePixelResources();
                 yield return CheckCpuCoverageProgram();
+                yield return CheckCpuRequestProgram();
                 yield return CheckCpuGlitchProgram();
                 yield return CheckCpuBakePerformance();
                 yield return CheckCpuBakeCancellation();
@@ -475,6 +476,47 @@ return [run({op:'pixelPack',channels:[p,p,p,p]})];}");
             bool ok = task.IsCompleted && !task.IsFaulted && frames.All(frame => frame != null && frame.Length == 192 * 132);
             Row("PIXEL-package-bake-performance", ok ? "PASS" : "FAIL",
                 $"96 frames 192x132: {watch.Elapsed.TotalMilliseconds:F0} ms wall, worst observed game frame {worstFrame * 1000:F1} ms; {task.Exception}");
+        }
+
+        private static IEnumerator CheckCpuRequestProgram()
+        {
+            if (!EventRegistry.TryGetById("pev.noise-field", out var manifest) ||
+                !manifest.TryRuntimeResource("frameRequest", manifest.VectorPrograms, out var path))
+            { Row("PIXEL-package-request-parity", "FAIL", "package frame request missing"); yield break; }
+            var script = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, path, 262144));
+            var controller = new JsonController(script, 50, 524288, 262144);
+            var parameters = new JObject { ["shape"] = "Rect", ["displace"] = .5f, ["edgeMargin"] = .5f,
+                ["edgeColor"] = "cc3366", ["fillOpacity"] = .7f, ["exposure"] = .15f, ["evolveSpeed"] = 24,
+                ["edgeOpacity"] = .8f, ["glowOpacity"] = .6f, ["sparkOpacity"] = .9f,
+                ["glitch"] = .3f, ["sampleRate"] = 1, ["frameCount"] = 2 };
+            var members = new JArray();
+            members.Add(new JObject { ["x"] = 0, ["y"] = 0, ["width"] = 2, ["height"] = 1,
+                ["rotation"] = 0, ["offsetX"] = 0, ["offsetY"] = 0, ["offsetRotation"] = 0, ["scale"] = 1,
+                ["color"] = new JArray(1, 0, 0), ["parameters"] = parameters });
+            var input = new JObject { ["members"] = members, ["width"] = 2, ["height"] = 2, ["centerX"] = 0,
+                ["centerY"] = 0, ["pixelWidth"] = 192, ["previousBucket"] = 0, ["seed"] = 123,
+                ["scene"] = new JArray(.1f, .3f, .7f) };
+            var output = controller.Update(input.ToString(Newtonsoft.Json.Formatting.None));
+            var request = output["request"]?.ToString(Newtonsoft.Json.Formatting.None);
+            var old = Request(); old.Provider = manifest; old.WidthWorld = 2; old.HeightWorld = 2; old.Margin = .5f;
+            old.Pieces = new[] { new NoiseTextureFactory.Piece { Half = new Vector2(1, .5f) } };
+            old.EdgeColor = new Color32(204, 51, 102, 255); old.SceneColor = new Color(.1f, .3f, .7f);
+            old.FillOpacity = .7f; old.FillStrength = .7f; old.Exposure = .15f; old.EvolveSpeed = 24;
+            old.EdgeOpacity = .8f; old.GlowOpacity = .6f; old.SparkOpacity = .9f; old.Glitch = .3f;
+            old.SampleRate = 1; old.FrameCount = 2; old.Seed = 123; old.TargetPixelWidth = 192; old.ScreenPixelWidth = 192;
+            var prior = new Color32[2][]; var current = new Color32[2][];
+            var token = System.Threading.CancellationToken.None;
+            var task = System.Threading.Tasks.Task.Run(() =>
+            {
+                PackageFrameProgram.Render(manifest, old, "frameProgram", prior, 32, 32, token);
+                PackageFrameProgram.RenderJson(manifest, request, "frameProgram", current, 32, 32, token);
+            });
+            float deadline = Time.realtimeSinceStartup + 15f;
+            while (!task.IsCompleted && Time.realtimeSinceStartup < deadline) yield return null;
+            bool equal = task.IsCompleted && !task.IsFaulted && output.Value<float>("margin") == .5f &&
+                output.Value<int>("bucket") == 192 && prior.All(pixels => pixels != null) &&
+                Enumerable.Range(0, 2).All(i => prior[i].SequenceEqual(current[i]));
+            Row("PIXEL-package-request-parity", equal ? "PASS" : "FAIL", task.Exception?.ToString() ?? "two CPU frames");
         }
 
         private static IEnumerator CheckCpuGlitchProgram()

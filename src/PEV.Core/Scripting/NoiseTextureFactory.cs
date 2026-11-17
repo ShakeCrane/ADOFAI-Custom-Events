@@ -5,30 +5,12 @@ using UnityEngine;
 
 namespace PEV.Scripting
 {
-    /// <summary>
-    /// Procedural noise-field textures, modelled on the original BlockRender pipeline.
-    ///
-    /// The reference effect is not "a noise pattern": it composes three layers from one
-    /// low-resolution mask — a translucent fill, a bright edge traced around the mask, and
-    /// sparse spark grains — with a displacement field that warps them so the boundary
-    /// reads as jagged rather than geometric. That is reproduced here per texel:
-    ///
-    ///   1. rasterise the union of every region into a cell grid (boolean union, max)
-    ///   2. trace the edge as "inside cell with an outside neighbour"
-    ///   3. fill = fillColour * fillOpacity, edge = edgeColour * edgeOpacity
-    ///   4. sparks = sparse bright grains, sampled through the displacement field
-    ///
-    /// Working at cell resolution is what gives the authentic blocky silhouette: the
-    /// original mask is low-resolution too, and its edge is quantised to those same blocks.
-    ///
-    /// Frames are ref-counted and shared. Generation is O(cells) per frame, and the result
-    /// is only rebuilt when the structure key changes — which is why the key must not
-    /// contain anything that drifts every frame.
-    /// </summary>
+    /// <summary>Shared background frame cache for package-provided programs.</summary>
     public static class NoiseTextureFactory
     {
         public const float PixelsPerUnit = 100f;
 
+#if PEV_DIAGNOSTICS
         public struct Piece
         {
             public Vector2 Offset;
@@ -206,6 +188,7 @@ namespace PEV.Scripting
             /// </summary>
             public bool Ready;
         }
+#endif
 
         private static readonly BakedFrameCache FrameCache = new BakedFrameCache(PixelsPerUnit);
         // Retained for diagnostics which inspect outstanding frame ownership.
@@ -218,6 +201,7 @@ namespace PEV.Scripting
         public static float WorstBakeMs => FrameCache.WorstBakeMs;
         public static string LastBakeDetail => FrameCache.LastBakeDetail;
 
+#if PEV_DIAGNOSTICS
         public static BakedFrameCache.Frames Get(Request req, out string error)
         {
             var frames = Begin(req, out error);
@@ -245,11 +229,30 @@ namespace PEV.Scripting
                 return new BakedFrameCache.Plan { Width = plan.Width, Height = plan.Height, Count = plan.Frames };
             }, (pixels, width, height, cancellation) => PackageFrameProgram.Render(req.Provider, req, "frameProgram", pixels, width, height, cancellation));
         }
+#endif
+
+        // The package owns the request and its cache identity; only immutable JSON reaches workers.
+        internal static BakedFrameCache.Frames BeginJson(PEV.Model.EventManifest provider, string key, string request, out string error)
+        {
+            error = null;
+            if (provider == null || !provider.TryRuntimeResource("frameProgram", provider.VectorPrograms, out _) ||
+                !provider.TryRuntimeResource("framePlan", provider.VectorPrograms, out _))
+            { error = "package does not declare its CPU bake program and plan"; return null; }
+            if (string.IsNullOrEmpty(key) || key.Length > 131072 || string.IsNullOrEmpty(request) || request.Length > 131072)
+            { error = "invalid package frame request"; return null; }
+            string scopedKey = PackageIdentity.Of(provider) + "|" + key;
+            return FrameCache.Begin(scopedKey, cancellation =>
+            {
+                var plan = PackageFrameProgram.PrepareJson(provider, request, "framePlan", cancellation);
+                return new BakedFrameCache.Plan { Width = plan.Width, Height = plan.Height, Count = plan.Frames };
+            }, (pixels, width, height, cancellation) => PackageFrameProgram.RenderJson(provider, request, "frameProgram", pixels, width, height, cancellation));
+        }
 
         public static void Pump(float budgetMs) => FrameCache.Pump(budgetMs);
         public static void Release(BakedFrameCache.Frames frames) => FrameCache.Release(frames);
         public static void Clear() => FrameCache.Clear();
 
+#if PEV_DIAGNOSTICS
         /// <summary>
         /// The generation key, exposed so the renderer compares exactly what the factory
         /// caches. A separate key in the renderer drifts from this one and causes either
@@ -295,6 +298,7 @@ namespace PEV.Scripting
             }
             catch (Exception e) { error = "frame cache key: " + e.Message; return false; }
         }
+#endif
 
     }
 }

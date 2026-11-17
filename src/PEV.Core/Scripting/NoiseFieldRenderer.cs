@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 
 namespace PEV.Scripting
@@ -57,6 +60,7 @@ namespace PEV.Scripting
             /// </summary>
             public bool ScriptActive;
             internal Dictionary<string, object> DescriptionArgs;
+            internal Dictionary<string, object> Arguments;
 
             /// <summary>
             /// Last native state seen for a not-yet-active described entry, so a frame where
@@ -823,6 +827,7 @@ namespace PEV.Scripting
 
             float halfH = cam != null && cam.orthographic ? cam.orthographicSize : 5f;
             entry.PxWidthHint = entry.World.Size.x / (2f * Mathf.Max(1e-4f, halfH)) * Screen.height;
+            entry.Arguments = args;
         }
 
         /// <summary>
@@ -955,6 +960,59 @@ namespace PEV.Scripting
             return ok;
         }
 
+        private static readonly ConditionalWeakTable<PEV.Model.EventManifest, JsonController> FrameRequests =
+            new ConditionalWeakTable<PEV.Model.EventManifest, JsonController>();
+
+        private static JObject PlainParameters(Dictionary<string, object> arguments)
+        {
+            var result = new JObject();
+            if (arguments == null) return result;
+            foreach (var pair in arguments)
+            {
+                if (pair.Key.StartsWith("__", StringComparison.Ordinal) || pair.Key.Length > 128 || result.Count >= 128) continue;
+                var value = pair.Value;
+                if (value is JValue token && (token.Type == JTokenType.String || token.Type == JTokenType.Boolean ||
+                    token.Type == JTokenType.Integer || token.Type == JTokenType.Float)) result[pair.Key] = token.DeepClone();
+                else if (value is string text && text.Length <= 4096) result[pair.Key] = text;
+                else if (value is bool boolean) result[pair.Key] = boolean;
+                else if (value is Enum) result[pair.Key] = value.ToString();
+                else if (value is Color color) result[pair.Key] = new JArray(color.r, color.g, color.b, color.a);
+                else if (value is byte || value is short || value is int || value is long || value is float || value is double || value is decimal)
+                {
+                    double number = Convert.ToDouble(value, CultureInfo.InvariantCulture);
+                    if (!double.IsNaN(number) && !double.IsInfinity(number) && Math.Abs(number) <= 1000000) result[pair.Key] = number;
+                }
+            }
+            return result;
+        }
+
+        private static JObject PrepareFrameRequest(Entry lead, List<Entry> members, Vector2 size, Vector2 centre, int previousBucket)
+        {
+            if (lead.Provider == null) throw new ArgumentException("Missing package provider");
+            var controller = FrameRequests.GetValue(lead.Provider, package =>
+            {
+                if (!package.TryRuntimeResource("frameRequest", package.VectorPrograms, out var path))
+                    throw new ArgumentException("Package frame request program is missing");
+                var bytes = PEV.Loading.EventLoader.ReadResource(package.SourcePath, path, 262144);
+                if (bytes == null) throw new ArgumentException("Package frame request program is missing or too large");
+                return new JsonController(new UTF8Encoding(false, true).GetString(bytes), 50, 524288, 262144);
+            });
+            var items = new JArray();
+            foreach (var member in members)
+                items.Add(new JObject { ["x"] = member.World.Center.x, ["y"] = member.World.Center.y,
+                    ["width"] = member.World.Size.x, ["height"] = member.World.Size.y, ["rotation"] = member.World.Rotation,
+                    ["offsetX"] = member.OverrideOffset.x, ["offsetY"] = member.OverrideOffset.y,
+                    ["offsetRotation"] = member.OverrideRotation, ["scale"] = member.OverrideScale,
+                    ["color"] = new JArray(member.FillColor.r, member.FillColor.g, member.FillColor.b),
+                    ["parameters"] = PlainParameters(member.Arguments) });
+            var scene = SceneBackground();
+            var input = new JObject { ["members"] = items, ["width"] = size.x, ["height"] = size.y,
+                ["centerX"] = centre.x, ["centerY"] = centre.y, ["pixelWidth"] = lead.PxWidthHint,
+                ["previousBucket"] = previousBucket, ["seed"] = StableSeed(lead.Scope),
+                ["scene"] = new JArray(scene.r, scene.g, scene.b) };
+            return controller.Update(input.ToString(Formatting.None));
+        }
+
         private static bool CompositeCluster(string key, int depth, List<Entry> members)
         {
             var lead = members[0];
@@ -965,42 +1023,6 @@ namespace PEV.Scripting
 
             Vector2 size = new Vector2(Mathf.Max(0.001f, max.x - min.x), Mathf.Max(0.001f, max.y - min.y));
             Vector2 centre = (min + max) * 0.5f;
-
-            var pieces = new NoiseTextureFactory.Piece[members.Count];
-            for (int i = 0; i < members.Count; i++)
-            {
-                var m = members[i];
-                // Overrides are applied here, not in Apply(): a mover writes Entry state
-                // without knowing geometry, and the composite is the single place where
-                // base parameters and overridden ones meet.
-                Vector2 centreWorld = new Vector2(m.World.Center.x, m.World.Center.y)
-                                      + m.OverrideOffset;
-                float sizeFactor = m.OverrideScale > 0f ? m.OverrideScale : 1f;
-
-                pieces[i] = new NoiseTextureFactory.Piece
-                {
-                    Offset = new Vector2(centreWorld.x - centre.x, centreWorld.y - centre.y),
-                    Half = new Vector2(m.World.Size.x * 0.5f * sizeFactor, m.World.Size.y * 0.5f * sizeFactor),
-                    Rotation = m.World.Rotation + m.OverrideRotation,
-                    Feather = m.Feather,
-                    Circle = m.Shape == NoiseFieldShape.Circle,
-                    // Coastline band from this field's own size, so a small field inside a
-                    // cluster with a big one keeps its own shape instead of being eroded by
-                    // the neighbour's band.
-                    Band = m.Displace * m.EdgeDistance * Mathf.Min(
-                        m.World.Size.x * sizeFactor, m.World.Size.y * sizeFactor),
-                    FillColor = m.FillColor,
-                    EdgeColor = m.EdgeColor,
-                    FillOpacity = m.FillOpacity * Mathf.Clamp01(m.OverrideAlpha),
-                    EdgeOpacity = m.EdgeOpacity * Mathf.Clamp01(m.OverrideAlpha)
-                };
-            }
-
-            // The quad is grown beyond the geometry so detached flakes have somewhere to
-            // drift; the coastline itself is unchanged. Margin scales with the field's own
-            // short side, and follows the same displace parameter as the coastline band —
-            // with no displacement there is no coast, so no need for the extra area.
-            float margin = lead.Displace * lead.EdgeMargin * Mathf.Min(size.x, size.y);
 
             // The layer object is needed before the request: its baked resolution is part of the
             // hysteresis that keeps camera motion from triggering a rebake.
@@ -1020,64 +1042,21 @@ namespace PEV.Scripting
             layer.Renderer.sortingOrder = lead.SortingOrder;
             layer.GameObject.layer = lead.UnityLayer;
 
-            float requestedWidth = lead.PxWidthHint * (size.x / Mathf.Max(1e-4f, lead.World.Size.x));
-            if (!NoiseTextureFactory.TryStickyBucket(lead.Provider, requestedWidth, layer.PixelBucket, out int pixelBucket, out string bucketError))
-            {
-                PEV.Core.Plugin.Log("frame resolution: " + bucketError);
-                return false;
-            }
+            JObject prepared;
+            try { prepared = PrepareFrameRequest(lead, members, size, centre, layer.PixelBucket); }
+            catch (Exception e) { PEV.Core.Plugin.Log("package frame request: " + e.Message); return false; }
+            if (!(prepared["request"] is JObject request) || prepared["key"]?.Type != JTokenType.String ||
+                prepared["bucket"]?.Type != JTokenType.Integer ||
+                (prepared["margin"]?.Type != JTokenType.Integer && prepared["margin"]?.Type != JTokenType.Float))
+                throw new ArgumentException("Invalid package frame request");
+            int pixelBucket = prepared.Value<int>("bucket");
+            float margin = prepared.Value<float>("margin");
+            string requestKey = prepared.Value<string>("key");
+            if (pixelBucket < 1 || pixelBucket > 16384 || float.IsNaN(margin) || float.IsInfinity(margin) ||
+                margin < 0 || margin > 100000 || string.IsNullOrEmpty(requestKey) || requestKey.Length > 131072)
+                throw new ArgumentException("Package frame request exceeds limits");
             layer.PixelBucket = pixelBucket;
-
-            var request = new NoiseTextureFactory.Request
-            {
-                Provider = lead.Provider,
-                WidthWorld = size.x,
-                HeightWorld = size.y,
-                Margin = margin,
-                Pieces = pieces,
-                FillColor = lead.FillColor,
-                EdgeColor = lead.EdgeColor,
-                GlowColor = lead.GlowColor,
-                SparkColor = lead.SparkColor,
-                FillOpacity = lead.FillOpacity,
-                Exposure = lead.Exposure,
-                EvolveSpeed = lead.EvolveSpeed,
-                FillStrength = lead.FillOpacity,
-                SceneColor = SceneBackground(),
-                EdgeOpacity = lead.EdgeOpacity,
-                GlowOpacity = lead.GlowOpacity,
-                SparkOpacity = lead.SparkOpacity,
-                GlowPasses = lead.GlowPasses,
-                Displace = lead.Displace,
-                Glitch = lead.Glitch,
-                Ready = lead.Ready,
-                EdgeDistance = lead.EdgeDistance,
-                EdgeDetail = lead.EdgeDetail,
-                EdgeThickness = lead.EdgeThickness,
-                EdgeMargin = lead.EdgeMargin,
-                EdgeFragment = lead.EdgeFragment,
-                Brightness = lead.Brightness,
-                Saturation = lead.Saturation,
-                SampleRate = lead.SampleRate,
-                LineOpacity = lead.LineOpacity,
-                FrameCount = lead.FrameCount,
-                Seed = StableSeed(lead.Scope),
-                // The cluster box is wider than the lead field, so scale the hint by area
-                // ratio to keep grains at a constant on-screen size.
-                TargetPixelWidth = pixelBucket,
-                // How wide the quad actually is on screen. The composer sizes its grids from
-                // this, because the reference's mask and effects targets are fractions of the
-                // screen — not of the texture the effect happens to be baked into.
-                ScreenPixelWidth = layer.PixelBucket
-            };
-
-            // One key, owned by the factory: a second copy in the renderer is how a
-            // structure that never changes still manages to regenerate every frame.
-            if (!NoiseTextureFactory.TryKey(request, out string structureKey, out string keyError))
-            {
-                PEV.Core.Plugin.Log("frame cache: " + keyError);
-                return false;
-            }
+            string structureKey = PackageIdentity.Of(lead.Provider) + "|" + requestKey;
 
             if ((layer.Frames == null && layer.PendingFrames == null) || layer.StructureKey != structureKey)
             {
@@ -1089,7 +1068,7 @@ namespace PEV.Scripting
                 // set stays on screen until the new one is complete — which is what makes a
                 // rebake (live parameter edits, a zoom crossing a bucket) invisible instead
                 // of a hitch.
-                var frames = NoiseTextureFactory.Begin(request, out string genError);
+                var frames = NoiseTextureFactory.BeginJson(lead.Provider, requestKey, request.ToString(Formatting.None), out string genError);
                 if (frames == null)
                 {
                     PEV.Core.Plugin.Log("noise layer: " + genError);
