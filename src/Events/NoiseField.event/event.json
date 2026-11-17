@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "id": "pev.noise-field",
-  "version": "1.25.0",
+  "version": "1.26.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
@@ -465,6 +465,7 @@
   "vectorPrograms": {
     "palette": "workers/palette.js",
     "contacts": "workers/contacts.js",
+    "renderPlan": "workers/render-plan.js",
     "bake": "workers/legacy-bake.js",
     "bakePlan": "workers/legacy-plan.js"
   },
@@ -476,6 +477,7 @@
   },
   "runtimeBindings": {
     "renderGraph": "coverage",
+    "renderPlan": "renderPlan",
     "inputController": "contacts",
     "colorProgram": "palette",
     "framePlan": "bakePlan",

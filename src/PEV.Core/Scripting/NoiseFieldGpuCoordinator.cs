@@ -44,13 +44,12 @@ namespace PEV.Scripting
         private readonly EventManifest _manifest;
         private readonly ComputeShader _compute;
         private readonly GpuGraphDefinition _graph;
-        private readonly TaggedValueTable _modes;
         private readonly CompositorDefinition _compositor;
         private readonly VectorTextureDefinition _textures;
         private readonly GpuGraphDefinition.ControllerLimits _inputLimits;
         private readonly string _contactProgram;
         private readonly Dictionary<string, Texture2D> _images = new Dictionary<string, Texture2D>(StringComparer.Ordinal);
-        private readonly NoiseFieldGpuPlan _plan = new NoiseFieldGpuPlan();
+        private readonly NoiseFieldGpuPlan _plan;
         private readonly ResourceGroupStaging<NoiseFieldGpuPlan.Key, Group> _staging =
             new ResourceGroupStaging<NoiseFieldGpuPlan.Key, Group>();
         private readonly List<ViewportPoint> _planets = new List<ViewportPoint>();
@@ -64,7 +63,7 @@ namespace PEV.Scripting
             _graph = GpuGraphDefinition.Parse(graphBytes);
             if (!_graph.Controllers.TryGetValue("input", out _inputLimits))
                 throw new InvalidOperationException("Input controller limits are not declared");
-            _modes = TaggedValueTable.Parse(graphBytes);
+            _plan = NoiseFieldGpuPlan.Create(manifest, graphBytes);
             _compositor = CompositorDefinition.Parse(graphBytes);
             _textures = VectorTextureDefinition.Parse(graphBytes, _graph);
             if (!manifest.ShaderAssets.TryGetValue(_graph.ShaderRole, out var computePath))
@@ -98,7 +97,7 @@ namespace PEV.Scripting
             if (settings == null) throw new ArgumentNullException(nameof(settings));
             if (!EnsureImages()) return _staging.Committed;
             float aspect = Mathf.Min(camera.aspect, 16f / 9f);
-            _plan.Build(entries, camera, aspect, _modes, GameBridge.Values);
+            if (!_plan.Build(entries, camera, aspect, GameBridge.Values)) return _staging.Committed;
             LivePlanetPositions.Collect(camera, _planets);
             _staging.DiscardPendingExcept(_plan.Groups);
 
@@ -188,6 +187,7 @@ namespace PEV.Scripting
 
         public void Dispose()
         {
+            _plan.Dispose();
             _staging.Dispose();
         }
     }

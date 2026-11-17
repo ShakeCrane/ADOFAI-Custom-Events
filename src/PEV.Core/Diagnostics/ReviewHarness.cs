@@ -167,6 +167,7 @@ return [run({op:'pixelPack',channels:[p,p,p,p]})];}";
             Check("PIXEL-package-resource-limits", CheckPackagePixelResourceLimits);
             Check("PIXEL-kernel-mono-performance", CheckPixelKernelPerformance);
             CheckKeys();
+            yield return CheckPackagePlanScaleSafe();
             yield return CheckGenericFrameProgramSafe();
             yield return CheckGenericStructuredWorkerSafe();
             yield return CheckGenericVectorTexturesSafe();
@@ -1073,7 +1074,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             Check("GPU-package-record-layout", () => CheckGpuPackageRecordLayout(manifest));
             Check("VECTOR-texture-declaration", () => CheckVectorTextureDefinition(manifest));
             yield return CheckVectorTextureRemapSafe(manifest);
-            Check("GPU-package-region-modes", () => CheckRegionModes(manifest));
+            Check("GPU-package-render-plan", () => CheckRenderPlanProgram(manifest));
             Check("GPU-package-compositor-limits", () => CheckCompositorLimits(manifest));
             Check("PIXEL-package-bake-plan-parity", () => CheckBakePlan(manifest));
             Check("GPU-package-contacts-parity", () => CheckContactControllerParity(manifest));
@@ -1137,7 +1138,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             string json = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(original.SourcePath, "event.json"));
             var manifest = EventManifest.Parse(json, original.SourcePath, out string error);
             if (manifest == null) throw new InvalidOperationException(error);
-            foreach (string binding in new[] { "renderGraph", "inputController", "colorProgram", "framePlan", "frameProgram", "frameKey" })
+            foreach (string binding in new[] { "renderGraph", "renderPlan", "inputController", "colorProgram", "framePlan", "frameProgram", "frameKey" })
             {
                 var resources = binding == "renderGraph" ? manifest.ComputeGraphs : binding == "frameKey" ? manifest.KeySpecs : manifest.VectorPrograms;
                 string old = manifest.RuntimeBindings[binding], renamed = "custom_" + binding;
@@ -1525,25 +1526,22 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             }
         }
 
-        private static bool CheckRegionModes(EventManifest manifest)
+        private static bool CheckRenderPlanProgram(EventManifest manifest)
         {
-            var bytes = EventLoader.ReadResource(manifest.SourcePath, manifest.ComputeGraphs["coverage"], 131072);
-            var root = JObject.Parse(System.Text.Encoding.UTF8.GetString(bytes));
-            var spec = (JObject)root["tagValues"];
-            var values = (JObject)spec["values"];
-            values["Custom"] = new JObject { ["shaderFlags"] = 8, ["mainLayer"] = false,
-                ["auxLayer"] = true, ["palette"] = true, ["contacts"] = false };
-            spec["default"] = "Custom"; spec["tagKey"] = "myMode";
-            values["Custom"]["unrelatedName"] = "arbitrary package data";
-            var modes = TaggedValueTable.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString()));
-            var custom = modes.Resolve("unknown");
-            if (modes.TagKey != "myMode" || custom.Unsigned("shaderFlags", 65535) != 8 || custom.Boolean("mainLayer") || !custom.Boolean("auxLayer") ||
-                !custom.Boolean("palette") || custom.Boolean("contacts") || custom.Text("unrelatedName") != "arbitrary package data" ||
-                modes.Resolve("ready").Unsigned("shaderFlags", 65535) != 4) return false;
-            values["Custom"]["shaderFlags"] = new JArray(1, 2);
-            try { TaggedValueTable.Parse(System.Text.Encoding.UTF8.GetBytes(root.ToString())); return false; }
-            catch (ArgumentException) { }
-            return true;
+            if (!manifest.TryRuntimeResource("renderPlan", manifest.VectorPrograms, out var path)) return false;
+            string source = System.Text.Encoding.UTF8.GetString(EventLoader.ReadResource(manifest.SourcePath, path, 262144));
+            var items = new JArray();
+            foreach (var state in new[] { "Active", "Ready", "Disabled", "unknown" })
+                items.Add(new JObject { ["SortingLayer"] = 0, ["SortingOrder"] = 1, ["UnityLayer"] = 7, ["State"] = state,
+                    ["Inverted"] = state == "Ready", ["HasDefault"] = true, ["Red"] = 1, ["Green"] = 0, ["Blue"] = 0,
+                    ["DefaultRed"] = 1, ["DefaultGreen"] = 0, ["DefaultBlue"] = 0 });
+            var result = new JsonController(source).Update(new JObject { ["Items"] = items }.ToString(Newtonsoft.Json.Formatting.None));
+            var groups = (JArray)result["groups"];
+            if (groups.Count != 1 || !groups[0].Value<bool>("primary") || !groups[0].Value<bool>("secondary") || groups[0].Value<bool>("colored")) return false;
+            var rows = (JArray)groups[0]["items"];
+            return rows.Count == 4 && rows[0][1].Value<int>() == 1 && rows[0][2].Value<bool>() &&
+                rows[1][1].Value<int>() == 6 && !rows[1][2].Value<bool>() &&
+                rows[2][1].Value<int>() == 0 && !rows[2][4].Value<bool>() && rows[3][1].Value<int>() == 1;
         }
 
         private static bool CheckContactControllerParity(EventManifest manifest)
@@ -2363,7 +2361,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 try
                 {
                     if (!EventRegistry.TryGetById("pev.noise-field", out var provider) || !provider.ComputeGraphs.TryGetValue("coverage", out var graphPath)) return false;
-                    var modes = TaggedValueTable.Parse(EventLoader.ReadResource(provider.SourcePath, graphPath, 131072));
+                    using var plan = NoiseFieldGpuPlan.Create(provider, EventLoader.ReadResource(provider.SourcePath, graphPath, 131072));
                     var values = new TaggedValues();
                     values.Set("mode-b", provider.SourcePath, "phase", "test-b", "Ready", 0, 0);
                     values.Set("mode-c", provider.SourcePath, "phase", "test-c", "Disabled", 0, 0);
@@ -2381,18 +2379,19 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                         Opacity = 1, World = new Placement.Frame { Size = new Vector2(2, 2) },
                         SortingOrder = 1, UnityLayer = 9,
                         Shape = NoiseFieldShape.Circle };
-                    var plan = new NoiseFieldGpuPlan();
-                    plan.Build(new[] { a, b, c }, camera, camera.aspect, modes, values);
+                    plan.Build(new[] { a, b, c }, camera, camera.aspect, values);
                     if (plan.Groups.Count != 2) return false;
                     var key = new NoiseFieldGpuPlan.Key { SortingOrder = 1, UnityLayer = 7 };
                     if (!plan.Groups.TryGetValue(key, out var group) || group.Areas.Count != 2 ||
                         group.Areas[0].Flags != 6 || group.Areas[1].Flags != 1 || !group.HasActive || !group.HasDisabled ||
                         group.Colors[1].Red != 0f || group.Colors[1].Blue != 1f || !group.Colored) return false;
-                    plan.Build(new[] { a }, camera, camera.aspect, modes, values);
+                    plan.Build(new[] { a }, camera, camera.aspect, values);
                     return plan.Groups.Count == 1 && plan.Groups[key].Areas.Count == 1;
                 }
                 finally { UnityEngine.Object.Destroy(go); }
             });
+            Check("FIELD-gpu-plan-randomized", CheckPackagePlanRandomized);
+            Check("FIELD-gpu-plan-validation", CheckPackagePlanValidation);
             Check("FIELD-gpu-formats", () =>
                 SystemInfo.supportsComputeShaders &&
                 SystemInfo.IsFormatSupported(UnityEngine.Experimental.Rendering.GraphicsFormat.R32G32B32A32_UInt,
@@ -2517,6 +2516,173 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 return PackageIdentity.Of(a) == PackageIdentity.Of(a) && PackageIdentity.Of(a) != PackageIdentity.Of(b) &&
                     PackageIdentity.Of(null) == "";
             });
+        }
+
+        private static bool CheckPackagePlanRandomized()
+        {
+            if (!EventRegistry.TryGetById("pev.noise-field", out var provider) ||
+                !provider.TryRuntimeResource("renderGraph", provider.ComputeGraphs, out var graphPath)) return false;
+            var plan = NoiseFieldGpuPlan.Create(provider, EventLoader.ReadResource(provider.SourcePath, graphPath, 131072));
+            var go = new GameObject("PEV.ReviewPackagePlan");
+            try
+            {
+                var camera = go.AddComponent<Camera>(); camera.orthographic = true; camera.orthographicSize = 5; camera.aspect = 16f / 9f;
+                go.transform.position = new Vector3(0, 0, -10);
+                var random = new System.Random(75211); var values = new TaggedValues();
+                var states = new[] { "Active", "Ready", "Disabled", "unknown" };
+                var entries = new NoiseFieldRenderer.Entry[12];
+                var expectedStates = new string[entries.Length];
+                for (int i = 0; i < entries.Length; i++)
+                    entries[i] = new NoiseFieldRenderer.Entry { Provider = provider, Tag = "plan-" + i, GpuSequence = i,
+                        Visible = true, Renderable = true, Opacity = 1, SortingOrder = i % 3, UnityLayer = 7,
+                        FillColor = new Color32(255, 84, 84, 255), World = new Placement.Frame { Size = new Vector2(2, 2) } };
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                for (int frame = 0; frame < 100; frame++)
+                {
+                    for (int i = 0; i < entries.Length; i++)
+                    {
+                        var entry = entries[i]; string state = expectedStates[i] = states[random.Next(states.Length)];
+                        entry.GpuInverted = random.Next(2) == 0;
+                        entry.FillColor = i == frame % entries.Length ? Color.blue : (Color)new Color32(255, 84, 84, 255);
+                        entry.World = new Placement.Frame { Center = new Vector3(i * .03f, frame * .0001f, 0), Size = new Vector2(2, 2) };
+                        values.Set("plan-state-" + i, provider.SourcePath, "phase", entry.Tag, state, frame, i);
+                    }
+                    plan.Build(entries, camera, camera.aspect, values);
+                    if (plan.Groups.Count != 3) return false;
+                    for (int groupIndex = 0; groupIndex < 3; groupIndex++)
+                    {
+                        var key = new NoiseFieldGpuPlan.Key { SortingOrder = groupIndex, UnityLayer = 7 };
+                        if (!plan.Groups.TryGetValue(key, out var group) || group.Areas.Count != 4) return false;
+                        bool primary = false, secondary = false, colored = false; int row = 0;
+                        for (int i = groupIndex; i < entries.Length; i += 3)
+                        {
+                            bool active = expectedStates[i] == "Active" || expectedStates[i] == "unknown";
+                            bool ready = expectedStates[i] == "Ready";
+                            uint flags = (uint)((active ? 1 : ready ? 4 : 0) | (entries[i].GpuInverted ? 2 : 0));
+                            if (group.Areas[row].Flags != flags || group.Colors[row].Active != active ||
+                                group.TouchAreas[row].Active != active || group.TouchAreas[row].Inverted != entries[i].GpuInverted) return false;
+                            primary |= active || ready; secondary |= !active; colored |= entries[i].FillColor == Color.blue; row++;
+                        }
+                        if (group.HasActive != primary || group.HasDisabled != secondary || group.Colored != colored) return false;
+                    }
+                }
+                watch.Stop();
+                Row("GPU-package-plan-cost", "INFO", $"100 changing frames, 12 areas, 3 depths: {watch.Elapsed.TotalMilliseconds / 100:F3} ms/frame");
+                return true;
+            }
+            finally { plan.Dispose(); UnityEngine.Object.Destroy(go); }
+        }
+
+        private static bool CheckPackagePlanValidation()
+        {
+            if (!EventRegistry.TryGetById("pev.noise-field", out var provider)) return false;
+            var ctor = typeof(NoiseFieldGpuPlan).GetConstructor(BindingFlags.Instance | BindingFlags.NonPublic, null,
+                new[] { typeof(string), typeof(string) }, null);
+            if (ctor == null) return false;
+            var go = new GameObject("PEV.ReviewInvalidPlan");
+            try
+            {
+                var camera = go.AddComponent<Camera>(); camera.orthographic = true; camera.orthographicSize = 5; camera.aspect = 1;
+                go.transform.position = new Vector3(0, 0, -10);
+                var entry = new NoiseFieldRenderer.Entry { Provider = provider, Visible = true, Renderable = true, Opacity = 1,
+                    SortingOrder = 1, UnityLayer = 7, World = new Placement.Frame { Size = new Vector2(2, 2) } };
+                const string prefix = "function updateController(){return {groups:[{sorting:[0,";
+                const string middle = ",7],primary:true,secondary:false,colored:false,items:";
+                foreach (string source in new[] {
+                    prefix + "1" + middle + "[[0,1,true,false,true,false],[0,1,true,false,true,false]]}]};}",
+                    prefix + "2" + middle + "[[0,1,true,false,true,false]]}]};}",
+                    "function updateController(){return {groups:[]};}" })
+                {
+                    using var plan = (NoiseFieldGpuPlan)ctor.Invoke(new object[] { "phase", source });
+                    try { plan.Build(new[] { entry }, camera, 1, new TaggedValues()); return false; }
+                    catch (ArgumentException) { }
+                }
+                return true;
+            }
+            finally { UnityEngine.Object.Destroy(go); }
+        }
+
+        private static IEnumerator CheckPackagePlanScaleSafe()
+        {
+            var probe = CheckPackagePlanScale();
+            while (true)
+            {
+                bool next;
+                try { next = probe.MoveNext(); }
+                catch (Exception e) { Row("FIELD-gpu-plan-scale", "FAIL", e.ToString()); yield break; }
+                if (!next) yield break;
+                yield return probe.Current;
+            }
+        }
+        private static IEnumerator CheckPackagePlanScale()
+        {
+            if (!EventRegistry.TryGetById("pev.noise-field", out var provider) ||
+                !provider.TryRuntimeResource("renderGraph", provider.ComputeGraphs, out var path))
+            { Row("FIELD-gpu-plan-scale", "FAIL", "missing package"); yield break; }
+            var plan = NoiseFieldGpuPlan.Create(provider, EventLoader.ReadResource(provider.SourcePath, path, 131072));
+            var go = new GameObject("PEV.ReviewLargePlan");
+            try
+            {
+                var camera = go.AddComponent<Camera>(); camera.orthographic = true; camera.orthographicSize = 5; camera.aspect = 1;
+                go.transform.position = new Vector3(0, 0, -10);
+                var entries = Enumerable.Range(0, 1024).Select(i => new NoiseFieldRenderer.Entry {
+                    Provider = provider, GpuSequence = i, Visible = true, Renderable = true, Opacity = 1, UnityLayer = 7,
+                    FillColor = new Color32(255, 84, 84, 255), World = new Placement.Frame { Size = new Vector2(2, 2) } }).ToArray();
+                var values = new TaggedValues(); var watch = System.Diagnostics.Stopwatch.StartNew();
+                bool ready = plan.Build(entries, camera, 1, values);
+                watch.Stop(); double worstMain = watch.Elapsed.TotalMilliseconds; bool initiallyAsync = !ready;
+                float deadline = Time.realtimeSinceStartup + 8f;
+                while (!ready && Time.realtimeSinceStartup < deadline)
+                {
+                    yield return null;
+                    watch.Restart(); ready = plan.Build(entries, camera, 1, values); watch.Stop();
+                    worstMain = Math.Max(worstMain, watch.Elapsed.TotalMilliseconds);
+                }
+                var key = new NoiseFieldGpuPlan.Key { UnityLayer = 7 };
+                NoiseFieldGpuPlan.Group group = null;
+                bool ok = initiallyAsync && ready && plan.Groups.TryGetValue(key, out group) && group.Areas.Count == entries.Length;
+                if (ok)
+                {
+                    float old = group.Areas[0].Center.x;
+                    entries[0].World = new Placement.Frame { Center = new Vector3(1, 0, 0), Size = new Vector2(2, 2) };
+                    ready = plan.Build(entries, camera, 1, values);
+                    ok &= ready && plan.Groups[key].Areas[0].Center.x == old;
+                    deadline = Time.realtimeSinceStartup + 8f;
+                    while (plan.Groups[key].Areas[0].Center.x == old && Time.realtimeSinceStartup < deadline)
+                    {
+                        yield return null;
+                        watch.Restart(); plan.Build(entries, camera, 1, values); watch.Stop();
+                        worstMain = Math.Max(worstMain, watch.Elapsed.TotalMilliseconds);
+                    }
+                    ok &= plan.Groups[key].Areas[0].Center.x != old;
+                }
+                if (ok)
+                {
+                    entries[0].World = new Placement.Frame { Center = new Vector3(2, 0, 0), Size = new Vector2(2, 2) };
+                    plan.Build(entries, camera, 1, values);
+                    var pendingField = typeof(NoiseFieldGpuPlan).GetField("_pending", BindingFlags.Instance | BindingFlags.NonPublic);
+                    var pending = pendingField.GetValue(plan) as System.Threading.Tasks.Task;
+                    ok &= pending != null && plan.Build(Array.Empty<NoiseFieldRenderer.Entry>(), camera, 1, values) && plan.Groups.Count == 0;
+                    deadline = Time.realtimeSinceStartup + 8f;
+                    while (pending != null && !pending.IsCompleted && Time.realtimeSinceStartup < deadline) yield return null;
+                    ok &= pending != null && pending.IsCompleted;
+                    ok &= plan.Build(new[] { entries[0] }, camera, 1, values) && plan.Groups.TryGetValue(key, out var single) && single.Areas.Count == 1;
+                }
+                if (ok)
+                {
+                    var transient = NoiseFieldGpuPlan.Create(provider, EventLoader.ReadResource(provider.SourcePath, path, 131072));
+                    transient.Build(entries, camera, 1, values);
+                    var pending = typeof(NoiseFieldGpuPlan).GetField("_pending", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(transient)
+                        as System.Threading.Tasks.Task;
+                    transient.Dispose();
+                    deadline = Time.realtimeSinceStartup + 3f;
+                    while (pending != null && !pending.IsCompleted && Time.realtimeSinceStartup < deadline) yield return null;
+                    ok &= pending != null && pending.IsCompleted;
+                }
+                Row("GPU-package-plan-scale-cost", "INFO", $"1024 areas; worst observed main-thread build {worstMain:F1} ms");
+                Row("FIELD-gpu-plan-scale", ok ? "PASS" : "FAIL", "background plan retains prior output, discards stale results and cancels on disposal");
+            }
+            finally { plan.Dispose(); UnityEngine.Object.Destroy(go); }
         }
 
         private static void CheckStorage(scnEditor editor)
