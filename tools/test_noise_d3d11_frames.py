@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quantify the draft fragment on D3D11 against reference OpenGL frame fixtures.
+"""Compare the runtime fragment on D3D11 with reference OpenGL frame fixtures.
 
 The probe has a simple full-screen vertex transform and constant gray scene, not
 Unity's camera, GrabPass, render targets or color pipeline. A low difference is

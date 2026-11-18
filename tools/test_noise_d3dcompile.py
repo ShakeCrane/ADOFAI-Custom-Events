@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the draft HLSL as SM5 using Windows D3DCompiler, without Unity.
+"""Compile the runtime HLSL as SM5 using Windows D3DCompiler, without Unity.
 
 This checks the D3D11 compiler frontend only. It does not import ShaderLab,
 execute on the GPU, build a Unity bundle or validate visual equivalence.
@@ -59,7 +59,7 @@ def main():
         combined = "#define UNITY_UV_STARTS_AT_TOP 1\n" + PROBE_TRANSFORM + source + VERTEX
         check(combined, path.name, "pev_vertex", "vs_5_0")
         check(combined, path.name, "pev_fragment", "ps_5_0")
-    compute = (ROOT / "src/UnityShaders/Draft/NoiseFieldCoverage.compute").read_text(encoding="utf-8")
+    compute = (ROOT / "src/UnityShaders/Runtime/NoiseFieldCoverage.compute").read_text(encoding="utf-8")
     # Unity consumes these pragmas before handing HLSL to D3DCompiler.
     compute = "\n".join(line for line in compute.splitlines() if not line.strip().startswith("#pragma kernel "))
     for entry in ("BuildSources", "ComposeSources", "WarpActive", "DilateRing", "ExportMasks", "BuildTouch", "WarpColors"):

@@ -41,7 +41,7 @@ def main():
                 run_env["PEV_BENCH_NOISE_GPU"] = "1"
             else:
                 run_env.pop("PEV_BENCH_NOISE_GPU", None)
-            subprocess.run([str(exe), str(ROOT / "src/UnityShaders/Draft/NoiseFieldCoverage.compute"),
+            subprocess.run([str(exe), str(ROOT / "src/UnityShaders/Runtime/NoiseFieldCoverage.compute"),
                             str(fixtures), str(ROOT / "tests/fixtures/noise-field-colors"),
                             str(temp / "BlockNoise1.rgba"), str(temp / "TouchHover.rgba"), case], env=run_env, check=True)
 

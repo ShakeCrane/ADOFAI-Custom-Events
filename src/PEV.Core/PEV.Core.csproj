@@ -25,7 +25,7 @@
   </ItemGroup>
 
   <PropertyGroup>
-    <GameDir>D:\Program Files (x86)\Steam\steamapps\common\A Dance of Fire and Ice</GameDir>
+    <GameDir Condition="'$(GameDir)' == ''">$(ADOFAI_GAME_DIR)</GameDir>
     <ManagedDir>$(GameDir)\A Dance of Fire and Ice_Data\Managed</ManagedDir>
   </PropertyGroup>
 
@@ -87,5 +87,12 @@
       <Private>true</Private>
     </Reference>
   </ItemGroup>
+
+  <Target Name="CheckLocalBuildInputs" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(ManagedDir)\Assembly-CSharp.dll') Or !Exists('$(ManagedDir)\UnityModManager\UnityModManager.dll')"
+           Text="Set ADOFAI_GAME_DIR to your local ADOFAI installation with Unity Mod Manager installed." />
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\..\..\packages\jint-lib\Jint.dll') Or !Exists('$(MSBuildProjectDirectory)\..\..\packages\jint-lib\Acornima.dll')"
+           Text="Restore the local build dependencies with python tools/restore_dependencies.py." />
+  </Target>
 
 </Project>

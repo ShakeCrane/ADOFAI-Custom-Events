@@ -4,9 +4,8 @@ A Unity Mod Manager mod for *A Dance of Fire and Ice* that lets chart authors pl
 custom events in the official editor, and lets anyone ship those events as independent
 `.event` packages with their own scripts, icons and parameters.
 
-**A custom-event chart still opens in the vanilla game.** Custom events are stored as
-ordinary editor comments, so a player without the mod sees a normal level rather than a
-corrupt one.
+**A custom-event chart still opens in the vanilla game.** Core stores event data in
+vanilla editor comments or native decoration rows.
 
 ---
 
@@ -26,7 +25,7 @@ corrupt one.
 ## Install
 
 1. Install [Unity Mod Manager](https://www.nexusmods.com/site/mods/21) if you have not.
-2. Download `PEV.Core-<version>.zip` from [Releases](../../releases).
+2. Download `PEV.Core-<version>.zip` from the [latest GitHub Release](https://github.com/ShakeCrane/ADOFAI-Custom-Events/releases/latest).
 3. In UMM, use **Mods → Install Mod** and pick the zip.
 4. To use the noise field, place [`NoiseField.event`](https://github.com/ShakeCrane/ADOFAI-Custom-Events/raw/refs/heads/main/template-events/NoiseField.event) next to the `.adofai` chart, then open the chart.
 
@@ -109,18 +108,22 @@ Download ready-to-use packages from [`template-events/`](template-events/) and p
 
 ## Build from source
 
-Requires .NET SDK and a local ADOFAI install (the project references the game's own
-assemblies).
+Requires Python 3, the .NET SDK with .NET Framework 4.8 build support, and your own ADOFAI
+installation with Unity Mod Manager. Set `ADOFAI_GAME_DIR` to the game directory and restore
+the pinned script dependencies before building. For example, in PowerShell:
 
-```bash
-python tools/build_release.py --version 0.1.0
+```powershell
+$env:ADOFAI_GAME_DIR = 'X:\SteamLibrary\steamapps\common\A Dance of Fire and Ice'
+python tools/restore_dependencies.py
+python tools/build_release.py --version 0.6.2
 ```
 
 That builds `src/PEV.Core` and writes the core-only `dist/PEV.Core-<version>.zip`
 alongside a separate `NoiseField.event` containing the field and its state control.
 See [the boundary audit](docs/CORE-BOUNDARY-AUDIT.md) for the implementation boundary.
 
-The game path is set at the top of `src/PEV.Core/PEV.Core.csproj`.
+The build uses assemblies from your local game installation. The checked-in shader bundle
+is sufficient for packaging. To edit or rebuild shaders, start with the [shader source notes](src/UnityShaders/Reference/README.md).
 
 ---
 
@@ -131,16 +134,14 @@ Editor palette click
   → AddEvent hook attaches instance data
   → author edits values in the native property panel
   → copy / delete hooks clone or detach that data
-  → EncodeToDictionary rewrites every instance as an @PEV1 editor comment
-  → saved to disk
-  → Decode reads them back into virtual events
+  → the chart saves its package dependencies in pevEvents
+  → event data travels in @PEV1 comments or native AddDecoration rows
+  → Core finds the chart's .event files and restores the instances on load
   → runtime drives each instance's script from the song clock
 ```
 
-Design notes and the reasoning behind each decision are in
-[ARCHITECTURE-v1.md](ARCHITECTURE-v1.md). Verification results for every stage are in
-`STAGE0-RESULTS.md`, `P0-RESULTS.md`, `P1-RESULTS.md`, `P2-RESULTS.md`,
-`P3-RESULTS.md`, `P4-RESULTS.md`.
+See the [technical baseline](docs/TECHNICAL-BASELINE.md) for the architecture and the
+[release validation record](docs/NOISEFIELD-RELEASE-VALIDATION.md) for test results.
 
 ---
 

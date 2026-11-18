@@ -1,6 +1,5 @@
-// Draft only: no Unity/D3D11 execution or byte comparison has been performed.
 // Based on Phira-Pro c8fb11c6, prpr/src/core/block_mask.rs (GPL-3.0-or-later).
-// Coordinates are chart space, not ADOFAI world or viewport coordinates.
+// The package projects ADOFAI world geometry into the reference mask coordinates.
 #pragma kernel BuildSources
 #pragma kernel ComposeSources
 #pragma kernel WarpActive

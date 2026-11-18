@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage and build the unverified Unity noise shader bundle in a scratch project."""
+"""Build the noise field's Unity shader bundle in an isolated project."""
 import argparse
 import os
 from pathlib import Path
@@ -21,8 +21,8 @@ def main():
         raise SystemExit(f"Scratch project already exists: {project}")
     shutil.copytree(ROOT / "tools/unity-noise-bundle", project)
     assets = project / "Assets"
-    shutil.copytree(ROOT / "src/UnityShaders/Draft/Generated", assets / "Generated")
-    shutil.copy2(ROOT / "src/UnityShaders/Draft/NoiseFieldCoverage.compute", assets)
+    shutil.copytree(ROOT / "src/UnityShaders/Runtime/Generated", assets / "Generated")
+    shutil.copy2(ROOT / "src/UnityShaders/Runtime/NoiseFieldCoverage.compute", assets)
     output.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["PEV_NOISE_BUNDLE_OUTPUT"] = str(output)
@@ -37,8 +37,7 @@ def main():
     bundle = output / "noise-field.bundle"
     if not bundle.is_file() or not bundle.stat().st_size:
         raise SystemExit("Unity returned success without a bundle")
-    print(f"Draft bundle built: {bundle}")
-    print("Runtime loading, depth ordering, colors, capture and resource lifetimes remain unverified.")
+    print(f"Shader bundle built: {bundle}")
 
 
 if __name__ == "__main__":

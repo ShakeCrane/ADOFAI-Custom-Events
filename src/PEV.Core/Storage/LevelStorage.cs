@@ -23,7 +23,7 @@ namespace PEV.Storage
     ///                                       indexes it, so dragging, tags and
     ///                                       MoveDecorations all work with no code of ours.
     ///
-    /// Invariants enforced here (see ARCHITECTURE-v1 §6.3):
+    /// Storage invariants:
     ///   1. only ours are touched
     ///   2. unparseable payloads are left byte-for-byte intact
     ///   3. nothing is deleted silently

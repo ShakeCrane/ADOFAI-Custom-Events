@@ -6,7 +6,6 @@ import zipfile
 from pathlib import Path
 
 from pack_event import pack, validate
-from stage_noise_draft import stage, stage_state
 
 
 class PackageValidationTests(unittest.TestCase):
@@ -249,41 +248,6 @@ class PackageValidationTests(unittest.TestCase):
                          {"render": "missing.js"}, {"bad name": "main.js"}, []):
             self.assertTrue(validate(self.root, dict(parent, vectorPrograms=programs)))
         self.assertTrue(validate(self.root, dict(parent, schemaVersion=3)))
-
-    def test_noise_draft_staging_is_self_contained_and_never_overwrites(self):
-        bundle = self.root / "draft.bundle"
-        bundle.write_bytes(b"test fixture, not a Unity bundle")
-        output = self.root / "draft.event"
-        stage(bundle, output)
-        with zipfile.ZipFile(output) as archive:
-            names = set(archive.namelist())
-            self.assertTrue({"event.json", "main.js", "icon.png", "assets/noise-field.bundle",
-                             "assets/BlockNoise1.png", "assets/PointNoise.png", "assets/FD_Noise_00000.png",
-                             "assets/TouchHover.png", "assets/README.md", "assets/legacy/block.png",
-                             "assets/legacy/point.png"}.issubset(names))
-            self.assertEqual(1, archive.read("main.js").count(b"invert: !!params.invert"))
-            self.assertEqual(bundle.read_bytes(), archive.read("assets/noise-field.bundle"))
-        old = output.read_bytes()
-        with self.assertRaises(FileExistsError):
-            stage(bundle, output)
-        self.assertEqual(old, output.read_bytes())
-
-    def test_noise_draft_rejects_missing_or_empty_bundle(self):
-        bundle = self.root / "empty.bundle"
-        bundle.write_bytes(b"")
-        with self.assertRaises(ValueError):
-            stage(bundle, self.root / "draft.event")
-        self.assertFalse((self.root / "draft.event").exists())
-
-    def test_noise_state_staging_never_overwrites(self):
-        output = self.root / "state.event"
-        stage_state(output)
-        with zipfile.ZipFile(output) as archive:
-            self.assertEqual({"event.json", "main.js"}, set(archive.namelist()))
-        before = output.read_bytes()
-        with self.assertRaises(FileExistsError):
-            stage_state(output)
-        self.assertEqual(before, output.read_bytes())
 
 
 if __name__ == "__main__":

@@ -2,15 +2,43 @@
 bin/
 obj/
 *.user
+*.dll
+*.exe
+*.pdb
+*.nupkg
+__pycache__/
+*.py[cod]
 
 # local research clones (huge, not needed in repo)
-_research/
-packages/
+/_research/
+/packages/
 
 # editor
 .vs/
 .idea/
+/Directory.Build.props
+
+# Unity scratch output in build-tool projects
+/tools/*/Library/
+/tools/*/Temp/
+/tools/*/Logs/
+/tools/*/UserSettings/
+
+# Local game data, logs and credentials
+*.adofai
+*.adozip
+*.log
+.env
+.env.*
+*.pem
+*.pfx
+*.key
+*.ulf
 
 # release artifacts (published via GitHub Releases)
-dist/
-release_body.md
+/dist/
+/release_body.md
+*.zip
+*.event
+!/src/Events/*.event/
+!/template-events/*.event

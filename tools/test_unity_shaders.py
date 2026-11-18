@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline checks for generated Unity shader drafts; this is not a Unity build."""
+"""Compile the generated Unity shaders offline with DXC."""
 import argparse
 from pathlib import Path
 import re
@@ -48,8 +48,8 @@ def main():
                         str(vertex)], check=True)
         for entry in ("BuildSources", "ComposeSources", "WarpActive", "DilateRing", "ExportMasks", "BuildTouch", "WarpColors"):
             subprocess.run([dxc, "-T", "cs_6_0", "-E", entry, "-Fo", str(tmp / (entry + ".dxil")),
-                            str(ROOT / "src/UnityShaders/Draft/NoiseFieldCoverage.compute")], check=True)
-        print(f"DXC: {count} draft pixel shaders, one vertex shader, seven compute kernels compiled")
+                            str(ROOT / "src/UnityShaders/Runtime/NoiseFieldCoverage.compute")], check=True)
+        print(f"DXC: {count} pixel shaders, one vertex shader, seven compute kernels compiled")
         print("No Unity shader packaging, D3D11 rendering, or visual equivalence was tested.")
 
 

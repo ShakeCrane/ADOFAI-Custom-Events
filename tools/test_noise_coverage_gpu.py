@@ -12,7 +12,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests/fixtures/noise-field-coverage"
-SOURCE = ROOT / "src/UnityShaders/Draft/NoiseFieldCoverage.compute"
+SOURCE = ROOT / "src/UnityShaders/Runtime/NoiseFieldCoverage.compute"
 AREAS = [
     (-.2, .05, .45, .27, .23, 1., 1., 1),
     (.3, -.1, .35, .18, 0., 1., 1., 3),
