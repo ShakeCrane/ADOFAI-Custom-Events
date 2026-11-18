@@ -18,14 +18,18 @@ function updateController(input) {
     }
     var group = groups[index];
     // The depth pass draws one combined mask. Its style comes from the first solid region.
-    if (!inverted && group.style === null) group.style = [params.coastWidth,params.outlineWidth,params.touchOpacity,params.touchSize];
+    if (!inverted) {
+      if (group.style === null) group.style = [params.coastWidth,params.outlineWidth,1];
+      if (group.style[2] === 1 && typeof params.animationSpeed === 'number' && params.animationSpeed !== 1)
+        group.style[2] = params.animationSpeed;
+    }
     group.primary = group.primary || active || warning;
     group.secondary = group.secondary || disabled || warning;
     group.colored = group.colored || !item.HasDefault || item.Red !== item.DefaultRed ||
       item.Green !== item.DefaultGreen || item.Blue !== item.DefaultBlue;
     group.members.push(i);
     group.data.push([item.X,item.Y,item.HalfX,item.HalfY,item.Angle,item.Opacity,flags,
-      item.Red,item.Green,item.Blue,active,inverted,active,inverted]);
+      item.Red,item.Green,item.Blue,active,inverted,active,inverted,params.touchOpacity,params.touchSize]);
   }
   return {groups:groups};
 }

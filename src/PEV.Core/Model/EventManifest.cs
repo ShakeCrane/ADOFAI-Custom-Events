@@ -177,6 +177,7 @@ namespace PEV.Model
         public readonly List<GlobalSettingSpec> GlobalSettings = new List<GlobalSettingSpec>();
         public string DecorationDefaultColor;
         public string DecorationDefaultTag;
+        public string DecorationListName;
         public readonly HashSet<string> HiddenDecorationProperties = new HashSet<string>(StringComparer.Ordinal);
         public string HostPrimitive;
         public readonly Dictionary<string, ImageAssetSpec> ImageAssets = new Dictionary<string, ImageAssetSpec>(StringComparer.Ordinal);
@@ -447,10 +448,19 @@ namespace PEV.Model
                     (defaults["color"] != null && (defaults["color"].Type != JTokenType.String ||
                     !System.Text.RegularExpressions.Regex.IsMatch(defaults.Value<string>("color"), "^[0-9a-fA-F]{6}$"))) ||
                     (defaults["tag"] != null && (defaults["tag"].Type != JTokenType.String ||
-                    string.IsNullOrWhiteSpace(defaults.Value<string>("tag")) || defaults.Value<string>("tag").Length > 128)))
-                { error = "decorationDefaults requires a decoration-backed schema 3 event, optional six-digit color and nonempty tag"; return null; }
+                    defaults.Value<string>("tag").Length > 128 ||
+                    (defaults.Value<string>("tag").Length > 0 && string.IsNullOrWhiteSpace(defaults.Value<string>("tag"))))))
+                { error = "decorationDefaults requires a decoration-backed schema 3 event, optional six-digit color and tag"; return null; }
                 m.DecorationDefaultColor = defaults.Value<string>("color");
                 m.DecorationDefaultTag = defaults.Value<string>("tag");
+            }
+
+            if (root["decorationListName"] != null)
+            {
+                string listName = root["decorationListName"].Type == JTokenType.String ? root.Value<string>("decorationListName") : null;
+                if (m.SchemaVersion < 4 || !m.DecorationBacked || string.IsNullOrWhiteSpace(listName) || listName.Length > 128)
+                { error = "invalid decorationListName for schema 4 decoration event"; return null; }
+                m.DecorationListName = listName;
             }
 
             if (root["hiddenDecorationProperties"] != null)

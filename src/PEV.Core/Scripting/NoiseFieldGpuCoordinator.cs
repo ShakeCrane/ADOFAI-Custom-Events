@@ -145,6 +145,10 @@ namespace PEV.Scripting
                 if (!(commands["conditions"] is JObject conditions) || !(commands["buffers"] is JObject buffers) ||
                     !(commands["values"] is JObject values) || !(commands["compute"] is JObject compute))
                     throw new ArgumentException("Invalid package group commands");
+                float animationSpeed = commands.Value<float?>("animationSpeed") ?? 1f;
+                if (float.IsNaN(animationSpeed) || animationSpeed < 0f || animationSpeed > 10f)
+                    throw new ArgumentException("Invalid package animation speed");
+                float animationTime = songTime * animationSpeed;
                 var vector = commands["vector"];
                 int layout = vector != null && vector.Type != JTokenType.Null ? 1 : 0;
                 foreach (var layer in _compositor.Layers)
@@ -167,7 +171,7 @@ namespace PEV.Scripting
                     _staging.SetPending(pair.Key, replacement);
                     group = replacement;
                 }
-                group.Masks.Render(camera.pixelWidth, camera.pixelHeight, songTime, buffers, compute, _images);
+                group.Masks.Render(camera.pixelWidth, camera.pixelHeight, animationTime, buffers, compute, _images);
                 if (vector != null && vector.Type != JTokenType.Null)
                 {
                     if (!group.Vectors.Update(group.Masks.Width, group.Masks.Height, camera.aspect, vector, group.Masks.RunExternal))
@@ -181,7 +185,7 @@ namespace PEV.Scripting
                 group.Textures.Clear();
                 if (vector != null && vector.Type != JTokenType.Null)
                     foreach (var role in _textures.Roles) group.Textures.Add(role.Key, group.Vectors.Get(role.Value));
-                ready &= group.Layer.Draw(camera, group.Masks, _images, aspect, songTime,
+                ready &= group.Layer.Draw(camera, group.Masks, _images, aspect, animationTime,
                     settings, conditions, values, fallbackBackground, group.Textures);
             }
             if (!ready)

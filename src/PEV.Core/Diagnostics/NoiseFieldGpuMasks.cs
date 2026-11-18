@@ -84,7 +84,7 @@ namespace PEV.Scripting
             _inputs["contactCount"] = touchCount; _inputs["screenAspect"] = (float)viewportWidth / viewportHeight;
             _inputs["hasContacts"] = touchCount > 0;
             _inputs["coastScaleX"] = 2f; _inputs["coastScaleY"] = 2f;
-            _inputs["ringStep"] = 1f; _inputs["touchOpacity"] = 2f;
+            _inputs["ringStep"] = 1f;
             foreach (var image in images)
             {
                 if (image.Value == null || image.Value.width <= 0 || image.Value.height <= 0) throw new ArgumentException("Invalid package image");

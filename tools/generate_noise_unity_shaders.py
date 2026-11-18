@@ -94,8 +94,14 @@ def variant(code, capture, disabled):
         code = re.sub(r"^Texture2D<float4> uScene;\n", "", code, flags=re.M)
         code = re.sub(r"^SamplerState sampleruScene;\n", "", code, flags=re.M)
     if "_TouchPosCount;" in code:
-        code = "uniform float _PEVTouchOpacity;\n" + code
-        code = code.replace("* _TouchPosShine)", "* (_TouchPosShine * (_PEVTouchOpacity == 0.0 ? 1.0 : _PEVTouchOpacity - 1.0)))")
+        code = code.replace("float2 _TouchPos[10]", "float4 _TouchPos[10]")
+        code = code.replace("u_xlat33.x = 1.0f;", "u_xlat33.x = 1.0f;\n            float touchOpacity = 1.0f;")
+        code = code.replace("u_xlat7 = u_xlat16 + (-_TouchPos[u_xlati_loop_1]);", """float4 touch = _TouchPos[u_xlati_loop_1];
+                float size = touch.z > 0.0f ? touch.z : 1.0f;
+                u_xlat7 = (u_xlat16 - touch.xy) / size;""")
+        code = code.replace("u_xlat49 = sqrt(u_xlat49);", """u_xlat49 = sqrt(u_xlat49);
+                if (u_xlat49 <= u_xlat33.x) touchOpacity = touch.w == 0.0f ? 1.0f : saturate(touch.w - 1.0f);""")
+        code = code.replace("u_xlat16.x = exp2(u_xlat16.x);", "u_xlat16.x = exp2(u_xlat16.x) * touchOpacity;", 1)
     return code
 
 

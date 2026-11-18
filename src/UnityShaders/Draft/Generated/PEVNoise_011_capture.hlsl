@@ -1,4 +1,3 @@
-uniform float _PEVTouchOpacity;
 float2 PEVGrabUV(float2 uv) {
     uv.y = (uv.y - 0.5) * _ProjectionParams.x + 0.5;
 #if UNITY_UV_STARTS_AT_TOP
@@ -37,7 +36,7 @@ uniform float _DisplaceStrength;
 uniform float _SparkDisplaceIntensity;
 uniform float3 _SparkTint;
 uniform int _TouchPosCount;
-uniform float2 _TouchPos[10];
+uniform float4 _TouchPos[10];
 uniform float _TouchPosSDFSmoothness;
 uniform float _TouchPosRadius;
 uniform float _TouchPosSDFFalloff;
@@ -426,6 +425,7 @@ float4 fullActive()
             u_xlat16 /= _PEVScreenParams.yy;
             u_xlati1 = _TouchPosCount;
             u_xlat33.x = 1.0f;
+            float touchOpacity = 1.0f;
             for (int u_xlati_loop_1 = 0; u_xlati_loop_1 < 10; u_xlati_loop_1++)
             {
                 u_xlatb49 = u_xlati_loop_1 >= u_xlati1;
@@ -433,9 +433,12 @@ float4 fullActive()
                 {
                     break;
                 }
-                u_xlat7 = u_xlat16 + (-_TouchPos[u_xlati_loop_1]);
+                float4 touch = _TouchPos[u_xlati_loop_1];
+                float size = touch.z > 0.0f ? touch.z : 1.0f;
+                u_xlat7 = (u_xlat16 - touch.xy) / size;
                 u_xlat49 = dot(u_xlat7, u_xlat7);
                 u_xlat49 = sqrt(u_xlat49);
+                if (u_xlat49 <= u_xlat33.x) touchOpacity = touch.w == 0.0f ? 1.0f : saturate(touch.w - 1.0f);
                 u_xlat52 = (-u_xlat49) + u_xlat33.x;
                 u_xlat52 = (-abs(u_xlat52)) + _TouchPosSDFSmoothness;
                 u_xlat52 = max(u_xlat52, 0.0f);
@@ -454,7 +457,7 @@ float4 fullActive()
             u_xlat16.x *= u_xlat32.x;
             u_xlat16.x = log2(u_xlat16.x);
             u_xlat16.x *= _TouchPosSDFFalloff;
-            u_xlat16.x = exp2(u_xlat16.x);
+            u_xlat16.x = exp2(u_xlat16.x) * touchOpacity;
         }
         else
         {
@@ -630,7 +633,7 @@ float4 fullActive()
         u_xlat16_3.x = _1355.x;
         u_xlat16_3.y = _1355.y;
         u_xlat16_3.z = _1355.z;
-        u_xlat16_50 = (u_xlat16.x * (_TouchPosShine * (_PEVTouchOpacity == 0.0 ? 1.0 : _PEVTouchOpacity - 1.0))) + 1.0f;
+        u_xlat16_50 = (u_xlat16.x * _TouchPosShine) + 1.0f;
         float4 _1370 = u_xlat16_3;
         float3 _1372 = u_xlat16_50.xxx * _1370.xyz;
         u_xlat16_3.x = _1372.x;

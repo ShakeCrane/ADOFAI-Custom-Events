@@ -126,4 +126,39 @@ namespace PEV.Editor
                 manifest.HiddenDecorationProperties.Contains(__instance.name)) __result = false;
         }
     }
+
+    [HarmonyPatch(typeof(scrVisualDecoration), nameof(scrVisualDecoration.decorationName), MethodType.Getter)]
+    internal static class DecorationListName
+    {
+        private static void Postfix(scrVisualDecoration __instance, ref string __result)
+        {
+            if (PEV.Storage.LevelStorage.TryGetData(__instance.sourceLevelEvent, out var data) &&
+                EventRegistry.TryGetById(data.Id, out var manifest) && manifest.DecorationListName != null)
+                __result = manifest.DecorationListName;
+        }
+    }
+
+    [HarmonyPatch(typeof(ListItem_Decoration), nameof(ListItem_Decoration.SetEvent))]
+    internal static class DecorationListIcon
+    {
+        private static void Postfix(ListItem_Decoration __instance, LevelEvent ev)
+        {
+            if (PEV.Storage.LevelStorage.TryGetData(ev, out var data) && EventRegistry.TryGetById(data.Id, out var manifest) &&
+                manifest.DecorationListName != null && GCS.levelEventIcons.TryGetValue((LevelEventType)PEV.Util.StableId.FromEventId(manifest.Id), out var icon))
+                __instance.itemTypeImage.sprite = icon;
+        }
+    }
+
+    [HarmonyPatch(typeof(scrDecoration), nameof(scrDecoration.Setup))]
+    internal static class CarrierTagIndex
+    {
+        private static void Prefix(scrDecoration __instance, LevelEvent ev)
+        {
+            if (__instance.tags == null || __instance.manager?.taggedDecorations == null ||
+                !PEV.Storage.DecorationCarrier.IsOurs(ev?.GetString("decorationImage"))) return;
+            // Setup removes old memberships by indexing buckets that the game may have cleared.
+            var index = __instance.manager.taggedDecorations;
+            __instance.tags.RemoveWhere(tag => !index.ContainsKey(tag));
+        }
+    }
 }

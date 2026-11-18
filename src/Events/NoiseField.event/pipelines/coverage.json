@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "snapshotValues": ["invert", "coastWidth", "outlineWidth", "touchOpacity", "touchSize"],
+  "snapshotValues": ["invert", "coastWidth", "outlineWidth", "touchOpacity", "touchSize", "animationSpeed"],
   "aspectLimit": 1.7777778,
   "resolution": {
     "divisor": 8,
@@ -114,7 +114,6 @@
     "_CoastScaleX": { "type": "float", "input": "coastScaleX" },
     "_CoastScaleY": { "type": "float", "input": "coastScaleY" },
     "_RingStep": { "type": "float", "input": "ringStep" },
-    "_TouchOpacity": { "type": "float", "input": "touchOpacity" },
     "_TouchCount": {
       "type": "int",
       "input": "contactCount"
@@ -305,9 +304,6 @@
   },
   "compositor": {
     "bindings": [
-      { "name": "_PEVTouchOpacity", "type": "float", "input": "touchOpacity" },
-      { "name": "_TouchPosRadius", "type": "float", "input": "touchRadius" },
-      { "name": "_TouchPosSDFSmoothness", "type": "float", "input": "touchSmoothness" },
       {
         "name": "uView",
         "type": "vector",
@@ -502,6 +498,8 @@
       "_DisplaceBlendIntensity": 0.411,
       "_DisplaceSpeed": 1.5,
       "_DisplaceStrength": 0.15,
+      "_TouchPosRadius": 0.5,
+      "_TouchPosSDFSmoothness": 0.47,
       "_TouchPosSDFFalloff": 0.41,
       "_BackgroundPixelScale": 6,
       "uDisabledFillOpacity": 0.4,

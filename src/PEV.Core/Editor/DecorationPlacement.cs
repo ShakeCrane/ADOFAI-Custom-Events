@@ -165,17 +165,7 @@ namespace PEV.Editor
             row["decorationImage"] = DecorationCarrier.ImageMarker;
             ApplyDecorationDefaults(row, manifest);
 
-            // A real tag, not the empty string.
-            //
-            // scrDecoration.Setup, when rebuilding (ResetDecorations clears taggedDecorations
-            // first, then re-runs Setup on every object), walks the tags it had before and does
-            // `taggedDecorations[key].RemoveAll(...)`. For an untagged decoration that key is
-            // "NO TAG", which the clear just removed — so pressing play threw
-            // KeyNotFoundException and the whole play flow aborted. A non-empty tag never
-            // takes that branch. It is also what the author needs anyway: MoveDecorations
-            // finds a field by tag, and "find it by tag and move it" is the requirement.
-            if (string.IsNullOrEmpty(row.GetString("tag")))
-                row["tag"] = manifest.DecorationDefaultTag ?? DecorationCarrier.DefaultTag;
+            row["tag"] = manifest.DecorationDefaultTag ?? DecorationCarrier.DefaultTag;
 
             // Seed the panel with the manifest defaults and enable them. Decode marks absent
             // properties disabled; a freshly created row has no such history, but doing this

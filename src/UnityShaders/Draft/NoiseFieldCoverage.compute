@@ -22,7 +22,7 @@ struct Touch
 {
     float2 center;
     float scale;
-    float padding;
+    float opacity; // One plus opacity. Zero keeps reference inputs compatible.
 };
 
 StructuredBuffer<Area> _Areas;
@@ -37,7 +37,7 @@ Texture2D<float4> _NoiseTexture; // RGBA8 UNorm, vertically flipped like referen
 uint2 _NoiseDimensions;
 float _TimeSeconds;
 // Zero is reserved for reference probes that use the original screen-space widths.
-float _CoastScaleX, _CoastScaleY, _RingStep, _TouchOpacity;
+float _CoastScaleX, _CoastScaleY, _RingStep;
 RWTexture2D<uint4> _Effect;      // displaced active, edge, glow, disabled
 RWTexture2D<uint> _RingInput;
 RWTexture2D<uint> _RingOutput;
@@ -256,10 +256,11 @@ void BuildTouch(uint3 tid : SV_DispatchThreadID)
         precise float2 uv = float2(delta.x * _ScreenAspect / size + 0.5, delta.y / size + 0.5);
         if (any(uv < 0.0) || any(uv > 1.0)) continue;
         float2 pixel = touchSample(uv);
-        precise float blended = pixel.x * pixel.y + ((float)value / 255.0) * (1.0 - pixel.y);
+        float alpha = pixel.y * (touch.opacity == 0.0 ? 1.0 : saturate(touch.opacity - 1.0));
+        precise float blended = pixel.x * alpha + ((float)value / 255.0) * (1.0 - alpha);
         value = unorm8(blended);
     }
     uint4 result = _AuxCompose[tid.xy];
-    result.a = unorm8((float)value / 255.0 * (_TouchOpacity == 0.0 ? 1.0 : _TouchOpacity - 1.0));
+    result.a = value;
     _AuxCompose[tid.xy] = result;
 }

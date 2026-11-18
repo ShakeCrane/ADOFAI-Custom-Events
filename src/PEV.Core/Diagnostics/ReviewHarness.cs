@@ -1562,8 +1562,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                         ["showSecondary"] = showDisabled, ["showPrimary"] = showActive, ["hasContacts"] = hover };
                     var contactValues = new JArray();
                     if (hover) contactValues.Add(new JArray(positions[0].x, positions[0].y, positions[0].z, positions[0].w));
-                    var values = new JObject { ["contactCount"] = hover ? 1 : 0, ["contacts"] = contactValues,
-                        ["touchOpacity"] = 2f, ["touchRadius"] = .5f, ["touchSmoothness"] = .47f };
+                    var values = new JObject { ["contactCount"] = hover ? 1 : 0, ["contacts"] = contactValues };
                     var textures = new Dictionary<string, Texture>();
                     if (colored) { textures["primaryColors"] = first; textures["secondaryColors"] = second; }
                     if (i == 0)
@@ -1675,17 +1674,26 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             {
                 using (var runner = new GroupScriptRunner(contacts + "\n" + groupSource))
                 {
-                    var styled = (JObject)group.DeepClone();
-                    styled["style"] = new JArray(.9f, .08f, .4f, 1.5f);
-                    var points = new[] { new ViewportPoint { Id = 1, Position = new Vector2(.6f, .6f) } };
+                    var styled = new JObject { ["data"] = new JArray(
+                        new JArray(-.5f, 0f, .25f, .25f, 0f, 1f, 1, 1f, 0f, 0f, true, false, true, false, 0f, 1f),
+                        new JArray(.5f, 0f, .25f, .25f, 0f, 1f, 1, 1f, 0f, 0f, true, false, true, false, .4f, 1.5f)),
+                        ["primary"] = true, ["secondary"] = false, ["colored"] = false, ["style"] = new JArray(.9f, .08f, .25f) };
+                    var points = new[] { new ViewportPoint { Id = 1, Position = new Vector2(.25f, .5f) },
+                        new ViewportPoint { Id = 2, Position = new Vector2(.75f, .5f) } };
                     var settings = new Dictionary<string, bool>();
                     if (!runner.Update(styled, 1f, 16f / 9f, 10, 1600, 900, "ff5454", points, settings, 4, out var far, 10f) ||
                         !runner.Update(styled, 1.2f, 16f / 9f, 10, 1600, 900, "ff5454", points, settings, 4, out var near, 5f)) return false;
                     var a = far["compute"]; var b = near["compute"];
+                    var visible = near["values"]["contacts"] as JArray;
+                    var zero = (JObject)styled.DeepClone();
+                    zero["data"][1][15] = 0f;
+                    bool disabled = runner.Update(zero, 1.3f, 16f / 9f, 10, 1600, 900, "ff5454", points, settings, 4, out var muted, 5f) &&
+                        muted["values"].Value<int>("contactCount") == 0 && muted["compute"].Value<int>("contactCount") == 0;
                     return Mathf.Abs((b.Value<float>("coastScaleX") - 1f) - 2f * (a.Value<float>("coastScaleX") - 1f)) < .001f &&
                            Mathf.Abs(b.Value<float>("ringStep") - 2f * a.Value<float>("ringStep")) < .001f &&
-                           Mathf.Abs(near["values"].Value<float>("touchOpacity") - 1.4f) < .001f &&
-                           Mathf.Abs(near["values"].Value<float>("touchRadius") - .75f) < .001f;
+                           visible?.Count == 1 && Mathf.Abs(visible[0][0].Value<float>() - .75f * 16f / 9f) < .001f &&
+                           Mathf.Abs(visible[0][2].Value<float>() - 3f) < .001f &&
+                           Mathf.Abs(visible[0][3].Value<float>() - 1.4f) < .001f && near.Value<float>("animationSpeed") == .25f && disabled;
                 }
             });
             return true;
@@ -1894,7 +1902,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                     var buffers = new JObject { ["geometry"] = geometry, ["contacts"] = contacts };
                     var inputs = new JObject { ["geometryCount"] = count, ["contactCount"] = touchCount,
                         ["aspect"] = 16f / 9f, ["screenAspect"] = (float)width / height, ["hasContacts"] = touchCount > 0,
-                        ["coastScaleX"] = 2f, ["coastScaleY"] = 2f, ["ringStep"] = 1f, ["touchOpacity"] = 2f };
+                        ["coastScaleX"] = 2f, ["coastScaleY"] = 2f, ["ringStep"] = 1f };
                     commands.Render(width, height, time, buffers, inputs, images);
                     if (i == 0)
                     {
@@ -2214,16 +2222,33 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 }
                 coordinator.ProbeContact = new ViewportPoint { Id = 71,
                     Position = camera.WorldToViewportPoint(entry.World.Center) };
-                entry.Arguments["touchSize"] = .45f;
+                entry.Arguments["touchSize"] = .09f;
                 entry.Arguments["touchOpacity"] = 1f;
                 for (int i = 0; i <= 8; i++) { coordinator.Render(entries, camera, 1f + i * .025f, false, Color.black); yield return null; }
                 var touched = captureFrame();
+                entry.Arguments["touchOpacity"] = .25f;
+                coordinator.Render(entries, camera, 1.2f, false, Color.black);
+                var dimmed = captureFrame();
+                entry.Arguments["touchOpacity"] = 1f;
+                entry.Arguments["touchSize"] = .045f;
+                coordinator.Render(entries, camera, 1.2f, false, Color.black);
+                var smaller = captureFrame();
                 entry.Arguments["touchOpacity"] = 0f;
                 for (int i = 0; i < 8; i++) { coordinator.Render(entries, camera, 1.2f, false, Color.black); yield return null; }
                 var quiet = captureFrame();
                 Row("GPU-real-contact-alignment", !touched[96 * 128 + 32].Equals(quiet[96 * 128 + 32]) &&
                     touched[32 * 128 + 32].Equals(quiet[32 * 128 + 32]) ? "PASS" : "FAIL",
                     $"region {quiet[96 * 128 + 32]}->{touched[96 * 128 + 32]}; mirrored {touched[32 * 128 + 32]}");
+                int fullPixels = touched.Zip(quiet, (a, b) => !a.Equals(b)).Count(changed => changed);
+                int smallPixels = smaller.Zip(quiet, (a, b) => !a.Equals(b)).Count(changed => changed);
+                Row("GPU-real-contact-size-and-opacity", smallPixels > 0 && smallPixels < fullPixels &&
+                    !dimmed.SequenceEqual(touched) && !dimmed.SequenceEqual(quiet) ? "PASS" : "FAIL",
+                    $"affected pixels at full and half size: {fullPixels}, {smallPixels}");
+                entry.Arguments["animationSpeed"] = 0f;
+                for (int i = 0; i < 8; i++) { coordinator.Render(entries, camera, 2f, false, Color.black); yield return null; }
+                var frozen = captureFrame();
+                coordinator.Render(entries, camera, 6f, false, Color.black);
+                Row("GPU-real-zero-animation-speed", frozen.SequenceEqual(captureFrame()) ? "PASS" : "FAIL");
             }
             finally
             {
@@ -2281,9 +2306,29 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                                 var blend = added.info.propertiesInfo["blendMode"];
                                 var plain = added.Copy();
                                 LevelStorage.Detach(plain);
+                                var mask = added.info.propertiesInfo["maskingType"];
                                 return !blend.CheckIfShown(added, blend.groupName) && blend.CheckIfShown(plain, blend.groupName) &&
-                                    new[] { "coastWidth", "outlineWidth", "touchOpacity", "touchSize" }.All(DecorationParams.IsInjected) &&
+                                    !mask.CheckIfShown(added, mask.groupName) && mask.CheckIfShown(plain, mask.groupName) &&
+                                    new[] { "coastWidth", "outlineWidth", "touchOpacity", "touchSize", "animationSpeed" }.All(DecorationParams.IsInjected) &&
                                     !DecorationParams.IsInjected("noiseFrameCount");
+                            });
+                            Check("FIELD-editor-carrier-presentation", () =>
+                            {
+                                var decoration = DecorationBridge.Find(added);
+                                var type = (LevelEventType)PEV.Util.StableId.FromEventId(field.Id);
+                                var stateType = (LevelEventType)PEV.Util.StableId.FromEventId(StateEventId);
+                                return decoration != null && decoration.decorationName == "NoiseField" && added.GetString("tag") == "" &&
+                                    added.GetString("decorationImage") == DecorationCarrier.ImageMarker &&
+                                    GCS.levelEventIcons[type] != GCS.levelEventIcons[stateType] &&
+                                    GCS.levelEventIcons[type].texture.GetPixels32().All(p => p.r == 255 && p.g == 255 && p.b == 255) &&
+                                    GCS.levelEventIcons[stateType].texture.GetPixels32().All(p => p.r == 255 && p.g == 255 && p.b == 255);
+                            });
+                            Check("FIELD-editor-untagged-reset", () =>
+                            {
+                                var decoration = DecorationBridge.Find(added);
+                                if (decoration == null || decoration.manager == null) return false;
+                                decoration.manager.ResetDecorations();
+                                return added.GetString("tag") == "" && decoration.tags.Contains("NO TAG");
                             });
                             Check("FIELD-editor-native-parallax", () =>
                             {
@@ -3074,6 +3119,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
             });
             Check("MIGRATE-legacy-decoration", () =>
             {
+                if (!EventRegistry.TryGetById("pev.noise-field", out var manifest)) return false;
                 var level = new LevelData();
                 var comment = new LevelEvent(1, LevelEventType.EditorComment);
                 comment["comment"] = "@PEV1 {\"id\":\"pev.noise-field\",\"p\":{\"size\":[8,6],\"opacity\":0,\"tag\":\"\"}}";
@@ -3082,7 +3128,7 @@ return [run({op:'pixelPack',channels:[channel(0),channel(1),channel(2),channel(3
                 return summary.Migrated == 1 && level.levelEvents.Count == 0 && level.decorations.Count == 1 &&
                        level.decorations[0].GetFloat("opacity") == 0 &&
                        level.decorations[0].Get<Vector2>("scale") == new Vector2(200, 200) &&
-                       !string.IsNullOrEmpty(level.decorations[0].GetString("tag"));
+                       level.decorations[0].GetString("tag") == (manifest.DecorationDefaultTag ?? DecorationCarrier.DefaultTag);
             });
             Check("MIGRATE-generic-no-field-defaults", () =>
             {

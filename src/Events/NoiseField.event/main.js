@@ -64,7 +64,9 @@ function create(ctx, params) {
   var alive = false;
 
   function push(t) {
-    var frame = Math.floor(t * p.evolveSpeed) % p.frameCount;
+    var animationSpeed = num(params.animationSpeed, 1);
+    var animationTime = t * animationSpeed;
+    var frame = Math.floor(animationTime * p.evolveSpeed) % p.frameCount;
     if (frame < 0) frame += p.frameCount;
 
     fx.field(key, {
@@ -73,12 +75,13 @@ function create(ctx, params) {
       outlineWidth: num(params.outlineWidth, 0.045),
       touchOpacity: num(params.touchOpacity, 1),
       touchSize: num(params.touchSize, 1),
+      animationSpeed: animationSpeed,
       shape: p.shape,
       feather: p.feather,
 
       frame: frame,
       frameCount: p.frameCount,
-      uv: [t * p.moveSpeed[0], t * p.moveSpeed[1]],
+      uv: [animationTime * p.moveSpeed[0], animationTime * p.moveSpeed[1]],
       brightness: p.brightness,
       saturation: p.saturation,
       sampleRate: p.sampleRate,

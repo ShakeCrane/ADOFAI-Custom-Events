@@ -1,13 +1,16 @@
 {
   "schemaVersion": 3,
   "id": "pev.noise-field-state",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "apiVersion": 1,
   "entry": "included/state.js",
   "category": "DecorationFx",
   "name": {
-    "en": "Noise Field State",
-    "zh-CN": "噪域状态"
+    "en": "Change Noise Field State",
+    "zh-CN": "更改噪域状态",
+    "zh-TW": "更改噪域狀態",
+    "ja": "ノイズ領域の状態を変更",
+    "ko": "노이즈 영역 상태 변경"
   },
   "description": {
     "en": "Set the phase of noise fields matched by tag. Warning starts at this tile and is followed by activation.",
@@ -75,5 +78,6 @@
         "zh-CN": "预警时长"
       }
     }
-  ]
+  ],
+  "icon": "included/state-icon.png"
 }

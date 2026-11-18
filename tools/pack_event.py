@@ -227,9 +227,15 @@ def validate(root, manifest, _included=False):
                 not isinstance(defaults, dict) or any(k not in ("color", "tag") for k in defaults) or
                 ("color" in defaults and (not isinstance(defaults["color"], str) or
                                           not re.fullmatch(r"[0-9a-fA-F]{6}", defaults["color"]))) or
-                ("tag" in defaults and (not isinstance(defaults["tag"], str) or
-                                        not defaults["tag"].strip() or len(defaults["tag"]) > 128))):
-            problems.append("decorationDefaults requires a decoration-backed schema 3 event, optional six-digit color and nonempty tag")
+                ("tag" in defaults and (not isinstance(defaults["tag"], str) or len(defaults["tag"]) > 128 or
+                                        (defaults["tag"] and not defaults["tag"].strip())))):
+            problems.append("decorationDefaults requires a decoration-backed schema 3 event, optional six-digit color and tag")
+
+    if "decorationListName" in manifest:
+        list_name = manifest["decorationListName"]
+        if (manifest.get("schemaVersion") != 4 or manifest.get("decoration") is not True or
+                not isinstance(list_name, str) or not list_name.strip() or len(list_name) > 128):
+            problems.append("invalid decorationListName for schema 4 decoration event")
 
     if "decorationMigration" in manifest:
         migrations = manifest["decorationMigration"]

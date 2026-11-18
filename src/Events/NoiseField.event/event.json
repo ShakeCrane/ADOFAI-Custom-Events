@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "id": "pev.noise-field",
-  "version": "1.34.0",
+  "version": "1.35.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
@@ -14,7 +14,7 @@
   },
   "decorationDefaults": {
     "color": "ff5454",
-    "tag": "noise"
+    "tag": ""
   },
   "decorationMigration": [
     {
@@ -54,8 +54,20 @@
     }
   ],
   "name": {
-    "en": "Noise Field",
-    "zh-CN": "噪声域"
+    "en": "Add Noise Field",
+    "zh-CN": "添加噪域",
+    "zh-TW": "新增噪域",
+    "ja": "ノイズ領域を追加",
+    "ko": "노이즈 영역 추가",
+    "es": "Añadir campo de ruido",
+    "pt": "Adicionar campo de ruído",
+    "fr": "Ajouter un champ de bruit",
+    "pl": "Dodaj pole szumu",
+    "ro": "Adaugă un câmp de zgomot",
+    "ru": "Добавить поле шума",
+    "vi": "Thêm vùng nhiễu",
+    "cs": "Přidat pole šumu",
+    "de": "Rauschfeld hinzufügen"
   },
   "description": {
     "en": "A GPU noise field with adjustable coastline, outline and planet contact effects.",
@@ -127,13 +139,26 @@
       "name": "touchSize",
       "type": "Float",
       "default": 1,
-      "min": 0.1,
+      "min": 0,
       "max": 3,
       "group": "DepthStyle",
       "order": 4,
       "label": {
         "en": "Contact Size",
         "zh-CN": "触点大小"
+      }
+    },
+    {
+      "name": "animationSpeed",
+      "type": "Float",
+      "default": 1,
+      "min": 0,
+      "max": 3,
+      "group": "DepthStyle",
+      "order": 5,
+      "label": {
+        "en": "Animation Speed",
+        "zh-CN": "动画速度"
       }
     }
   ],
@@ -215,6 +240,9 @@
     }
   },
   "hiddenDecorationProperties": [
-    "blendMode"
-  ]
+    "blendMode",
+    "maskingType",
+    "maskingTarget"
+  ],
+  "decorationListName": "NoiseField"
 }
