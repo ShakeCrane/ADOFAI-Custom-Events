@@ -215,6 +215,12 @@ def validate(root, manifest, _included=False):
                     else:
                         bindings.add(binding)
 
+    if "hiddenDecorationProperties" in manifest:
+        hidden = manifest["hiddenDecorationProperties"]
+        if (manifest.get("schemaVersion") != 4 or manifest.get("decoration") is not True or not isinstance(hidden, list) or len(hidden) > 32
+                or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name) for name in hidden)):
+            problems.append("invalid hiddenDecorationProperties for schema 4 decoration event")
+
     if "decorationDefaults" in manifest:
         defaults = manifest["decorationDefaults"]
         if (manifest.get("schemaVersion") not in (3, 4) or manifest.get("decoration") is not True or

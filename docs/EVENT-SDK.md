@@ -71,6 +71,7 @@ CameraWarp.event
 | `shaderBundle` | 否 | schema 2 及以上的包内资源路径；供 Core 内置原语加载，脚本不能自行加载 shader |
 | `globalSettings` | 否 | schema 3、API 2 的事件级全局设置声明；由 Core 通用绘制到 UMM 面板 |
 | `decorationDefaults` | 否 | schema 3 的原生装饰新建默认值，支持六位十六进制 `color` 与非空 `tag` |
+| `hiddenDecorationProperties` | 否 | schema 4 的装饰事件可声明隐藏的原生面板属性名，最多 32 项，只影响该事件的面板 |
 | `decorationMigration` | 否 | schema 3 的旧事件数据到原生装饰属性的声明式迁移映射 |
 | `includedEvents` | 否 | schema 4 的包内其他事件 manifest 路径数组，最多 16 个；所有路径相对于事件包根目录 |
 | `vectorPrograms` | 否 | schema 4 的包内后台运算程序路径；目前是内部能力，接口尚未冻结 |

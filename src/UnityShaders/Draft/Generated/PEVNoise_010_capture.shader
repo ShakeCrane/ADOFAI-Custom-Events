@@ -32,9 +32,9 @@ PEVVertexOutput pev_vertex(PEVVertexInput input) {
     PEVVertexOutput o;
     o.position = UnityObjectToClipPos(input.vertex);
     o.color = input.color;
-    // Provisional screen-space mapping; must be verified against game camera,
-    // render target Y orientation and the reference's chart transform.
-    o.sceneUV = o.position.xy / o.position.w * 0.5 + 0.5;
+    // Use logical viewport coordinates, including when Unity flips clip space for a render target.
+    float4 viewport = ComputeScreenPos(o.position);
+    o.sceneUV = viewport.xy / viewport.w;
     o.fieldUV = o.sceneUV;
     o.screenPos = float4(o.sceneUV, 0.0, 1.0);
     o.displaceUV = o.sceneUV * float2(0.8, 0.3);

@@ -50,6 +50,9 @@ namespace PEV.Scripting
         private readonly ResourceGroupStaging<NoiseFieldGpuPlan.Key, Group> _staging =
             new ResourceGroupStaging<NoiseFieldGpuPlan.Key, Group>();
         private readonly List<ViewportPoint> _planets = new List<ViewportPoint>();
+#if PEV_DIAGNOSTICS
+        internal ViewportPoint? ProbeContact;
+#endif
         private readonly Dictionary<NoiseFieldGpuPlan.Key, GroupScriptRunner> _runners = new Dictionary<NoiseFieldGpuPlan.Key, GroupScriptRunner>();
         private readonly List<NoiseFieldGpuPlan.Key> _staleRunners = new List<NoiseFieldGpuPlan.Key>();
 
@@ -106,8 +109,15 @@ namespace PEV.Scripting
             if (settings == null) throw new ArgumentNullException(nameof(settings));
             if (!EnsureImages()) return _staging.Committed;
             float aspect = _graph.AspectLimit > 0 ? Mathf.Min(camera.aspect, _graph.AspectLimit) : camera.aspect;
-            if (!_plan.Build(entries, camera, aspect, GameBridge.Values)) return _staging.Committed;
+            if (!_plan.Build(entries, camera, camera.aspect, GameBridge.Values)) return _staging.Committed;
             LivePlanetPositions.Collect(camera, _planets);
+#if PEV_DIAGNOSTICS
+            if (ProbeContact.HasValue)
+            {
+                _planets.Clear();
+                _planets.Add(ProbeContact.Value);
+            }
+#endif
             _staging.DiscardPendingExcept(_plan.Groups);
             _staleRunners.Clear();
             foreach (var pair in _runners) if (!_plan.Groups.ContainsKey(pair.Key)) _staleRunners.Add(pair.Key);
@@ -125,8 +135,8 @@ namespace PEV.Scripting
                     throw new ArgumentException("Group input exceeds package limits");
                 if (!_runners.TryGetValue(pair.Key, out var runner))
                     _runners.Add(pair.Key, runner = new GroupScriptRunner(_groupProgram));
-                if (!runner.Update(plan.Data, songTime, aspect, _inputLimits.Capacity, camera.pixelWidth, camera.pixelHeight,
-                    _manifest.DecorationDefaultColor, _planets, settings, plan.Count, out var commands))
+                if (!runner.Update(plan.Data, songTime, camera.aspect, _inputLimits.Capacity, camera.pixelWidth, camera.pixelHeight,
+                    _manifest.DecorationDefaultColor, _planets, settings, plan.Count, out var commands, camera.orthographicSize * 2f))
                 {
                     if (pending != null) pending.Layer.Hide();
                     ready = false;
@@ -160,7 +170,7 @@ namespace PEV.Scripting
                 group.Masks.Render(camera.pixelWidth, camera.pixelHeight, songTime, buffers, compute, _images);
                 if (vector != null && vector.Type != JTokenType.Null)
                 {
-                    if (!group.Vectors.Update(group.Masks.Width, group.Masks.Height, aspect, vector, group.Masks.RunExternal))
+                    if (!group.Vectors.Update(group.Masks.Width, group.Masks.Height, camera.aspect, vector, group.Masks.RunExternal))
                     {
                         // Keep the previous group until required textures are ready.
                         group.Layer.Hide();

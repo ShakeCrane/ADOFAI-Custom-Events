@@ -39,6 +39,8 @@ namespace PEV.Scripting
                     if (shader == null) throw new InvalidOperationException(error);
                     materials[i] = new Material(shader) { name = "PEV." + names[i] };
                     ApplyUniforms(materials[i], definition.Constants);
+                    materials[i].SetFloat("_TouchPosRadius", .5f);
+                    materials[i].SetFloat("_TouchPosSDFSmoothness", .47f);
                 }
                 root = new GameObject("PEV.NoiseGpuLayer");
                 root.layer = unityLayer;

@@ -100,7 +100,7 @@ namespace PEV.Scripting
                 bool visible = entry.OverrideVisibility == 0 ? entry.Visible : entry.OverrideVisibility == 1;
                 float opacity = entry.Opacity * entry.OverrideAlpha;
                 if (!visible || !entry.Renderable || opacity <= 0f || float.IsNaN(opacity) || float.IsInfinity(opacity)) continue;
-                var frame = entry.World;
+                var frame = NoiseFieldRenderer.ProjectionFrame(entry);
                 frame.Center += (Vector3)entry.OverrideOffset; frame.Size *= entry.OverrideScale; frame.Rotation += entry.OverrideRotation;
                 if (!ViewportRectangleProjection.TryProject(camera, frame, new Vector2(1f, aspect), out var projected))
                     throw new NotSupportedException("Decoration cannot be projected without shear or perspective");

@@ -1,5 +1,8 @@
 // Package-owned per-depth render decisions. Group data is sent again when it changes.
 var cachedGroup = null, cachedGeometry = [], cachedColors = [], cachedRegions = [];
+function bounded(value, fallback, min, max) {
+  return typeof value === 'number' && isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+}
 function updateController(input) {
   if (input.Group) {
     cachedGroup=input.Group; cachedGeometry=[]; cachedColors=[]; cachedRegions=[];
@@ -14,9 +17,18 @@ function updateController(input) {
   }
   var group=cachedGroup, geometry=cachedGeometry, colors=cachedColors, regions=cachedRegions;
   if (!group) throw Error('group data is missing');
+  var style = group.style || [];
+  var coastWidth = bounded(style[0], 0.5, 0, 4);
+  var outlineWidth = bounded(style[1], 0.045, 0.005, 0.5);
+  var touchOpacity = bounded(style[2], 1, 0, 1);
+  var touchSize = bounded(style[3], 1, 0.1, 3);
+  var worldHeight = input.WorldHeight || 10;
+  // The reference warp produces UV offsets in [-0.070703125, 0.070703125].
+  var coastScale = coastWidth / (0.070703125 * worldHeight);
+  var baseMaskHeight = Math.max(1, Math.floor(input.ViewHeight / 8));
   var response = updateContacts({Time:input.Time,Aspect:input.Aspect,Capacity:input.Capacity,
-    Areas:regions,Points:input.Points});
-  var slots = response.slots.map(function(s){return [s.x,s.y,s.scale,0];});
+    Areas:regions,Points:touchOpacity > 0 ? input.Points : []});
+  var slots = response.slots.map(function(s){return [s.x,s.y,s.scale * touchSize,0];});
   var points = response.contacts.map(function(p){return [Math.fround(Math.fround(p.x)*Math.fround(input.ViewWidth/input.ViewHeight)),p.y,0,0];});
   var defaultRgb = parseInt(input.DefaultColor || '',16);
   if (!isFinite(defaultRgb)) defaultRgb = 0xffffff;
@@ -24,10 +36,14 @@ function updateController(input) {
     continuous:response.visible,
     buffers:{geometry:geometry,contacts:slots},
     compute:{geometryCount:geometry.length,contactCount:slots.length,aspect:input.Aspect,time:input.Time,
+      coastScaleX:1 + Math.min(16, coastScale / input.Aspect),
+      coastScaleY:1 + Math.min(16, coastScale),
+      ringStep:Math.min(16, outlineWidth * baseMaskHeight * 2 / worldHeight), touchOpacity:1 + touchOpacity,
       screenAspect:input.ViewWidth/input.ViewHeight,hasContacts:slots.length>0},
     conditions:{showPrimary:group.primary||response.visible,showSecondary:group.secondary,
       colored:group.colored,hover:response.visible,hasContacts:points.length>0},
-    values:{contactCount:points.length,contacts:points},
+    values:{contactCount:points.length,contacts:points,touchOpacity:1 + touchOpacity,
+      touchRadius:0.5 * touchSize,touchSmoothness:0.47 * touchSize},
     vector:group.colored?{Items:colors,Options:defaultRgb}:null
   };
 }

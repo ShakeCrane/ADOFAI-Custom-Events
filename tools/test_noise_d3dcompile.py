@@ -9,7 +9,7 @@ from ctypes import wintypes
 from pathlib import Path
 import sys
 
-from generate_noise_unity_shaders import ROOT, TARGET, VERTEX
+from generate_noise_unity_shaders import ROOT, TARGET, VERTEX, PROBE_TRANSFORM
 
 
 def main():
@@ -56,7 +56,7 @@ def main():
         raise RuntimeError(f"Expected 10 generated HLSL variants, got {len(variants)}")
     for path in variants:
         source = path.read_text(encoding="utf-8")
-        combined = "#define UNITY_UV_STARTS_AT_TOP 1\n" + source + "\nfloat4 UnityObjectToClipPos(float4 v) { return v; }\n" + VERTEX
+        combined = "#define UNITY_UV_STARTS_AT_TOP 1\n" + PROBE_TRANSFORM + source + VERTEX
         check(combined, path.name, "pev_vertex", "vs_5_0")
         check(combined, path.name, "pev_fragment", "ps_5_0")
     compute = (ROOT / "src/UnityShaders/Draft/NoiseFieldCoverage.compute").read_text(encoding="utf-8")

@@ -69,6 +69,10 @@ function create(ctx, params) {
 
     fx.field(key, {
       invert: !!params.invert,
+      coastWidth: num(params.coastWidth, 0.5),
+      outlineWidth: num(params.outlineWidth, 0.045),
+      touchOpacity: num(params.touchOpacity, 1),
+      touchSize: num(params.touchSize, 1),
       shape: p.shape,
       feather: p.feather,
 

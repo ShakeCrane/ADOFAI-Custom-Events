@@ -14,9 +14,11 @@ function updateController(input) {
     if (index === undefined) {
       index = groups.length; indices[key] = index;
       groups.push({sorting:[item.SortingLayer,item.SortingOrder,item.UnityLayer],
-        primary:false,secondary:false,colored:false,members:[],data:[]});
+        primary:false,secondary:false,colored:false,members:[],data:[],style:null});
     }
     var group = groups[index];
+    // The depth pass draws one combined mask. Its style comes from the first solid region.
+    if (!inverted && group.style === null) group.style = [params.coastWidth,params.outlineWidth,params.touchOpacity,params.touchSize];
     group.primary = group.primary || active || warning;
     group.secondary = group.secondary || disabled || warning;
     group.colored = group.colored || !item.HasDefault || item.Red !== item.DefaultRed ||

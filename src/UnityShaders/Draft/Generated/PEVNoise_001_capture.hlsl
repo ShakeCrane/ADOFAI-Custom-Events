@@ -1,4 +1,5 @@
 float2 PEVGrabUV(float2 uv) {
+    uv.y = (uv.y - 0.5) * _ProjectionParams.x + 0.5;
 #if UNITY_UV_STARTS_AT_TOP
     return float2(uv.x, 1.0 - uv.y);
 #else

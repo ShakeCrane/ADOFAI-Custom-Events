@@ -11,6 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/UnityShaders/Reference/Variants"
 TARGET = ROOT / "src/UnityShaders/Draft/Generated"
 
+# The standalone probes use a clip-space quad with an unflipped projection.
+PROBE_TRANSFORM = """
+static const float4 _ProjectionParams = float4(1, 0, 0, 0);
+float4 UnityObjectToClipPos(float4 v) { return v; }
+float4 ComputeScreenPos(float4 v) { return float4(v.xy * 0.5 + v.w * 0.5, v.zw); }
+"""
+
 VERTEX = """
 float3 uView;
 struct PEVVertexInput { float4 vertex : POSITION; float4 color : COLOR; };
@@ -31,9 +38,9 @@ PEVVertexOutput pev_vertex(PEVVertexInput input) {
     PEVVertexOutput o;
     o.position = UnityObjectToClipPos(input.vertex);
     o.color = input.color;
-    // Provisional screen-space mapping; must be verified against game camera,
-    // render target Y orientation and the reference's chart transform.
-    o.sceneUV = o.position.xy / o.position.w * 0.5 + 0.5;
+    // Use logical viewport coordinates, including when Unity flips clip space for a render target.
+    float4 viewport = ComputeScreenPos(o.position);
+    o.sceneUV = viewport.xy / viewport.w;
     o.fieldUV = o.sceneUV;
     o.screenPos = float4(o.sceneUV, 0.0, 1.0);
     o.displaceUV = o.sceneUV * float2(0.8, 0.3);
@@ -68,8 +75,9 @@ def variant(code, capture, disabled):
         if code.count(needle) != 1:
             raise ValueError("Unexpected GrabPass sampling structure")
         # Same platform-dependent Y orientation as UnityCG.ComputeGrabScreenPos.
-        # Keep the field/noise UV unchanged; only the grabbed scene is flipped.
+        # Convert logical viewport coordinates back to clip-space orientation first.
         helper = """float2 PEVGrabUV(float2 uv) {
+    uv.y = (uv.y - 0.5) * _ProjectionParams.x + 0.5;
 #if UNITY_UV_STARTS_AT_TOP
     return float2(uv.x, 1.0 - uv.y);
 #else
@@ -85,6 +93,9 @@ def variant(code, capture, disabled):
         code = "uniform float4 _PEVBackground;\n" + code.replace(needle, "_PEVBackground")
         code = re.sub(r"^Texture2D<float4> uScene;\n", "", code, flags=re.M)
         code = re.sub(r"^SamplerState sampleruScene;\n", "", code, flags=re.M)
+    if "_TouchPosCount;" in code:
+        code = "uniform float _PEVTouchOpacity;\n" + code
+        code = code.replace("* _TouchPosShine)", "* (_TouchPosShine * (_PEVTouchOpacity == 0.0 ? 1.0 : _PEVTouchOpacity - 1.0)))")
     return code
 
 

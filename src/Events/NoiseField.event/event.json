@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "id": "pev.noise-field",
-  "version": "1.33.0",
+  "version": "1.34.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
@@ -10,16 +10,7 @@
   "hostPrimitive": "fx.field",
   "fieldPreview": {
     "key": "noisefield",
-    "parameterMap": {
-      "noiseBrightness": "brightness",
-      "noiseSaturation": "saturation",
-      "noiseSampleRate": "sampleRate",
-      "noiseEvolveSpeed": "evolveSpeed",
-      "noiseFrameCount": "frameCount",
-      "noiseMoveSpeed": "moveSpeed",
-      "noiseScale": "tiling",
-      "glitchRange": "glitch"
-    }
+    "parameterMap": {}
   },
   "decorationDefaults": {
     "color": "ff5454",
@@ -67,8 +58,8 @@
     "zh-CN": "噪声域"
   },
   "description": {
-    "en": "A reference-based GPU noise field. Legacy settings are retained but deprecated.",
-    "zh-CN": "参考实现的 GPU 噪域。旧版参数保留数据并标注弃用。"
+    "en": "A GPU noise field with adjustable coastline, outline and planet contact effects.",
+    "zh-CN": "GPU 噪域，可调整海岸线、边缘和星球触点效果。"
   },
   "globalSettings": [
     {
@@ -94,367 +85,55 @@
       }
     },
     {
-      "name": "shape",
-      "type": "Choice",
-      "options": [
-        "Rect",
-        "Circle"
-      ],
-      "default": "Rect",
-      "group": "Deprecated",
-      "order": 100,
-      "label": {
-        "en": "Shape (legacy, deprecated)",
-        "zh-CN": "形状（旧版弃用）"
-      },
-      "optionLabels": {
-        "Rect": {
-          "en": "Rectangle",
-          "zh-CN": "矩形"
-        },
-        "Circle": {
-          "en": "Circle",
-          "zh-CN": "圆形"
-        }
-      }
-    },
-    {
-      "name": "feather",
+      "name": "coastWidth",
       "type": "Float",
-      "default": 0,
+      "default": 0.5,
       "min": 0,
-      "max": 8,
-      "group": "Deprecated",
-      "order": 101,
-      "showIf": [
-        "shape",
-        "Circle"
-      ],
-      "label": {
-        "en": "Circle Softness (legacy, deprecated)",
-        "zh-CN": "圆形柔边（旧版弃用）"
-      }
-    },
-    {
-      "name": "fillOpacity",
-      "type": "Float",
-      "default": 0.667,
-      "min": 0,
-      "max": 1,
-      "group": "Deprecated",
-      "order": 102,
-      "label": {
-        "en": "Fill Opacity (legacy, deprecated)",
-        "zh-CN": "填充不透明度（旧版弃用）"
-      }
-    },
-    {
-      "name": "edgeColor",
-      "type": "Color",
-      "default": "ff5454",
-      "group": "Deprecated",
-      "order": 103,
-      "label": {
-        "en": "Edge Color (legacy, deprecated)",
-        "zh-CN": "边框颜色（旧版弃用）"
-      }
-    },
-    {
-      "name": "edgeOpacity",
-      "type": "Float",
-      "default": 0.8,
-      "min": 0,
-      "max": 1,
-      "group": "Deprecated",
-      "order": 104,
-      "label": {
-        "en": "Edge Opacity (legacy, deprecated)",
-        "zh-CN": "边框不透明度（旧版弃用）"
-      }
-    },
-    {
-      "name": "glowColor",
-      "type": "Color",
-      "default": "ff5454",
-      "group": "Deprecated",
-      "order": 105,
-      "label": {
-        "en": "Glow Color (legacy, deprecated)",
-        "zh-CN": "辉光颜色（旧版弃用）"
-      }
-    },
-    {
-      "name": "glowOpacity",
-      "type": "Float",
-      "default": 0.8,
-      "min": 0,
-      "max": 1,
-      "group": "Deprecated",
-      "order": 106,
-      "label": {
-        "en": "Glow Opacity (legacy, deprecated)",
-        "zh-CN": "辉光强度（旧版弃用）"
-      }
-    },
-    {
-      "name": "glowPasses",
-      "type": "Float",
-      "default": 5,
-      "min": 0,
-      "max": 6,
-      "group": "Deprecated",
-      "order": 107,
-      "label": {
-        "en": "Glow Passes (legacy, deprecated)",
-        "zh-CN": "辉光层数（旧版弃用）"
-      }
-    },
-    {
-      "name": "sparkColor",
-      "type": "Color",
-      "default": "ff5a5a",
-      "group": "Deprecated",
-      "order": 108,
-      "label": {
-        "en": "Spark Color (legacy, deprecated)",
-        "zh-CN": "颗粒颜色（旧版弃用）"
-      }
-    },
-    {
-      "name": "sparkOpacity",
-      "type": "Float",
-      "default": 1,
-      "min": 0,
-      "max": 3,
-      "group": "Deprecated",
-      "order": 109,
-      "label": {
-        "en": "Spark Amount (legacy, deprecated)",
-        "zh-CN": "颗粒强度（旧版弃用）"
-      }
-    },
-    {
-      "name": "displace",
-      "type": "Float",
-      "default": 0.35,
-      "min": 0,
-      "max": 1,
-      "group": "Deprecated",
-      "order": 110,
-      "label": {
-        "en": "Coast Displacement (legacy, deprecated)",
-        "zh-CN": "边缘偏移（旧版弃用）"
-      }
-    },
-    {
-      "name": "noiseBrightness",
-      "type": "Float",
-      "default": 1.0,
-      "min": 0,
-      "max": 3,
-      "group": "Deprecated",
-      "order": 111,
-      "label": {
-        "en": "Brightness (legacy, deprecated)",
-        "zh-CN": "纹理亮度（旧版弃用）"
-      }
-    },
-    {
-      "name": "noiseSaturation",
-      "type": "Float",
-      "default": 1.0,
-      "min": 0,
-      "max": 3,
-      "group": "Deprecated",
-      "order": 112,
-      "label": {
-        "en": "Saturation (legacy, deprecated)",
-        "zh-CN": "纹理饱和度（旧版弃用）"
-      }
-    },
-    {
-      "name": "noiseSampleRate",
-      "type": "Float",
-      "default": 1.0,
-      "min": 0.25,
       "max": 4,
-      "group": "Deprecated",
-      "order": 113,
+      "group": "DepthStyle",
+      "order": 1,
       "label": {
-        "en": "Sample Rate (legacy, deprecated)",
-        "zh-CN": "纹理尺寸（旧版弃用）"
+        "en": "Coastline Width (World)",
+        "zh-CN": "海岸线宽度（世界单位）"
       }
     },
     {
-      "name": "lineOpacity",
+      "name": "outlineWidth",
       "type": "Float",
-      "default": 0.35,
-      "min": 0,
-      "max": 1,
-      "group": "Deprecated",
-      "order": 114,
+      "default": 0.045,
+      "min": 0.005,
+      "max": 0.5,
+      "group": "DepthStyle",
+      "order": 2,
       "label": {
-        "en": "Grain Lines (legacy, deprecated)",
-        "zh-CN": "横向噪线强度（旧版弃用）"
+        "en": "Outline Width (World)",
+        "zh-CN": "边缘宽度（世界单位）"
       }
     },
     {
-      "name": "noiseFrameCount",
-      "type": "Int",
-      "default": 96,
-      "min": 2,
-      "max": 120,
-      "group": "Deprecated",
-      "order": 115,
-      "label": {
-        "en": "Frame Count (legacy, deprecated)",
-        "zh-CN": "帧数（旧版弃用）"
-      }
-    },
-    {
-      "name": "noiseEvolveSpeed",
-      "type": "Float",
-      "default": 48,
-      "min": 0,
-      "max": 60,
-      "unit": "fps",
-      "group": "Deprecated",
-      "order": 116,
-      "label": {
-        "en": "Evolve Speed (legacy, deprecated)",
-        "zh-CN": "演变速度（旧版弃用）"
-      }
-    },
-    {
-      "name": "noiseMoveSpeed",
-      "type": "Vector2",
-      "default": [
-        0.15,
-        0
-      ],
-      "group": "Deprecated",
-      "order": 117,
-      "label": {
-        "en": "Scroll Speed (legacy, deprecated)",
-        "zh-CN": "漂移速度（旧版弃用）"
-      }
-    },
-    {
-      "name": "noiseScale",
-      "type": "Vector2",
-      "default": [
-        1,
-        1
-      ],
-      "group": "Deprecated",
-      "order": 118,
-      "label": {
-        "en": "Grain Scale (legacy, deprecated)",
-        "zh-CN": "纹理缩放（旧版弃用）"
-      }
-    },
-    {
-      "name": "glitchRange",
-      "type": "Float",
-      "default": 0,
-      "min": 0,
-      "max": 1,
-      "group": "Deprecated",
-      "order": 119,
-      "label": {
-        "en": "Glitch (legacy, deprecated)",
-        "zh-CN": "撕裂强度（旧版弃用）"
-      }
-    },
-    {
-      "name": "edgeDistance",
-      "type": "Float",
-      "default": 0.7,
-      "min": 0,
-      "max": 2,
-      "group": "Deprecated",
-      "order": 120,
-      "label": {
-        "en": "Edge Distance (legacy, deprecated)",
-        "zh-CN": "海岸线宽度（旧版弃用）"
-      }
-    },
-    {
-      "name": "edgeDetail",
-      "type": "Float",
-      "default": 8,
-      "min": 1,
-      "max": 32,
-      "group": "Deprecated",
-      "order": 121,
-      "label": {
-        "en": "Edge Detail (legacy, deprecated)",
-        "zh-CN": "海岸线细节（旧版弃用）"
-      }
-    },
-    {
-      "name": "edgeThickness",
-      "type": "Int",
-      "default": 1,
-      "min": 1,
-      "max": 6,
-      "group": "Deprecated",
-      "order": 122,
-      "label": {
-        "en": "Edge Thickness (legacy, deprecated)",
-        "zh-CN": "边框粗细（旧版弃用）"
-      }
-    },
-    {
-      "name": "edgeMargin",
-      "type": "Float",
-      "default": 0.6,
-      "min": 0,
-      "max": 2,
-      "group": "Deprecated",
-      "order": 123,
-      "label": {
-        "en": "Fragment Margin (legacy, deprecated)",
-        "zh-CN": "碎片留白（旧版弃用）"
-      }
-    },
-    {
-      "name": "edgeFragment",
+      "name": "touchOpacity",
       "type": "Float",
       "default": 1,
       "min": 0,
       "max": 1,
-      "group": "Deprecated",
-      "order": 124,
+      "group": "DepthStyle",
+      "order": 3,
       "label": {
-        "en": "Fragment Amount (legacy, deprecated)",
-        "zh-CN": "碎片数量（旧版弃用）"
+        "en": "Contact Opacity",
+        "zh-CN": "触点透明度"
       }
     },
     {
-      "name": "preDuration",
+      "name": "touchSize",
       "type": "Float",
-      "default": 0,
-      "min": 0,
-      "max": 5,
-      "group": "Deprecated",
-      "order": 125,
+      "default": 1,
+      "min": 0.1,
+      "max": 3,
+      "group": "DepthStyle",
+      "order": 4,
       "label": {
-        "en": "Pre-Flash Duration (legacy, deprecated)",
-        "zh-CN": "预热时长（旧版弃用）"
-      }
-    },
-    {
-      "name": "exposure",
-      "type": "Float",
-      "default": 0.15,
-      "min": 0,
-      "max": 2,
-      "group": "Deprecated",
-      "order": 126,
-      "label": {
-        "en": "Background Exposure (legacy, deprecated)",
-        "zh-CN": "背景曝光（旧版弃用）"
+        "en": "Contact Size",
+        "zh-CN": "触点大小"
       }
     }
   ],
@@ -534,5 +213,8 @@
       "flipY": true,
       "linear": true
     }
-  }
+  },
+  "hiddenDecorationProperties": [
+    "blendMode"
+  ]
 }

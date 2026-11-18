@@ -15,6 +15,8 @@ namespace PEV.Scripting
     /// One host for the whole level rather than one component per event: tick order is
     /// deterministic and teardown happens at exactly one moment.
     /// </summary>
+    // Read native decorations after the game's LateUpdate has applied parallax.
+    [DefaultExecutionOrder(1000)]
     public class RuntimeHost : MonoBehaviour
     {
         private static RuntimeHost _instance;

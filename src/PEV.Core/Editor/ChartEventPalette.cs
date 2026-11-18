@@ -115,4 +115,15 @@ namespace PEV.Editor
         }
         private static void HideAndDestroy(GameObject go) { if (go != null) { go.SetActive(false); UnityEngine.Object.Destroy(go); } }
     }
+
+    [HarmonyPatch(typeof(ADOFAI.PropertyInfo), "CheckIfShown")]
+    internal static class DecorationPropertyVisibility
+    {
+        private static void Postfix(ADOFAI.PropertyInfo __instance, LevelEvent __0, ref bool __result)
+        {
+            if (__result && __0?.eventType == LevelEventType.AddDecoration &&
+                PEV.Storage.LevelStorage.TryGetData(__0, out var data) && EventRegistry.TryGetById(data.Id, out var manifest) &&
+                manifest.HiddenDecorationProperties.Contains(__instance.name)) __result = false;
+        }
+    }
 }

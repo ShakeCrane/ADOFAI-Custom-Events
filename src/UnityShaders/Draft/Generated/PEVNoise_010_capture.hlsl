@@ -1,4 +1,6 @@
+uniform float _PEVTouchOpacity;
 float2 PEVGrabUV(float2 uv) {
+    uv.y = (uv.y - 0.5) * _ProjectionParams.x + 0.5;
 #if UNITY_UV_STARTS_AT_TOP
     return float2(uv.x, 1.0 - uv.y);
 #else
@@ -593,7 +595,7 @@ float4 fullActive()
         u_xlat16_3.x = _1326.x;
         u_xlat16_3.y = _1326.y;
         u_xlat16_3.z = _1326.z;
-        u_xlat16_50 = (u_xlat16.x * _TouchPosShine) + 1.0f;
+        u_xlat16_50 = (u_xlat16.x * (_TouchPosShine * (_PEVTouchOpacity == 0.0 ? 1.0 : _PEVTouchOpacity - 1.0))) + 1.0f;
         float4 _1341 = u_xlat16_3;
         float3 _1343 = u_xlat16_50.xxx * _1341.xyz;
         u_xlat16_3.x = _1343.x;

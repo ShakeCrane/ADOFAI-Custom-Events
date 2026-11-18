@@ -177,6 +177,7 @@ namespace PEV.Model
         public readonly List<GlobalSettingSpec> GlobalSettings = new List<GlobalSettingSpec>();
         public string DecorationDefaultColor;
         public string DecorationDefaultTag;
+        public readonly HashSet<string> HiddenDecorationProperties = new HashSet<string>(StringComparer.Ordinal);
         public string HostPrimitive;
         public readonly Dictionary<string, ImageAssetSpec> ImageAssets = new Dictionary<string, ImageAssetSpec>(StringComparer.Ordinal);
         public readonly Dictionary<string, string> ShaderAssets = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -450,6 +451,14 @@ namespace PEV.Model
                 { error = "decorationDefaults requires a decoration-backed schema 3 event, optional six-digit color and nonempty tag"; return null; }
                 m.DecorationDefaultColor = defaults.Value<string>("color");
                 m.DecorationDefaultTag = defaults.Value<string>("tag");
+            }
+
+            if (root["hiddenDecorationProperties"] != null)
+            {
+                if (m.SchemaVersion < 4 || !m.DecorationBacked || !(root["hiddenDecorationProperties"] is JArray properties) || properties.Count > 32 ||
+                    properties.Any(p => p.Type != JTokenType.String || !System.Text.RegularExpressions.Regex.IsMatch(p.Value<string>(), "^[A-Za-z][A-Za-z0-9_]{0,63}$")))
+                { error = "invalid hiddenDecorationProperties for schema 4 decoration event"; return null; }
+                foreach (var property in properties) m.HiddenDecorationProperties.Add(property.Value<string>());
             }
 
             if (root["decorationMigration"] != null)

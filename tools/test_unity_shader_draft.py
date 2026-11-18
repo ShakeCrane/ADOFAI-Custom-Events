@@ -6,7 +6,7 @@ import re
 import subprocess
 import tempfile
 
-from generate_noise_unity_shaders import ROOT, SOURCE, TARGET, VERTEX, variant
+from generate_noise_unity_shaders import ROOT, SOURCE, TARGET, VERTEX, PROBE_TRANSFORM, variant
 
 
 def main():
@@ -35,17 +35,15 @@ def main():
                 for texture in re.findall(r"Texture2D<float4>\s+(\w+)\s*;", expected):
                     if not re.search(r"SamplerState\s+sampler" + re.escape(texture) + r"\s*;", expected):
                         raise AssertionError(f"Sampler does not follow Unity naming convention: {name}/{texture}")
-                subprocess.run([dxc, "-T", "ps_6_0", "-E", "pev_fragment", "-Fo", str(tmp / (name + ".dxil")),
-                                str(hlsl)], check=True)
                 combined = tmp / (name + "-combined.hlsl")
-                combined.write_text(expected + "\nfloat4 UnityObjectToClipPos(float4 v) { return v; }\n" + VERTEX,
+                combined.write_text(PROBE_TRANSFORM + expected + VERTEX,
                                     encoding="utf-8")
                 for profile, entry in (("vs_6_0", "pev_vertex"), ("ps_6_0", "pev_fragment")):
                     subprocess.run([dxc, "-T", profile, "-E", entry, "-Fo", str(tmp / (name + profile + ".dxil")),
                                     str(combined)], check=True)
                 count += 1
         vertex = tmp / "vertex.hlsl"
-        vertex.write_text("float4 UnityObjectToClipPos(float4 v) { return v; }\n" + VERTEX, encoding="utf-8")
+        vertex.write_text(PROBE_TRANSFORM + VERTEX, encoding="utf-8")
         subprocess.run([dxc, "-T", "vs_6_0", "-E", "pev_vertex", "-Fo", str(tmp / "vertex.dxil"),
                         str(vertex)], check=True)
         for entry in ("BuildSources", "ComposeSources", "WarpActive", "DilateRing", "ExportMasks", "BuildTouch", "WarpColors"):

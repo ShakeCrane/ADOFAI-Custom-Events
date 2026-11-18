@@ -13,7 +13,7 @@ namespace PEV.Scripting
     {
         private struct Input
         {
-            public float Time, Aspect;
+            public float Time, Aspect, WorldHeight;
             public int Capacity, ViewWidth, ViewHeight;
             public string DefaultColor;
             public ViewportPoint[] Points;
@@ -21,7 +21,7 @@ namespace PEV.Scripting
         private sealed class Completed
         {
             internal JObject Result, Plan;
-            internal float Aspect;
+            internal float Aspect, WorldHeight;
             internal int Width, Height, Capacity;
             internal string DefaultColor;
             internal Dictionary<string, bool> Settings;
@@ -41,12 +41,14 @@ namespace PEV.Scripting
             _source = source;
         }
         internal bool Update(JObject plan, float time, float aspect, int capacity, int width, int height, string defaultColor,
-            IReadOnlyList<ViewportPoint> points, IReadOnlyDictionary<string, bool> settings, int workSize, out JObject result)
+            IReadOnlyList<ViewportPoint> points, IReadOnlyDictionary<string, bool> settings, int workSize, out JObject result,
+            float worldHeight = 10f)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(GroupScriptRunner));
             if (plan == null || points == null || settings == null || capacity < 1 || capacity > 64 ||
                 width < 1 || height < 1 || points.Count > 4096 || workSize < 0 || workSize > 1024 ||
-                float.IsNaN(time) || float.IsInfinity(time) || aspect <= 0 || float.IsNaN(aspect) || float.IsInfinity(aspect))
+                float.IsNaN(time) || float.IsInfinity(time) || aspect <= 0 || float.IsNaN(aspect) || float.IsInfinity(aspect) ||
+                worldHeight <= 0 || float.IsNaN(worldHeight) || float.IsInfinity(worldHeight))
                 throw new ArgumentException("Invalid group program input");
             if (_pending != null && _pending.IsCompleted)
             {
@@ -54,7 +56,7 @@ namespace PEV.Scripting
                 finally { _pending = null; }
             }
             bool continuous = _last != null && _last.Result.Value<bool>("continuous");
-            bool needsUpdate = _last == null || !ReferenceEquals(_last.Plan, plan) || _last.Aspect != aspect ||
+            bool needsUpdate = _last == null || !ReferenceEquals(_last.Plan, plan) || _last.Aspect != aspect || _last.WorldHeight != worldHeight ||
                 _last.Width != width || _last.Height != height || _last.Capacity != capacity || _last.DefaultColor != defaultColor ||
                 !SameSettings(_last.Settings, settings) || continuous || !SamePoints(_last.Points, points);
             if (!needsUpdate) { result = _last.Result; return true; }
@@ -66,7 +68,7 @@ namespace PEV.Scripting
                 var settingsCopy = new Dictionary<string, bool>(StringComparer.Ordinal);
                 foreach (var setting in settings) settingsCopy.Add(setting.Key, setting.Value);
                 var input = new Input { Time = time, Aspect = aspect, Capacity = capacity, ViewWidth = width,
-                    ViewHeight = height, DefaultColor = defaultColor, Points = pointCopy };
+                    ViewHeight = height, DefaultColor = defaultColor, Points = pointCopy, WorldHeight = worldHeight };
                 if (workSize >= BackgroundThreshold)
                 {
                     var cancellation = _cancellation.Token;
@@ -92,7 +94,8 @@ namespace PEV.Scripting
             var result = _controller.Update(json.ToString(Formatting.None));
             if (result["continuous"]?.Type != JTokenType.Boolean) throw new ArgumentException("Invalid group program scheduling hint");
             return new Completed { Result = result, Plan = plan, Aspect = input.Aspect, Width = input.ViewWidth, Height = input.ViewHeight,
-                Capacity = input.Capacity, DefaultColor = input.DefaultColor, Settings = settings, Points = input.Points };
+                Capacity = input.Capacity, DefaultColor = input.DefaultColor, Settings = settings, Points = input.Points,
+                WorldHeight = input.WorldHeight };
         }
         private static bool SameSettings(IReadOnlyDictionary<string, bool> left, IReadOnlyDictionary<string, bool> right)
         {

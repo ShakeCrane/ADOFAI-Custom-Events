@@ -100,18 +100,25 @@ namespace PEV.Scripting
                 Vector2 scale = dec.scaleVec;
                 bool collapsed = Mathf.Abs(scale.x) < 1e-4f || Mathf.Abs(scale.y) < 1e-4f;
 
-                // pivotPosVec is the pivot in world space and is exactly the value the
-                // engine's tweens write, so it is the honest source for the centre.
-                Vector2 pivot = dec.pivotPosVec;
+                var pivot = dec.pivotTrans;
+                var visual = dec.childTransform;
+                Vector3 center = visual != null ? visual.position : pivot != null ? pivot.position : (Vector3)dec.pivotPosVec;
+                if (pivot != null)
+                {
+                    var nativeScale = dec.trueScaleMultiplier;
+                    var worldScale = pivot.lossyScale;
+                    if (Mathf.Abs(nativeScale.x) > 1e-4f) scale.x = worldScale.x / nativeScale.x;
+                    if (Mathf.Abs(nativeScale.y) > 1e-4f) scale.y = worldScale.y / nativeScale.y;
+                }
 
                 live.Frame = new Placement.Frame
                 {
-                    Center = new Vector3(pivot.x, pivot.y, 0f),
+                    Center = center,
                     Size = new Vector2(
                         Mathf.Abs(scale.x) * BaseSizeTiles.x * tile,
                         Mathf.Abs(scale.y) * BaseSizeTiles.y * tile),
-                    Rotation = dec.rotAngle,
-                    Base = new Vector3(pivot.x, pivot.y, 0f)
+                    Rotation = pivot != null ? pivot.eulerAngles.z : dec.rotAngle,
+                    Base = pivot != null ? pivot.position : center
                 };
 
                 live.Color = dec.color;

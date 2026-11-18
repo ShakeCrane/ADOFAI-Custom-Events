@@ -865,9 +865,12 @@ namespace PEV.Scripting
             return true;
         }
 
+        internal static Placement.Frame ProjectionFrame(Entry entry) =>
+            DecorationBridge.TryRead(ResolveBinding(entry, entry.Arguments), out var live) ? live.Frame : entry.World;
+
         private static ADOFAI.LevelEvent ResolveBinding(Entry entry, Dictionary<string, object> args)
         {
-            if (Bound.TryGetValue(entry.Scope, out var ev) && ev != null) return ev;
+            if (entry.Scope != null && Bound.TryGetValue(entry.Scope, out var ev) && ev != null) return ev;
 
             // The script may pass the row's identity itself, which is what the preview path
             // does: it has no EventInstance, only the event object.

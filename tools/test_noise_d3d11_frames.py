@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import tempfile
 
-from generate_noise_unity_shaders import ROOT, TARGET, VERTEX
+from generate_noise_unity_shaders import ROOT, TARGET, VERTEX, PROBE_TRANSFORM
 
 
 def main():
@@ -59,7 +59,7 @@ def main():
         for variant in variants:
             source = variant.read_text(encoding="utf-8")
             combined = temp / (variant.stem + ".hlsl")
-            combined.write_text("#define UNITY_UV_STARTS_AT_TOP 1\n" + source + "\nfloat4 UnityObjectToClipPos(float4 v) { return v; }\n" + VERTEX,
+            combined.write_text("#define UNITY_UV_STARTS_AT_TOP 1\n" + PROBE_TRANSFORM + source + VERTEX,
                                 encoding="utf-8")
             test_env = dict(env, PEV_FRAME_SIGNATURE_ONLY="1")
             subprocess.run([str(exe), str(combined), str(temp), str(fixtures), str(temp)],
