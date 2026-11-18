@@ -28,7 +28,7 @@ corrupt one.
 1. Install [Unity Mod Manager](https://www.nexusmods.com/site/mods/21) if you have not.
 2. Download `PEV.Core-<version>.zip` from [Releases](../../releases).
 3. In UMM, use **Mods → Install Mod** and pick the zip.
-4. Place the independent `NoiseField.event` next to the `.adofai` chart that uses it, then open the chart.
+4. To use the noise field, place [`NoiseField.event`](https://github.com/ShakeCrane/ADOFAI-Custom-Events/raw/refs/heads/main/template-events/NoiseField.event) next to the `.adofai` chart, then open the chart.
 
 The Core package contains no events. Each chart loads `.event` files from its own
 directory only. Missing declared packages produce a notification and preserve event data;
@@ -95,15 +95,14 @@ be usable by both people and AI agents.
 
 ## Example events
 
-Install event packages separately alongside the chart. The Core distribution
-does not include event packages:
+Download ready-to-use packages from [`template-events/`](template-events/) and place them beside the chart. `NoiseField.event` contains both the noise field and its state control. The table also lists examples you can build from source.
 
 | Event | Demonstrates |
 |---|---|
 | `CameraWarp` | One-shot effect driven by parameters |
 | `ScreenShake` | Two instances of one event keeping separate state |
 | `Pulse` | Continuous per-frame animation via `update(t)` |
-| `NoiseField` | Stored as a real decoration: place, drag, resize and retag it with the editor's own tools; MoveDecorations drives it by tag |
+| `NoiseField` | Stored as a real decoration: place, drag, resize and retag it with the editor's own tools; MoveDecorations drives it by tag. [Download](https://github.com/ShakeCrane/ADOFAI-Custom-Events/raw/refs/heads/main/template-events/NoiseField.event) |
 | `NoiseFieldState` | Controls matching noise fields by tag, including warning and activation |
 
 ---
