@@ -181,8 +181,8 @@ def validate(root, manifest, _included=False):
     check_resource("icon")
     primitive = manifest.get("hostPrimitive")
     if "hostPrimitive" in manifest and (manifest.get("schemaVersion") not in (3, 4) or
-            primitive != "fx.field"):
-        problems.append("invalid hostPrimitive (requires schemaVersion 3)")
+            primitive not in ("fx.field", "fx.video")):
+        problems.append("invalid hostPrimitive (requires schemaVersion 3 and fx.field or fx.video)")
     if "shaderBundle" in manifest:
         if manifest.get("schemaVersion") not in (2, 3, 4):
             problems.append("shaderBundle requires schemaVersion 2 or newer")
@@ -403,6 +403,8 @@ def validate(root, manifest, _included=False):
                     any(not isinstance(o, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", o) or o == "value__" for o in options) or
                     len(set(options)) != len(options) or not isinstance(param.get("default"), str) or param["default"] not in options):
                 problems.append(f"Choice '{name}' requires schemaVersion 3, 1-64 unique identifier options and a matching default")
+        if "fileType" in param and (ptype != "File" or param.get("fileType") not in ("Audio", "Image", "Video")):
+            problems.append(f"param '{name}': fileType is only valid on a File param and must be Audio, Image or Video")
 
     return problems
 

@@ -115,10 +115,11 @@ namespace PEV.Registry
                 }
             }
 
-            int added = 0;
+            int added = 0, backed = 0;
             foreach (var m in EventRegistry.All)
             {
                 if (!m.DecorationBacked) continue;
+                backed++;
 
                 foreach (var spec in m.Params)
                 {
@@ -183,6 +184,8 @@ namespace PEV.Registry
 
             if (added > 0)
                 log?.Invoke($"decoration params: {added} added to {NativeType}");
+            else if (backed == 0)
+                log?.Invoke("decoration params: no decoration-backed event is registered");
         }
     }
 }

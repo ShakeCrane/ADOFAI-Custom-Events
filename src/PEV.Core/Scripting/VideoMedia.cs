@@ -1,0 +1,547 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using UnityEngine;
+
+namespace PEV.Scripting
+{
+    /// <summary>
+    /// Resolves, identifies and — where the platform backend cannot open a file — converts
+    /// video media for the surface primitive.
+    ///
+    /// Why this exists as its own layer: which containers this game build can decode is not
+    /// knowable from the file extension. Measured on ADOFAI r150 / Unity 6000.3.25f1 / Windows,
+    /// the shipped backend opens MP4/MOV/M4V (H.264, HEVC, AV1, MPEG-4), AVI (H.264, MJPEG),
+    /// WMV and WebM-with-VP8 (alpha plane preserved), and refuses MKV, FLV, MPEG-TS, OGG/Theora,
+    /// ProRes and WebM-with-VP9 no matter what the stream inside is. A chart author's MKV that
+    /// holds H.264 is therefore an unsupported *container*, not an unsupported *codec* — the
+    /// distinction decides whether a lossless remux is enough or a real transcode is needed.
+    ///
+    /// The compatibility tier is deliberately external and optional: an FFmpeg binary, found
+    /// next to the mod, next to the chart or on PATH, converts the file once into a cached MP4
+    /// (or a WebM when the source carries alpha). Nothing is downloaded, nothing is bundled,
+    /// and a machine without FFmpeg still plays every natively supported file. When conversion
+    /// is impossible the caller gets a diagnosis naming the container, the codec and the reason,
+    /// which is what the editor shows instead of a silent black rectangle.
+    /// </summary>
+    public static class VideoMedia
+    {
+        public const string CacheFolderName = "video-cache";
+
+        /// <summary>Extensions the backend is known to open, used only to pre-empt conversion.</summary>
+        private static readonly HashSet<string> NativeExtensions =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ".mp4", ".m4v", ".mov", ".avi", ".wmv", ".webm", ".asf"
+            };
+
+        /// <summary>Extensions that are known not to open, so conversion can start immediately.</summary>
+        private static readonly HashSet<string> ConvertExtensions =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ".mkv", ".flv", ".ts", ".m2ts", ".ogv", ".ogm", ".mpg", ".mpeg", ".webm.failed"
+            };
+
+        private static string _ffmpegPath;
+        private static bool _ffmpegProbed;
+        private static readonly object ConversionLock = new object();
+        private static readonly Dictionary<string, ConversionJob> Jobs =
+            new Dictionary<string, ConversionJob>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Builds an argument string with every value quoted.
+        ///
+        /// .NET Framework has no ProcessStartInfo.ArgumentList, and a path with spaces — the
+        /// default for "Documents\A Dance of Fire and Ice\..." — breaks an unquoted command
+        /// line silently. Quoting unconditionally is correct because FFmpeg accepts a quoted
+        /// argument anywhere and this code never builds an option that must stay bare.
+        /// </summary>
+        private static string Quote(params string[] parts)
+        {
+            var sb = new StringBuilder();
+            foreach (var part in parts)
+            {
+                if (sb.Length > 0) sb.Append(' ');
+                if (string.IsNullOrEmpty(part)) { sb.Append("\"\""); continue; }
+                bool needsQuotes = part.IndexOf(' ') >= 0 || part.IndexOf('"') >= 0 ||
+                                   part.IndexOf('&') >= 0 || part.IndexOf('\t') >= 0;
+                if (!needsQuotes) { sb.Append(part); continue; }
+                sb.Append('"');
+                foreach (char c in part)
+                {
+                    if (c == '"') sb.Append('\\');
+                    sb.Append(c);
+                }
+                sb.Append('"');
+            }
+            return sb.ToString();
+        }
+
+        private sealed class ConversionJob
+        {
+            public string Source;
+            public string Target;
+            public Process Process;
+            public bool Done;
+            public bool Failed;
+            public string Message;
+        }
+
+        // ------------------------------------------------------------------ paths
+
+        /// <summary>
+        /// Resolves an author-supplied path to a readable file.
+        ///
+        /// A path relative to the chart directory is the portable form and the one the editor
+        /// writes; an absolute path still resolves so an author can test with a file elsewhere,
+        /// but it is flagged because copying the level to another machine will not carry it.
+        /// </summary>
+        public static bool TryResolve(string raw, out string fullPath, out string problem)
+        {
+            fullPath = null;
+            problem = null;
+            if (string.IsNullOrWhiteSpace(raw)) { problem = "no video file named"; return false; }
+
+            string path = raw.Trim().Trim('"');
+            try
+            {
+                if (!Path.IsPathRooted(path))
+                {
+                    string chartDir = ChartDirectory();
+                    if (string.IsNullOrEmpty(chartDir)) { problem = "no chart directory to resolve '" + path + "'"; return false; }
+                    path = Path.Combine(chartDir, path.Replace('/', Path.DirectorySeparatorChar));
+                }
+                path = Path.GetFullPath(path);
+
+                if (!File.Exists(path)) { problem = "video file not found: " + path; return false; }
+
+                var info = new FileInfo(path);
+                if (info.Length < 64) { problem = "video file is empty or truncated: " + path; return false; }
+            }
+            catch (Exception e) { problem = "cannot resolve video path '" + raw + "': " + e.Message; return false; }
+
+            fullPath = path;
+            return true;
+        }
+
+        /// <summary>The directory of the chart currently loaded, or null outside a chart.</summary>
+        public static string ChartDirectory()
+        {
+            try
+            {
+                string levelPath = ADOBase.levelPath;
+                if (string.IsNullOrEmpty(levelPath)) return null;
+                string dir = Path.GetDirectoryName(levelPath);
+                return string.IsNullOrEmpty(dir) ? null : dir;
+            }
+            catch { return null; }
+        }
+
+        // ------------------------------------------------------------ container
+
+        /// <summary>
+        /// Identifies the container from its first bytes.
+        ///
+        /// Extension is not trustworthy — a ".mp4" can be an MKV renamed, and the backend
+        /// rejects it as one — so the answer comes from the file's own header.
+        /// </summary>
+        public static string ContainerOf(string path)
+        {
+            try
+            {
+                using (var stream = File.OpenRead(path))
+                {
+                    // 192 bytes, not 64: MPEG-TS is identified by a second sync byte at 188,
+                    // and a 64-byte read made that check read past the buffer and fail.
+                    var head = new byte[192];
+                    int read = stream.Read(head, 0, head.Length);
+                    if (read < 12) return "unknown";
+
+                    if (head[0] == 0x1A && head[1] == 0x45 && head[2] == 0xDF && head[3] == 0xA3)
+                    {
+                        // EBML carries both WebM and Matroska; the DocType string distinguishes.
+                        string doc = ReadDocType(path);
+                        if (doc != null && doc.IndexOf("webm", StringComparison.OrdinalIgnoreCase) >= 0) return "webm";
+                        return "matroska";
+                    }
+
+                    if (head[0] == 'R' && head[1] == 'I' && head[2] == 'F' && head[3] == 'F' &&
+                        head[8] == 'A' && head[9] == 'V' && head[10] == 'I') return "avi";
+                    if (head[0] == 'F' && head[1] == 'L' && head[2] == 'V') return "flv";
+                    if (head[0] == 'O' && head[1] == 'g' && head[2] == 'g' && head[3] == 'S') return "ogg";
+                    if (head[4] == 'f' && head[5] == 't' && head[6] == 'y' && head[7] == 'p') return "isobmff";
+                    if (head[0] == 0x30 && head[1] == 0x26 && head[2] == 0xB2 && head[3] == 0x75) return "asf";
+                    if (head[0] == 0x47 && head[188] == 0x47) return "mpeg-ts";
+                }
+            }
+            catch { }
+            return "unknown";
+        }
+
+        private static string ReadDocType(string path)
+        {
+            try
+            {
+                using (var stream = File.OpenRead(path))
+                {
+                    var buffer = new byte[4096];
+                    int read = stream.Read(buffer, 0, buffer.Length);
+                    string ascii = Encoding.ASCII.GetString(buffer, 0, read);
+                    int at = ascii.IndexOf("webm", StringComparison.OrdinalIgnoreCase);
+                    if (at >= 0) return "webm";
+                    if (ascii.IndexOf("matroska", StringComparison.OrdinalIgnoreCase) >= 0) return "matroska";
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>
+        /// A short, human-readable statement of what a file is and whether it will open.
+        ///
+        /// This is the text the log and the editor report carry when a file will not play, so
+        /// it names the container and, when it is one the backend refuses, says which of the
+        /// two remedies applies rather than only that something failed.
+        /// </summary>
+        public static string Diagnose(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "no file";
+            string container = ContainerOf(path);
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+
+            switch (container)
+            {
+                case "isobmff":
+                    return "isobmff (" + ext + ")";
+                case "matroska":
+                    // Matroska is the container this backend refuses while accepting the very
+                    // same codecs inside MP4, so remuxing is lossless and quick.
+                    return "matroska/mkv — this backend does not open Matroska; needs remux to MP4";
+                case "webm":
+                    return "webm — opens only when the stream is VP8; VP9 is not decoded";
+                case "flv":
+                    return "flv — this backend does not open Flash Video; needs remux to MP4";
+                case "mpeg-ts":
+                    return "mpeg-ts — this backend does not open transport streams; needs remux to MP4";
+                case "ogg":
+                    return "ogg/theora — this backend does not decode Theora; needs transcoding";
+                case "avi":
+                    return "avi";
+                case "asf":
+                    return "asf/wmv";
+                default:
+                    return container + " (" + ext + ")";
+            }
+        }
+
+        /// <summary>True when the extension is one the backend is known to open.</summary>
+        public static bool LooksNative(string path)
+        {
+            string ext = Path.GetExtension(path);
+            return !string.IsNullOrEmpty(ext) && NativeExtensions.Contains(ext) &&
+                   !ConvertExtensions.Contains(ext);
+        }
+
+        // ----------------------------------------------------------- conversion
+
+        /// <summary>The directory converted files are cached in.</summary>
+        public static string CacheDirectory()
+        {
+            try
+            {
+                string modDir = PEV.Core.Plugin.Mod != null ? PEV.Core.Plugin.Mod.Path : null;
+                if (string.IsNullOrEmpty(modDir)) return null;
+                string dir = Path.Combine(modDir, CacheFolderName);
+                Directory.CreateDirectory(dir);
+                return dir;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// The cached conversion of <paramref name="path"/>, if one is already complete.
+        ///
+        /// The key is the path, size and write time, not a content hash: hashing a multi-hundred
+        /// megabyte file on the main thread to decide a cache hit would cost more than the
+        /// conversion it avoids, and a file edited in place changes both size and timestamp.
+        /// </summary>
+        public static string CachedConversion(string path)
+        {
+            string dir = CacheDirectory();
+            if (string.IsNullOrEmpty(dir)) return null;
+            try
+            {
+                string key = CacheKey(path);
+                foreach (var ext in new[] { ".mp4", ".webm" })
+                {
+                    string candidate = Path.Combine(dir, key + ext);
+                    if (File.Exists(candidate) && new FileInfo(candidate).Length > 1024) return candidate;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>Target path a new conversion of this file would produce.</summary>
+        public static string ConversionTarget(string path, bool alpha)
+        {
+            string dir = CacheDirectory();
+            if (string.IsNullOrEmpty(dir)) return null;
+            return Path.Combine(dir, CacheKey(path) + (alpha ? ".webm" : ".mp4"));
+        }
+
+        private static string CacheKey(string path)
+        {
+            var info = new FileInfo(path);
+            string raw = path.ToLowerInvariant() + "|" + info.Length + "|" + info.LastWriteTimeUtc.Ticks;
+            using (var sha = SHA256.Create())
+            {
+                var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(raw));
+                var sb = new StringBuilder(32);
+                for (int i = 0; i < 16; i++) sb.Append(hash[i].ToString("x2"));
+                return sb.ToString();
+            }
+        }
+
+        /// <summary>
+        /// Starts converting <paramref name="path"/> in the background, if this machine can.
+        ///
+        /// Returns false when no converter is available, which is a diagnosis the caller can
+        /// show; a conversion that is merely slow returns true and reports through the job.
+        /// </summary>
+        public static bool StartConversion(string path, bool alpha, out string note)
+        {
+            note = null;
+            string ffmpeg = FfmpegPath();
+            if (string.IsNullOrEmpty(ffmpeg))
+            {
+                note = "no FFmpeg found — put ffmpeg.exe next to PEV.Core, next to the chart, or on PATH";
+                return false;
+            }
+
+            string target = ConversionTarget(path, alpha);
+            if (string.IsNullOrEmpty(target)) { note = "no cache directory"; return false; }
+
+            lock (ConversionLock)
+            {
+                if (Jobs.TryGetValue(path, out var running) && !running.Done)
+                {
+                    note = "already converting";
+                    return true;
+                }
+
+                var job = new ConversionJob { Source = path, Target = target };
+                Jobs[path] = job;
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(target));
+
+                    // Try a lossless remux first: Matroska and FLV hold AVCC H.264 that MP4
+                    // can carry unchanged, so this is seconds of copying rather than a full
+                    // re-encode, and the result is bit-identical to the source stream.
+                    var info = new ProcessStartInfo(ffmpeg)
+                    {
+                        RedirectStandardError = true,
+                        RedirectStandardOutput = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        Arguments = Quote("-hide_banner", "-loglevel", "error", "-y",
+                            "-i", path, "-c", "copy", "-movflags", "+faststart", target)
+                    };
+
+                    var process = job.Process = new Process { StartInfo = info, EnableRaisingEvents = true };
+                    var stderr = new StringBuilder();
+                    process.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
+                    process.Start();
+                    process.BeginErrorReadLine();
+
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try
+                        {
+                            process.WaitForExit(120000);
+                            bool ok = process.HasExited && process.ExitCode == 0 &&
+                                      File.Exists(target) && new FileInfo(target).Length > 1024;
+                            if (!ok)
+                            {
+                                // The remux can fail for a codec MP4 refuses to carry (ProRes,
+                                // Theora, VP9-in-Matroska). Only then pay for a real transcode.
+                                TryDelete(target);
+                                ok = Transcode(ffmpeg, path, target, alpha);
+                            }
+                            job.Done = true;
+                            job.Failed = !ok;
+                            job.Message = ok ? "converted" : Limit(stderr.ToString(), 400);
+                            PEV.Core.Plugin.Log("video convert " + Path.GetFileName(path) + ": " +
+                                                (ok ? "ok -> " + Path.GetFileName(target) : job.Message));
+                        }
+                        catch (Exception e)
+                        {
+                            job.Done = true; job.Failed = true; job.Message = e.Message;
+                            PEV.Core.Plugin.Log("video convert failed: " + e.Message);
+                        }
+                        finally
+                        {
+                            try { process.Dispose(); } catch { }
+                        }
+                    });
+
+                    note = "converting";
+                    return true;
+                }
+                catch (Exception e)
+                {
+                    Jobs.Remove(path);
+                    note = "cannot start converter: " + e.Message;
+                    return false;
+                }
+            }
+        }
+
+        /// <summary>State of an in-flight conversion, for the surface to poll.</summary>
+        public static string ConversionState(string path, out bool failed)
+        {
+            failed = false;
+            lock (ConversionLock)
+            {
+                if (!Jobs.TryGetValue(path, out var job)) return null;
+                if (!job.Done) return "running";
+                failed = job.Failed;
+                return job.Message;
+            }
+        }
+
+        private static bool Transcode(string ffmpeg, string source, string target, bool alpha)
+        {
+            try
+            {
+                var arguments = new List<string>
+                {
+                    "-hide_banner", "-loglevel", "error", "-y", "-i", source
+                };
+
+                if (alpha)
+                {
+                    // The only container this backend decodes with a live alpha plane is
+                    // VP8-in-WebM, so a transparent source is re-encoded there.
+                    arguments.AddRange(new[]
+                    {
+                        "-c:v", "libvpx", "-pix_fmt", "yuva420p",
+                        "-auto-alt-ref", "0", "-b:v", "8M"
+                    });
+                }
+                else
+                {
+                    arguments.AddRange(new[]
+                    {
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                        "-pix_fmt", "yuv420p", "-movflags", "+faststart"
+                    });
+                }
+                arguments.AddRange(new[] { "-c:a", "aac", target });
+
+                var info = new ProcessStartInfo(ffmpeg)
+                {
+                    RedirectStandardError = true,
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    Arguments = Quote(arguments.ToArray())
+                };
+
+                using (var process = Process.Start(info))
+                {
+                    if (process == null) return false;
+                    process.ErrorDataReceived += (_, __) => { };
+                    process.BeginErrorReadLine();
+                    process.WaitForExit(600000);
+                    return process.HasExited && process.ExitCode == 0 &&
+                           File.Exists(target) && new FileInfo(target).Length > 1024;
+                }
+            }
+            catch (Exception e)
+            {
+                PEV.Core.Plugin.Log("video transcode failed: " + e.Message);
+                return false;
+            }
+        }
+
+        private static void TryDelete(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+
+        private static string Limit(string text, int max) =>
+            string.IsNullOrEmpty(text) ? "" : (text.Length <= max ? text : text.Substring(0, max));
+
+        /// <summary>
+        /// Locates an FFmpeg binary without requiring configuration.
+        ///
+        /// The search order puts the two places a chart author controls first — the mod folder
+        /// and the chart folder — so a portable setup can ship its own binary, and falls back to
+        /// PATH for machines that already have one.
+        /// </summary>
+        public static string FfmpegPath()
+        {
+            if (_ffmpegProbed) return _ffmpegPath;
+            _ffmpegProbed = true;
+
+            var candidates = new List<string>();
+            try
+            {
+                string modDir = PEV.Core.Plugin.Mod != null ? PEV.Core.Plugin.Mod.Path : null;
+                if (!string.IsNullOrEmpty(modDir))
+                {
+                    candidates.Add(Path.Combine(modDir, "ffmpeg.exe"));
+                    candidates.Add(Path.Combine(modDir, "ffmpeg", "ffmpeg.exe"));
+                    candidates.Add(Path.Combine(modDir, "tools", "ffmpeg.exe"));
+                }
+            }
+            catch { }
+
+            try
+            {
+                string chartDir = ChartDirectory();
+                if (!string.IsNullOrEmpty(chartDir))
+                {
+                    candidates.Add(Path.Combine(chartDir, "ffmpeg.exe"));
+                    candidates.Add(Path.Combine(chartDir, "ffmpeg", "ffmpeg.exe"));
+                }
+            }
+            catch { }
+
+            foreach (var candidate in candidates)
+            {
+                try { if (File.Exists(candidate)) return _ffmpegPath = candidate; } catch { }
+            }
+
+            try
+            {
+                string path = Environment.GetEnvironmentVariable("PATH");
+                if (!string.IsNullOrEmpty(path))
+                {
+                    foreach (var dir in path.Split(new[] { Path.PathSeparator }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        string candidate = Path.Combine(dir.Trim(), "ffmpeg.exe");
+                        if (File.Exists(candidate)) return _ffmpegPath = candidate;
+                    }
+                }
+            }
+            catch { }
+
+            return _ffmpegPath = null;
+        }
+
+        /// <summary>Diagnostics: converter availability and cache location.</summary>
+        public static string Report()
+        {
+            string ffmpeg = FfmpegPath();
+            int jobs;
+            lock (ConversionLock) jobs = Jobs.Count;
+            return "ffmpeg=" + (ffmpeg ?? "none") + " cache=" + (CacheDirectory() ?? "none") + " jobs=" + jobs;
+        }
+    }
+}

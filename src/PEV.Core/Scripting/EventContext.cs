@@ -17,6 +17,15 @@ namespace PEV.Scripting
         public double Beat;
         public double Bpm = 120;
         public int FloorSeq;
+
+        /// <summary>
+        /// Song time at which this instance's own tile is reached.
+        ///
+        /// Equal to EventTime for ordinary events. It differs for a package anchored at the
+        /// level start (a video decoration), where the clock origin is 0 but "play from this
+        /// tile" still has to name a specific moment.
+        /// </summary>
+        public double TileTime;
         public bool IsPlaying;
         public bool IsPaused;
 
@@ -37,6 +46,7 @@ namespace PEV.Scripting
                 // without assuming a tempo.
                 { "secondsPerBeat", Bpm > 0 ? 60.0 / Bpm : 0.5 },
                 { "floorSeq", FloorSeq },
+                { "tileTime", TileTime },
                 { "isPlaying", IsPlaying },
                 { "isPaused", IsPaused }
             };
@@ -67,6 +77,7 @@ namespace PEV.Scripting
             // Before the canvas: texture release walks our own bookkeeping, and doing it
             // first keeps the ordering explicit if a texture ever outlives its object.
             try { NoiseFieldRenderer.DestroyAll(); } catch { }
+            try { VideoSurface.DestroyAll(); } catch { }
             try { EffectCanvas.DestroyAll(); } catch { }
             var cam = GameCamera.Current;
             if (cam != null) cam.GetComponent<ShakeHost>()?.Stop();
@@ -80,6 +91,7 @@ namespace PEV.Scripting
             Values.Remove(scope);
             ContinuousEffects.DestroyScope(scope);
             NoiseFieldRenderer.DestroyScope(scope);
+            try { VideoSurface.DestroyScope(scope); } catch { }
             if (!string.IsNullOrEmpty(scope))
             {
                 foreach (var ticker in Root.GetComponentsInChildren<EffectTicker>())
@@ -108,6 +120,12 @@ namespace PEV.Scripting
                 case "field": return NoiseFieldRenderer.Set(Str(args, "key"), args, out error);
                 case "fielddestroy": return NoiseFieldRenderer.Destroy(Str(args, "key"), args, out error);
                 case "fieldmove": return FieldOverride(args, effectName, out error);
+
+                // Video surfaces are the same kind of host primitive: decoding, texture
+                // ownership and the decoration binding live in Core, while the package
+                // decides what time to show. Not part of the author-facing SDK either.
+                case "video": return VideoSurface.Set(Str(args, "key"), args, out error);
+                case "videodestroy": return VideoSurface.Destroy(Str(args, "key"), args, out error);
                 default:
                     error = $"unsupported effect '{effectName}'";
                     return false;

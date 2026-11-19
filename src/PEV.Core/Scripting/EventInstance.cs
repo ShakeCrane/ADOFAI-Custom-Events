@@ -29,6 +29,25 @@ namespace PEV.Scripting
 
         public double EntryTime;
         public bool EntryTimeResolved;
+
+        /// <summary>
+        /// Anchors the instance's clock to the level start instead of its own floor.
+        ///
+        /// A decoration-backed video is visible for the whole level, so its time base is the
+        /// song itself; resolving the row's floor time here would silently undo that and
+        /// leave the video blank until its tile. Set by RuntimeHost.Arm for fx.video packages.
+        /// </summary>
+        public bool AnchorAtLevelStart;
+
+        /// <summary>
+        /// The tile's own entry time, for packages whose clock runs from the level start.
+        ///
+        /// A video decoration must begin playing when the song reaches the tile the author
+        /// placed it on, but the instance itself has to start at the beginning of the level
+        /// so the row exists before then. These are two different answers to "when", so the
+        /// clock origin and the tile time are kept apart.
+        /// </summary>
+        public double FloorEntryTime;
         public double BpmRatio = 2.0;
         public double LastT = double.NegativeInfinity;
 
@@ -47,6 +66,7 @@ namespace PEV.Scripting
         /// </summary>
         internal void ResolveEntryTime()
         {
+            double floorTime = double.NaN;
             try
             {
                 var floors = ADOBase.lm != null ? ADOBase.lm.listFloors : null;
@@ -56,12 +76,24 @@ namespace PEV.Scripting
                 if (idx < 0 || idx >= floors.Count) return;
 
                 double t = floors[idx].entryTime;
-                if (double.IsNaN(t) || double.IsInfinity(t)) return;
-
-                EntryTime = t;
-                EntryTimeResolved = true;
+                if (!double.IsNaN(t) && !double.IsInfinity(t)) floorTime = t;
             }
-            catch { }
+            catch { return; }
+
+            if (double.IsNaN(floorTime)) return;
+            FloorEntryTime = floorTime;
+
+            if (AnchorAtLevelStart)
+            {
+                // The clock runs from the level start; the tile time is kept separately so the
+                // package can still say "play from here".
+                EntryTime = 0;
+                EntryTimeResolved = true;
+                return;
+            }
+
+            EntryTime = floorTime;
+            EntryTimeResolved = true;
         }
 
         public bool Begin()
@@ -85,6 +117,7 @@ namespace PEV.Scripting
             {
                 Bpm = ReadBpm(),
                 EventTime = EntryTime,
+                TileTime = AnchorAtLevelStart ? FloorEntryTime : EntryTime,
                 FloorSeq = LevelEvent.floor,
                 EventOrder = EventOrder,
                 Params = ReadLiveParams()

@@ -66,7 +66,7 @@ def main():
     if not os.path.isfile(dll):
         raise SystemExit(f"missing build output: {dll}")
 
-    event_names = ("NoiseField.event",)
+    event_names = ("NoiseField.event", "Video.event")
     for name in event_names:
         src = os.path.join(EVENTS, name)
         if not os.path.isdir(src):

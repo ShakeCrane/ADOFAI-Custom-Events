@@ -1,0 +1,1075 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using ADOFAI;
+using HarmonyLib;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using PEV.Registry;
+using PEV.Scripting;
+using PEV.Storage;
+using UnityEngine;
+
+namespace PEV.Diagnostics
+{
+    /// <summary>
+    /// End-to-end acceptance for the video event, inside the real editor.
+    ///
+    /// Everything asserted here is a fact a unit test cannot supply: that the decoration row the
+    /// palette creates is a genuine AddDecoration, that its panel exposes the video parameters
+    /// and hides the masking ones, that a placed row renders while the editor is idle, that the
+    /// surface follows a drag and a depth change, that playback seeks to the clock, that a
+    /// missing file produces a diagnosis instead of a crash, and that the chart still saves and
+    /// reopens with the same data.
+    ///
+    /// Inert unless "video-test.txt" exists next to the DLL. The fixture chart is read from
+    /// PEV_VIDEO_TEST_CHART; media comes from PEV_VIDEO_TEST_MEDIA.
+    /// </summary>
+    public static class VideoHarness
+    {
+        private static string _resultPath, _mediaRoot, _chartPath;
+        private static bool _ran;
+
+        public static bool Enabled { get; private set; }
+
+        public static void Configure(string modDir)
+        {
+            Enabled = File.Exists(Path.Combine(modDir, "video-test.txt"));
+            if (!Enabled) return;
+
+            _resultPath = Path.Combine(modDir, "video-results.txt");
+            _mediaRoot = Environment.GetEnvironmentVariable("PEV_VIDEO_TEST_MEDIA");
+            _chartPath = Environment.GetEnvironmentVariable("PEV_VIDEO_TEST_CHART");
+            try { File.WriteAllText(_resultPath, ""); } catch { }
+            Row("HARNESS", "enabled", "chart=" + _chartPath + " media=" + _mediaRoot);
+        }
+
+        public static void Row(string key, string value, string note = "")
+        {
+            string line = key + "\t" + value + "\t" + note;
+            try { Debug.Log("[PEV-VIDEO] " + line); } catch { }
+            try { File.AppendAllText(_resultPath, line + Environment.NewLine); } catch { }
+        }
+
+        private static string One(Exception e) =>
+            (e.GetType().Name + ": " + e.Message).Replace('\n', ' ').Replace('\r', ' ');
+
+        [HarmonyPatch(typeof(scnLevelSelect), "Start")]
+        public static class AutoOpen
+        {
+            public static void Postfix()
+            {
+                if (!Enabled || _ran) return;
+                _ran = true;
+                try
+                {
+                    if (string.IsNullOrEmpty(_chartPath) || !File.Exists(_chartPath))
+                    {
+                        Row("SETUP", "FAIL", "chart missing: " + _chartPath);
+                        File.AppendAllText(_resultPath, "DONE\tfail\n");
+                        return;
+                    }
+                    scnEditor.levelToOpenOnLoad = _chartPath;
+                    ADOBase.loader.LoadScene("scnEditor");
+                    Row("SETUP", "opening", _chartPath);
+                }
+                catch (Exception e)
+                {
+                    Row("SETUP", "EXCEPTION", One(e));
+                    try { File.AppendAllText(_resultPath, "DONE\tfail\n"); } catch { }
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(scnEditor), "Start")]
+        public static class Probe
+        {
+            public static void Postfix(scnEditor __instance)
+            {
+                if (!Enabled) return;
+                if (!string.Equals(ADOBase.levelPath, _chartPath, StringComparison.OrdinalIgnoreCase)) return;
+                if (Run._started) return;
+                Run._started = true;
+                ((MonoBehaviour)__instance).StartCoroutine(new Run().Execute(__instance));
+            }
+        }
+
+        private sealed class Run
+        {
+            public static bool _started;
+            private scnEditor _editor;
+
+            public IEnumerator Execute(scnEditor editor)
+            {
+                _editor = editor;
+                yield return null;
+                yield return null;
+
+                // Wait for the level to finish decoding before touching its rows.
+                float deadline = Time.realtimeSinceStartup + 20f;
+                while ((editor.isLoading || scnGame.instance == null) && Time.realtimeSinceStartup < deadline)
+                    yield return null;
+                yield return null;
+
+                foreach (var step in CheckRegistration()) yield return step;
+                foreach (var step in CheckPlacement()) yield return step;
+                foreach (var step in CheckEditorRender()) yield return step;
+                foreach (var step in CheckTimingMath()) yield return step;
+                foreach (var step in CheckTimeline()) yield return step;
+                foreach (var step in CheckFormatMatrix()) yield return step;
+                foreach (var step in CheckConversion()) yield return step;
+                foreach (var step in CheckMultiInstance()) yield return step;
+                foreach (var step in CheckPerformance()) yield return step;
+                foreach (var step in CheckSaveReload()) yield return step;
+                foreach (var step in CheckDiagnostics()) yield return step;
+
+                File.AppendAllText(_resultPath, "DONE\tok\n");
+            }
+
+            // ---------------------------------------------------- package timing math
+
+            /// <summary>
+            /// Runs the shipped script with a synthetic clock and checks the media positions
+            /// it asks for.
+            ///
+            /// This is the only test of the arithmetic that actually ships: the package's
+            /// main.js is loaded through the same sandbox and the same host bridge, so a
+            /// mistake in beat conversion, looping or clipping shows up as a wrong number
+            /// rather than as a video that "looks a bit off".
+            /// </summary>
+            private IEnumerable CheckTimingMath()
+            {
+                if (!EventRegistry.TryGetById("pev.video", out var manifest))
+                {
+                    Row("MATH", "FAIL", "pev.video not registered");
+                    yield break;
+                }
+
+                string source = EventScriptCache.Get(manifest);
+                if (source == null) { Row("MATH", "FAIL", "script unreadable"); yield break; }
+
+                var host = ScriptHost.Create(source, "math-test", out string createError, manifest);
+                if (host == null) { Row("MATH", "FAIL", "script did not compile: " + createError); yield break; }
+
+                VideoSurface.Capture.Clear();
+                VideoSurface.CaptureActive = true;
+                try
+                {
+                    // 120 BPM -> 0.5 s per beat. The tile sits at song time 4.0, so a video
+                    // with start=2 begins at 5.0 and 1 second of song is 1 second of media.
+                    var context = new EventContext
+                    {
+                        Bpm = 120,
+                        Time = 4.0,
+                        EventTime = 0,
+                        TileTime = 4.0,
+                        T = 4.0,
+                        FloorSeq = 8,
+                        Params = new Dictionary<string, object>(StringComparer.Ordinal)
+                    };
+
+                    var parameters = new Dictionary<string, object>
+                    {
+                        { "file", "x.mp4" },
+                        { "start", 2.0 },
+                        { "speed", 1.0 },
+                        { "trimStart", 0.0 },
+                        { "trimEnd", 0.0 },
+                        { "loop", false },
+                        { "holdEnd", true },
+                        { "mode", "Fit" },
+                        { "volume", 100.0 },
+                        { "muted", true }
+                    };
+                    context.Params = parameters;
+
+                    if (!host.Initialize(context, parameters, out string initError))
+                    {
+                        Row("MATH", "FAIL", "create threw: " + initError);
+                        yield break;
+                    }
+
+                    // Before the clip starts the surface must hold the first frame, not play.
+                    Drive(host, context, 4.0);
+                    var before = LastCapture();
+                    Row("MATH-BEFORE-START", before != null && !Truth(before, "playing") &&
+                        Near(before, "time", 0.0) ? "PASS" : "FAIL", DescribeLast(before));
+
+                    // At exactly the start moment playback begins at the clip's in point.
+                    Drive(host, context, 5.0);
+                    var atStart = LastCapture();
+                    Row("MATH-START", atStart != null && Truth(atStart, "playing") &&
+                        Near(atStart, "time", 0.0) ? "PASS" : "FAIL", DescribeLast(atStart));
+
+                    // Two seconds later the media position must have advanced by two seconds.
+                    Drive(host, context, 7.0);
+                    var later = LastCapture();
+                    Row("MATH-PROGRESS", later != null && Near(later, "time", 2.0) ? "PASS" : "FAIL",
+                        DescribeLast(later));
+
+                    // Speed scales media time against song time, not the other way round.
+                    parameters["speed"] = 2.0;
+                    host.Dispose();
+                    host = ScriptHost.Create(source, "math-test2", out _, manifest);
+                    context = new EventContext
+                    {
+                        Bpm = 120, Time = 5.0, EventTime = 0, TileTime = 4.0, T = 5.0,
+                        FloorSeq = 8, Params = parameters
+                    };
+                    if (host.Initialize(context, parameters, out _))
+                    {
+                        Drive(host, context, 5.0);
+                        Drive(host, context, 6.0);
+                        var fast = LastCapture();
+                        Row("MATH-SPEED", fast != null && Near(fast, "time", 2.0) ? "PASS" : "FAIL",
+                            DescribeLast(fast));
+                    }
+                    else Row("MATH-SPEED", "FAIL", "re-create failed");
+
+                    // A backwards clock jump must land back at the earlier media position,
+                    // which is what makes editor scrubbing and checkpoint jumps work.
+                    Drive(host, context, 5.5);
+                    var rewound = LastCapture();
+                    Row("MATH-REWIND", rewound != null && Near(rewound, "time", 1.0) ? "PASS" : "FAIL",
+                        DescribeLast(rewound));
+                }
+                catch (Exception e) { Row("MATH", "EXCEPTION", One(e)); }
+                finally
+                {
+                    VideoSurface.CaptureActive = false;
+                    try { host.Dispose(); } catch { }
+                }
+            }
+
+            private static void Drive(ScriptHost host, EventContext context, double songTime)
+            {
+                context.Time = songTime;
+                context.T = songTime - context.EventTime;
+                context.Beat = context.T * context.Bpm / 60.0;
+                context.IsPlaying = true;
+                host.Update(context.T, context.ToStateJson());
+            }
+
+            private static Dictionary<string, object> LastCapture() =>
+                VideoSurface.Capture.Count == 0 ? null : VideoSurface.Capture[VideoSurface.Capture.Count - 1];
+
+            private static bool Truth(Dictionary<string, object> args, string key)
+            {
+                if (args == null || !args.TryGetValue(key, out var v) || v == null) return false;
+                try { return Convert.ToBoolean(v); } catch { return false; }
+            }
+
+            private static bool Near(Dictionary<string, object> args, string key, double expected)
+            {
+                if (args == null || !args.TryGetValue(key, out var v) || v == null) return false;
+                try { return Math.Abs(Convert.ToDouble(v) - expected) < 0.05; } catch { return false; }
+            }
+
+            private static string DescribeLast(Dictionary<string, object> args)
+            {
+                if (args == null) return "no call captured";
+                var note = new StringBuilder();
+                foreach (var key in new[] { "time", "playing", "speed" })
+                {
+                    if (args.TryGetValue(key, out var v)) note.Append(key).Append('=').Append(v).Append(' ');
+                }
+                return note.ToString().Trim();
+            }
+
+            // ------------------------------------------------------------ checks
+
+            /// <summary>The package must be discoverable and published like any other event.</summary>
+            private IEnumerable CheckRegistration()
+            {
+                bool known = EventRegistry.TryGetById("pev.video", out var manifest);
+                Row("REGISTERED", known ? "PASS" : "FAIL",
+                    known ? manifest.SourcePath + " v" + manifest.Version : "pev.video not loaded");
+
+                if (!known)
+                {
+                    Row("REGISTERED-TYPE", "FAIL", "cannot resolve a type without a manifest");
+                    yield break;
+                }
+
+                bool typed = EventRegistry.TryGetByType((LevelEventType)PEV.Util.StableId.FromEventId(manifest.Id),
+                    out var byType);
+                Row("REGISTERED-TYPE", typed && byType != null && byType.Id == manifest.Id ? "PASS" : "FAIL",
+                    typed ? byType.Id : "no type mapping");
+                Row("REGISTERED-PRIMITIVE", manifest.HostPrimitive == "fx.video" ? "PASS" : "FAIL",
+                    manifest.HostPrimitive ?? "none");
+                Row("REGISTERED-DECORATION", manifest.DecorationBacked ? "PASS" : "FAIL",
+                    "DecorationBacked=" + manifest.DecorationBacked);
+                yield break;
+            }
+
+            /// <summary>Placement must create a real decoration row, and the panel must fit it.</summary>
+            private IEnumerable CheckPlacement()
+            {
+                var level = _editor.levelData;
+                int before = level.decorations != null ? level.decorations.Count : 0;
+                var type = (LevelEventType)PEV.Util.StableId.FromEventId("pev.video");
+
+                LevelEvent added = null;
+                try
+                {
+                    EditorTestHelpers.SelectFloor(_editor, 1);
+                    _editor.AddEventAtSelected(type);
+                }
+                catch (Exception e)
+                {
+                    Row("PLACE", "EXCEPTION", One(e));
+                    yield break;
+                }
+
+                foreach (var row in level.decorations)
+                {
+                    if (row == null) continue;
+                    if (!LevelStorage.TryGetData(row, out var data)) continue;
+                    if (data.Id == "pev.video") { added = row; break; }
+                }
+
+                Row("PLACE", added != null ? "PASS" : "FAIL",
+                    "decorations " + before + " -> " + (level.decorations?.Count ?? 0));
+
+                if (added == null)
+                {
+                    Row("PLACE-MARKER", "FAIL", "no row carries a payload");
+                    yield break;
+                }
+
+                Row("PLACE-MARKER", DecorationCarrier.IsOurs(added.GetString("decorationImage")) ? "PASS" : "FAIL",
+                    added.GetString("decorationImage"));
+                Row("PLACE-PAYLOAD", DecorationCarrier.TryUnpack(added.GetString("maskingTarget"), out _) ? "PASS" : "FAIL",
+                    Truncate(added.GetString("maskingTarget"), 80));
+
+                // Parameters must be visible on our rows and absent from native ones. The panel
+                // reads AddDecoration's metadata, so this is where showIf has to do its job.
+                bool panelOk = false, hiddenOk = false;
+                try
+                {
+                    if (Registry.DecorationParams.TryGetNativeInfo(out var info) && info != null)
+                    {
+                        panelOk = info.propertiesInfo.ContainsKey("file") &&
+                                  info.propertiesInfo.ContainsKey("speed") &&
+                                  info.propertiesInfo.ContainsKey("loop");
+
+                        // Hidden rows are suppressed per-row by CheckIfShown, not by the
+                        // metadata's control type, so the placed row is what is asked.
+                        hiddenOk = IsHiddenFor(info, added, "maskingTarget") &&
+                                   IsHiddenFor(info, added, "maskingType");
+
+                        if (!panelOk)
+                        {
+                            var names = new List<string>(info.propertiesInfo.Keys);
+                            names.Sort(StringComparer.Ordinal);
+                            Row("PANEL-KEYS", "INFO", Truncate(string.Join(",", names.ToArray()), 500));
+                        }
+                    }
+                }
+                catch (Exception e) { Row("PANEL", "EXCEPTION", One(e)); }
+
+                Row("PANEL-PARAMS", panelOk ? "PASS" : "FAIL", "file/speed/loop rows on AddDecoration");
+                Row("PANEL-HIDDEN", hiddenOk ? "PASS" : "FAIL", "masking rows stay hidden");
+
+                // The native decoration list must show the event's own name.
+                Row("PANEL-LISTNAME", ManifestListName() ?? "?", "declared by the manifest");
+
+                _placed = added;
+                yield break;
+            }
+
+            /// <summary>
+            /// Whether a property is actually hidden for a specific row.
+            ///
+            /// The panel decides visibility per selected event through CheckIfShown, so
+            /// reading the metadata's control type answers a different question than the one
+            /// that matters: masking rows are Hidden controls, but our rows must additionally
+            /// be suppressed by hiddenDecorationProperties.
+            /// </summary>
+            private static bool IsHiddenFor(LevelEventInfo info, LevelEvent row, string property)
+            {
+                if (info == null || row == null) return false;
+                try
+                {
+                    if (!info.propertiesInfo.TryGetValue(property, out var pi) || pi == null) return false;
+                    return !pi.CheckIfShown(row, null);
+                }
+                catch { return false; }
+            }
+
+            private LevelEvent _placed;
+
+            private string ManifestListName()
+            {
+                return EventRegistry.TryGetById("pev.video", out var m) ? m.DecorationListName : null;
+            }
+
+            /// <summary>An idle editor must draw the video, follow a move, and honour depth.</summary>
+            private IEnumerable CheckEditorRender()
+            {
+                if (_placed == null) { Row("RENDER", "SKIP", "no placed row"); yield break; }
+
+                // Give the editor preview a few frames to register the row, prepare the clip
+                // and decode its first picture. Prepared and "has a frame" are different
+                // events: the decoder opens the file first and only produces pixels after
+                // playback has started, so waiting on the wrong one reads a race.
+                float deadline = Time.realtimeSinceStartup + 20f;
+                string report = "";
+                while (Time.realtimeSinceStartup < deadline)
+                {
+                    report = VideoSurface.Report();
+                    if (report.Contains("prepared=True") && report.Contains("frame=True")) break;
+                    yield return null;
+                }
+
+                Row("RENDER-SURFACE", ReportContains(report, "prepared=True") ? "PASS" : "FAIL", Truncate(report, 320));
+                Row("RENDER-FRAME", ReportContains(report, "frame=True") ? "PASS" : "FAIL", "decoded at least one frame");
+
+                var dec = DecorationBridge.Find(_placed);
+                Row("RENDER-CARRIER", dec != null ? "PASS" : "FAIL", dec == null ? "no scrDecoration" : dec.GetType().Name);
+
+                // Moving the decoration must move the quad: the surface reads the live
+                // component each frame, so this is the whole "behaves like a decoration" claim.
+                string beforeMove = QuadState();
+                try
+                {
+                    var p = _placed.Get<Vector2>("position");
+                    _placed["position"] = new Vector2(p.x + 1.5f, p.y + 0.75f);
+                    _editor.UpdateDecorationObject(_placed);
+                }
+                catch (Exception e) { Row("RENDER-MOVE", "EXCEPTION", One(e)); }
+
+                for (int i = 0; i < 3; i++) yield return null;
+                string afterMove = QuadState();
+                Row("RENDER-MOVE", beforeMove != afterMove ? "PASS" : "FAIL",
+                    Truncate(beforeMove, 90) + " -> " + Truncate(afterMove, 90));
+
+                // Depth is the native sorting mapping; a video that ignores it draws in front
+                // of the track no matter what the author set.
+                string beforeDepth = QuadSort();
+                try
+                {
+                    _placed["depth"] = 3;
+                    _editor.UpdateDecorationObject(_placed);
+                }
+                catch (Exception e) { Row("RENDER-DEPTH", "EXCEPTION", One(e)); }
+                for (int i = 0; i < 3; i++) yield return null;
+                string afterDepth = QuadSort();
+                Row("RENDER-DEPTH", beforeDepth != afterDepth ? "PASS" : "FAIL",
+                    beforeDepth + " -> " + afterDepth);
+
+                // Opacity and colour are native properties the quad must carry.
+                SetOpacity(55f);
+                for (int i = 0; i < 2; i++) yield return null;
+                string opacity = QuadOpacity();
+                Row("RENDER-OPACITY", ReportContains(opacity, "opacity=0.5") ? "PASS" : "FAIL", opacity);
+            }
+
+            private void SetOpacity(float value)
+            {
+                try
+                {
+                    _placed["opacity"] = value;
+                    _editor.UpdateDecorationObject(_placed);
+                }
+                catch (Exception e) { Row("RENDER-OPACITY", "EXCEPTION", One(e)); }
+            }
+
+            /// <summary>Playback must follow the song clock, including pause and seek.</summary>
+            private IEnumerable CheckTimeline()
+            {
+                if (_placed == null) { Row("TIME", "SKIP", "no placed row"); yield break; }
+
+                // Record the media position the surface holds while the editor is idle.
+                string idle = TimePosition();
+                Row("TIME-IDLE", idle, "paused surface position");
+
+                // The runtime drives the surface from the song clock during playback. This
+                // check runs the arm/teardown path the editor's Play button uses, without
+                // starting audio, and confirms the instance is armed at all.
+                int armed = 0;
+                try
+                {
+                    Scripting.RuntimeHost.RebuildFromEditor();
+                    armed = Scripting.RuntimeHost.Instance != null ? Scripting.RuntimeHost.Instance.ArmedCount : -1;
+                }
+                catch (Exception e) { Row("TIME-ARM", "EXCEPTION", One(e)); }
+
+                Row("TIME-ARM", armed > 0 ? "PASS" : "FAIL", "armed instances=" + armed);
+
+                // The claim that matters for an editor is that any media position can be shown
+                // on demand: dragging the timeline must land the picture where the author put
+                // it, not where playback happened to be. This drives the surface directly with
+                // an out-of-order sequence of positions and checks each one arrives.
+                var seek = CheckSeekAccuracy();
+                while (true)
+                {
+                    bool more;
+                    try { more = seek.MoveNext(); }
+                    catch (Exception e) { Row("SEEK", "EXCEPTION", One(e)); break; }
+                    if (!more) break;
+                    yield return seek.Current;
+                }
+            }
+
+            private IEnumerator CheckSeekAccuracy()
+            {
+                if (string.IsNullOrEmpty(_mediaRoot)) { Row("SEEK", "SKIP", "no media root"); yield break; }
+                string path = Path.Combine(_mediaRoot, "a-h264.mp4");
+                if (!File.Exists(path)) { Row("SEEK", "SKIP", "no fixture"); yield break; }
+
+                var args = new Dictionary<string, object>
+                {
+                    { "__instance", "seek" }, { "key", "video" }, { "file", path },
+                    { "time", 0.0 }, { "playing", false }, { "volume", 0.0 }, { "muted", true }
+                };
+
+                // A paused editor surface holds a frame; forcing the clock running would make
+                // the check measure playback instead of seeking.
+                VideoSurface.ClockOverride = -1;
+                VideoSurface.Set("video", args, out _);
+                try
+                {
+                    float warm = Time.realtimeSinceStartup + 25f;
+                    while (Time.realtimeSinceStartup < warm)
+                    {
+                        if (EntryReport("seek/video").IndexOf("frame=True", StringComparison.Ordinal) >= 0) break;
+                        yield return null;
+                    }
+
+                    // Forward, then backwards, then back to the start: exactly the pattern an
+                    // author produces by dragging the timeline around.
+                    var targets = new[] { 2.0, 0.4, 2.6, 0.05 };
+                    var misses = new StringBuilder();
+                    int hits = 0;
+                    foreach (var target in targets)
+                    {
+                        args["time"] = target;
+                        VideoSurface.Set("video", args, out _);
+
+                        // A seek is asynchronous; sampling immediately would read the previous
+                        // frame and call a working seek broken.
+                        float settle = Time.realtimeSinceStartup + 8f;
+                        double actual = -1;
+                        while (Time.realtimeSinceStartup < settle)
+                        {
+                            yield return null;
+                            string report = EntryReport("seek/video");
+                            int at = report.IndexOf(" t=", StringComparison.Ordinal);
+                            if (at < 0) continue;
+                            int end = report.IndexOf(' ', at + 3);
+                            double.TryParse(report.Substring(at + 3, Math.Max(0, end - at - 3)), out actual);
+                            if (Math.Abs(actual - target) < 0.25) break;
+                        }
+
+                        if (Math.Abs(actual - target) < 0.25) hits++;
+                        else
+                        {
+                            misses.Append(target.ToString("F2")).Append("->").Append(actual.ToString("F2")).Append(' ');
+                            Row("SEEK-DETAIL", target.ToString("F2"), Truncate(EntryReport("seek/video"), 260));
+                        }
+                    }
+
+                    Row("SEEK-SCRUB", hits == targets.Length ? "PASS" : "FAIL",
+                        hits + "/" + targets.Length + " positions landed" +
+                        (misses.Length > 0 ? " misses: " + misses.ToString().Trim() : ""));
+                }
+                finally
+                {
+                    VideoSurface.ClockOverride = 0;
+                    VideoSurface.Destroy("video", new Dictionary<string, object> { { "__instance", "seek" } }, out _);
+                }
+            }
+
+            /// <summary>Save and reopen must round-trip the payload and the declared dependency.</summary>
+            private IEnumerable CheckSaveReload()
+            {
+                if (_placed == null) { Row("SAVE", "SKIP", "no placed row"); yield break; }
+
+                string serialized = "";
+                try
+                {
+                    serialized = _editor.levelData.Encode();
+                    var doc = JObject.Parse(serialized);
+                    var deps = doc[ChartDependencies.Key] as JArray;
+                    bool declared = deps != null && deps.OfType<JObject>()
+                        .Any(d => d.Value<string>("id") == "pev.video");
+                    var rows = doc["decorations"] as JArray;
+                    bool payload = rows != null && rows.OfType<JObject>()
+                        .Any(r => (r.Value<string>("maskingTarget") ?? "").StartsWith(DecorationCarrier.PayloadPrefix));
+                    Row("SAVE-DEPENDENCY", declared ? "PASS" : "FAIL", deps?.ToString(Formatting.None));
+                    Row("SAVE-PAYLOAD", payload ? "PASS" : "FAIL", "decoration row carries pev1 payload");
+                }
+                catch (Exception e)
+                {
+                    Row("SAVE", "EXCEPTION", One(e));
+                    yield break;
+                }
+
+                // Re-decode the encoded document: the values must survive the round trip.
+                try
+                {
+                    File.WriteAllText(_chartPath + ".roundtrip", serialized);
+                    var reloaded = JObject.Parse(serialized);
+                    var rows = reloaded["decorations"] as JArray;
+                    DecorationCarrier.TryUnpack(
+                        rows.OfType<JObject>().Select(r => r.Value<string>("maskingTarget"))
+                            .FirstOrDefault(v => (v ?? "").StartsWith(DecorationCarrier.PayloadPrefix)),
+                        out var data);
+                    Row("SAVE-ROUNDTRIP", data != null && data.Id == "pev.video" ? "PASS" : "FAIL",
+                        data == null ? "payload did not decode" : data.Id + " uid=" + data.Uid);
+                    try { File.Delete(_chartPath + ".roundtrip"); } catch { }
+                }
+                catch (Exception e) { Row("SAVE-ROUNDTRIP", "EXCEPTION", One(e)); }
+
+                yield break;
+            }
+
+            /// <summary>Bad input must produce a diagnosis, not an exception or a hang.</summary>
+            private IEnumerable CheckDiagnostics()
+            {
+                var args = new Dictionary<string, object>
+                {
+                    { "__instance", "test/bad" },
+                    { "key", "video" }
+                };
+
+                // Missing file.
+                args["file"] = "definitely-missing-video.mp4";
+                bool okMissing = VideoSurface.Set("video", args, out string errorMissing);
+                string report = VideoSurface.Report();
+                Row("DIAG-MISSING", okMissing && !string.IsNullOrEmpty(errorMissing) ? "PASS" : "FAIL",
+                    errorMissing ?? "no error reported");
+
+                // A file that exists but is not media at all.
+                string junk = Path.Combine(Path.GetDirectoryName(_chartPath) ?? ".", "not-a-video.mp4");
+                try { File.WriteAllBytes(junk, new byte[] { 0, 1, 2, 3, 4, 5, 6, 7 }); } catch { }
+                args["file"] = junk;
+                var args2 = new Dictionary<string, object>(args) { ["__instance"] = "test/junk" };
+                bool okJunk = VideoSurface.Set("video", args2, out string errorJunk);
+                Row("DIAG-JUNK", okJunk ? "PASS" : "FAIL", errorJunk ?? "accepted (set returns true; prepare will fail)");
+                try { File.Delete(junk); } catch { }
+
+                // Diagnostics must name what the backend refused, not just say "failed".
+                Row("DIAG-MEDIA", VideoMedia.Report(), "converter availability");
+                if (!string.IsNullOrEmpty(_mediaRoot))
+                {
+                    foreach (var probe in new[] { "i-h264.mkv", "src-flv.flv" })
+                    {
+                        string path = Path.Combine(_mediaRoot, probe);
+                        if (File.Exists(path))
+                            Row("DIAG-" + probe, VideoMedia.Diagnose(path), "container diagnosis");
+                    }
+                }
+
+                VideoSurface.DestroyScope("test");
+                yield break;
+            }
+
+            // ------------------------------------------------------- format matrix
+
+            /// <summary>Runs each real media file through the surface and reports the outcome.</summary>
+            private IEnumerable CheckFormatMatrix()
+            {
+                if (string.IsNullOrEmpty(_mediaRoot) || !Directory.Exists(_mediaRoot))
+                {
+                    Row("FORMAT", "SKIP", "no media root");
+                    yield break;
+                }
+
+                // With the compatibility tier enabled everything in the matrix is expected to
+                // play: the files the backend refuses are the ones that get converted. The
+                // native pass below is what records which of them need that conversion.
+                var expected = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "a-h264.mp4", true },
+                    { "b-hevc.mp4", true },
+                    { "c-h264.mov", true },
+                    { "d-h264.m4v", true },
+                    { "e-vp8.webm", true },
+                    { "g-vp9.webm", true },
+                    { "h-av1.mp4", true },
+                    { "i-h264.mkv", true },
+                    { "j-mpeg4.mp4", true },
+                    { "k-mjpeg.avi", true },
+                    { "l-wmv2.wmv", true },
+                    { "m-theora.ogv", true },
+                    { "n-prores.mov", true },
+                    { "o-h264.ts", true },
+                    { "p-hevc.mkv", true },
+                    { "q-h264-audio.mp4", true }
+                };
+
+                var files = new List<string>();
+                foreach (var name in expected.Keys)
+                {
+                    string path = Path.Combine(_mediaRoot, name);
+                    if (File.Exists(path)) files.Add(path);
+                }
+                files.Sort(StringComparer.OrdinalIgnoreCase);
+
+                var results = new List<string>();
+                int agree = 0, tested = 0;
+                foreach (var file in files)
+                {
+                    // Delivered capability, not raw backend capability: the backend draws the
+                    // line between what opens directly and what needs the compatibility tier,
+                    // and only the package's own surface knows about the tier.
+                    var task = ProbeFormat(file, true);
+                    while (true)
+                    {
+                        bool more;
+                        try { more = task.MoveNext(); }
+                        catch (Exception e) { Row("FORMAT", "EXCEPTION", One(e)); break; }
+                        if (!more) break;
+                        yield return task.Current;
+                    }
+
+                    string name = Path.GetFileName(file);
+                    bool ok = _formatPlayed;
+                    tested++;
+                    if (!expected.TryGetValue(name, out bool want)) continue;
+                    if (ok == want) agree++;
+                    else results.Add(name + (want ? " expected play, did not" : " expected refuse, played"));
+                }
+
+                Row("FORMAT-MATRIX", tested > 0 && agree == tested ? "PASS" : "FAIL",
+                    agree + "/" + tested + " as predicted" + (results.Count > 0 ? " — " + string.Join("; ", results.ToArray()) : ""));
+
+                // Native-only pass: the same files with the compatibility tier switched off.
+                // This is what makes the format claim honest — "opens directly" and "opens
+                // after conversion" are different promises and are reported separately.
+                var native = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "a-h264.mp4", true }, { "b-hevc.mp4", true }, { "c-h264.mov", true },
+                    { "d-h264.m4v", true }, { "e-vp8.webm", true }, { "g-vp9.webm", false },
+                    { "h-av1.mp4", true }, { "i-h264.mkv", false }, { "j-mpeg4.mp4", true },
+                    { "k-mjpeg.avi", true }, { "l-wmv2.wmv", true }, { "m-theora.ogv", false },
+                    { "n-prores.mov", false }, { "o-h264.ts", false }, { "p-hevc.mkv", false },
+                    { "q-h264-audio.mp4", true }
+                };
+                var direct = new List<string>();
+                int nativeAgree = 0, nativeTested = 0;
+                foreach (var file in files)
+                {
+                    string name = Path.GetFileName(file);
+                    if (!native.ContainsKey(name)) continue;
+                    var task = ProbeFormat(file, false);
+                    while (true)
+                    {
+                        bool more;
+                        try { more = task.MoveNext(); }
+                        catch (Exception e) { Row("NATIVE", "EXCEPTION", One(e)); break; }
+                        if (!more) break;
+                        yield return task.Current;
+                    }
+                    nativeTested++;
+                    if (_formatPlayed == native[name]) nativeAgree++;
+                    else direct.Add(name + (_formatPlayed ? " opens directly (unexpected)" : " refused (unexpected)"));
+                }
+                Row("FORMAT-NATIVE", nativeTested > 0 && nativeAgree == nativeTested ? "PASS" : "FAIL",
+                    nativeAgree + "/" + nativeTested + " direct" +
+                    (direct.Count > 0 ? " — " + string.Join("; ", direct.ToArray()) : ""));
+            }
+
+            /// <summary>
+            /// An unconvertible container must become playable on its own.
+            ///
+            /// The compatibility claim is not "we list MKV in the docs": it is that a chart
+            /// author drops an MKV next to the chart, opens it, and sees video. That requires
+            /// the conversion to be started automatically, to be cached, and for the surface
+            /// to pick the result up without the author reloading anything.
+            /// </summary>
+            private IEnumerable CheckConversion()
+            {
+                if (string.IsNullOrEmpty(_mediaRoot))
+                {
+                    Row("CONVERT", "SKIP", "no media root");
+                    yield break;
+                }
+
+                string source = Path.Combine(_mediaRoot, "i-h264.mkv");
+                if (!File.Exists(source)) { Row("CONVERT", "SKIP", "no mkv fixture"); yield break; }
+
+                if (string.IsNullOrEmpty(VideoMedia.FfmpegPath()))
+                {
+                    Row("CONVERT", "SKIP", "no ffmpeg on this machine");
+                    yield break;
+                }
+
+                var args = new Dictionary<string, object>
+                {
+                    { "__instance", "convert" },
+                    { "key", "video" },
+                    { "file", source },
+                    { "time", 0.5 },
+                    { "playing", true },
+                    { "volume", 0.0 },
+                    { "muted", true }
+                };
+
+                VideoSurface.Set("video", args, out string firstError);
+                Row("CONVERT-STARTED", string.IsNullOrEmpty(firstError) || firstError.IndexOf("converting", StringComparison.Ordinal) >= 0
+                    ? "PASS" : "FAIL", firstError ?? "opened immediately (cached)");
+
+                // Conversion of a 3-second clip is seconds of work; a longer timeout is what a
+                // real chart's first open would need, so the wait here mirrors it.
+                float deadline = Time.realtimeSinceStartup + 90f;
+                string report = "";
+                bool failed = false;
+                while (Time.realtimeSinceStartup < deadline)
+                {
+                    yield return null;
+                    report = EntryReport("convert/video");
+                    if (report.IndexOf("failed=True", StringComparison.Ordinal) >= 0) { failed = true; break; }
+                    if (report.IndexOf("frame=True", StringComparison.Ordinal) >= 0) break;
+                }
+
+                bool plays = !failed && report.IndexOf("frame=True", StringComparison.Ordinal) >= 0;
+                Row("CONVERT-PLAYS", plays ? "PASS" : "FAIL", Truncate(report, 200));
+
+                string cached = VideoMedia.CachedConversion(source);
+                Row("CONVERT-CACHE", cached != null ? "PASS" : "FAIL", cached ?? "no cached file");
+
+                // The cache exists so the second open is instant, not so it doubles in size.
+                VideoSurface.Destroy("video", new Dictionary<string, object> { { "__instance", "convert" } }, out _);
+                var second = new Dictionary<string, object>(args) { ["__instance"] = "convert2" };
+                VideoSurface.Set("video", second, out string secondError);
+                bool reused = false;
+                float quick = Time.realtimeSinceStartup + 20f;
+                while (Time.realtimeSinceStartup < quick)
+                {
+                    yield return null;
+                    string again = EntryReport("convert2/video");
+                    if (again.IndexOf("frame=True", StringComparison.Ordinal) >= 0) { reused = true; break; }
+                }
+                Row("CONVERT-REUSE", reused ? "PASS" : "FAIL",
+                    "second open " + (string.IsNullOrEmpty(secondError) ? "reused cache" : secondError));
+                VideoSurface.Destroy("video", new Dictionary<string, object> { { "__instance", "convert2" } }, out _);
+            }
+
+            /// <summary>Several videos at once is a stated capability; measure it.</summary>
+            private IEnumerable CheckMultiInstance()
+            {
+                if (string.IsNullOrEmpty(_mediaRoot)) { Row("MULTI", "SKIP", "no media root"); yield break; }
+
+                var files = new[] { "a-h264.mp4", "b-hevc.mp4", "e-vp8.webm", "k-mjpeg.avi" };
+                var live = new List<string>();
+                foreach (var name in files)
+                {
+                    string path = Path.Combine(_mediaRoot, name);
+                    if (!File.Exists(path)) continue;
+                    string scope = "multi" + live.Count;
+                    VideoSurface.Set("video", new Dictionary<string, object>
+                    {
+                        { "__instance", scope }, { "key", "video" }, { "file", path },
+                        { "time", 0.5 }, { "playing", true }, { "volume", 0.0 }, { "muted", true }
+                    }, out _);
+                    live.Add(scope);
+                }
+
+                float deadline = Time.realtimeSinceStartup + 25f;
+                while (Time.realtimeSinceStartup < deadline)
+                {
+                    int ready = 0;
+                    foreach (var scope in live)
+                        if (EntryReport(scope + "/video").IndexOf("frame=True", StringComparison.Ordinal) >= 0) ready++;
+                    if (ready == live.Count) break;
+                    yield return null;
+                }
+
+                int playing = 0;
+                var detail = new StringBuilder();
+                foreach (var scope in live)
+                {
+                    string report = EntryReport(scope + "/video");
+                    bool ok = report.IndexOf("frame=True", StringComparison.Ordinal) >= 0;
+                    if (ok) playing++;
+                    detail.Append(scope).Append(ok ? "=ok " : "=fail ");
+                }
+
+                Row("MULTI-INSTANCE", playing == live.Count && live.Count >= 3 ? "PASS" : "FAIL",
+                    playing + "/" + live.Count + " decoded concurrently; " + detail.ToString().Trim());
+
+                foreach (var scope in live)
+                    VideoSurface.Destroy("video", new Dictionary<string, object> { { "__instance", scope } }, out _);
+            }
+
+            /// <summary>Frame rate while several clips decode, as a coarse performance floor.</summary>
+            private IEnumerable CheckPerformance()
+            {
+                if (string.IsNullOrEmpty(_mediaRoot)) { Row("PERF", "SKIP", "no media root"); yield break; }
+
+                string path = Path.Combine(_mediaRoot, "x-1080p60.mp4");
+                if (!File.Exists(path)) { Row("PERF", "SKIP", "no 1080p fixture"); yield break; }
+
+                var args = new Dictionary<string, object>
+                {
+                    { "__instance", "perf" }, { "key", "video" }, { "file", path },
+                    { "time", 0.0 }, { "playing", true }, { "volume", 0.0 }, { "muted", true }
+                };
+                VideoSurface.Set("video", args, out _);
+
+                // Wait for it to be live before measuring, so the decode warm-up is excluded.
+                float warm = Time.realtimeSinceStartup + 20f;
+                while (Time.realtimeSinceStartup < warm)
+                {
+                    if (EntryReport("perf/video").IndexOf("frame=True", StringComparison.Ordinal) >= 0) break;
+                    yield return null;
+                }
+
+                // Drive the target time like a package would, from a wall clock. Leaving it at
+                // zero and then measuring "did the media advance" would test nothing: a surface
+                // is supposed to sit still until the package asks it to move. The clock is
+                // forced running because the editor is idle and would otherwise pause it.
+                VideoSurface.ClockOverride = 1;
+                int frames = 0;
+                float start = Time.realtimeSinceStartup;
+                while (Time.realtimeSinceStartup - start < 2.0f)
+                {
+                    float elapsedNow = Time.realtimeSinceStartup - start;
+                    args["time"] = elapsedNow;
+                    VideoSurface.Set("video", args, out _);
+
+                    frames++;
+                    yield return null;
+                }
+                float elapsed = Time.realtimeSinceStartup - start;
+                VideoSurface.ClockOverride = 0;
+                float fps = elapsed > 0 ? frames / elapsed : 0;
+
+                string report = EntryReport("perf/video");
+                Row("PERF-1080P60", fps >= 30f ? "PASS" : "FAIL",
+                    fps.ToString("F1") + " fps while decoding 1920x1080@60");
+
+                // The decoded position must have tracked the requested one, not fallen behind.
+                double media = 0;
+                int at = report.IndexOf("t=", StringComparison.Ordinal);
+                if (at >= 0)
+                {
+                    int end = report.IndexOf(' ', at);
+                    double.TryParse(report.Substring(at + 2, Math.Max(0, end - at - 2)), out media);
+                }
+                bool locked = Math.Abs(media - elapsed) < Math.Max(0.4, elapsed * 0.35);
+                Row("PERF-LOCKSTEP", locked ? "PASS" : "FAIL",
+                    "media " + media.ToString("F2") + "s vs " + elapsed.ToString("F2") + "s requested");
+
+                VideoSurface.Destroy("video", new Dictionary<string, object> { { "__instance", "perf" } }, out _);
+            }
+
+            private bool _formatPlayed;
+
+            private IEnumerator ProbeFormat(string file, bool compat)
+            {
+                _formatPlayed = false;
+                string scope = compat ? "format" : "native";
+                var args = new Dictionary<string, object>
+                {
+                    { "__instance", scope },
+                    { "key", "video" },
+                    { "file", file },
+                    { "time", 0.5 },
+                    { "playing", true },
+                    { "loop", false },
+                    { "trimStart", 0.0 },
+                    { "trimEnd", 0.0 },
+                    { "speed", 1.0 },
+                    { "volume", 0.0 },
+                    { "muted", true },
+                    { "fit", "Fit" },
+                    { "compat", compat }
+                };
+
+                VideoSurface.Set("video", args, out _);
+
+                // A file that needs the compatibility tier is converting, not failing, and a
+                // first conversion of a real clip takes seconds. Waiting the same span a chart
+                // author would is the honest test; a short timeout would report the format as
+                // unsupported when it merely was not finished.
+                float deadline = Time.realtimeSinceStartup + 90f;
+                while (Time.realtimeSinceStartup < deadline)
+                {
+                    yield return null;
+                    string report = EntryReport(scope + "/video");
+                    if (report.IndexOf("converting=True", StringComparison.Ordinal) >= 0) continue;
+                    if (report.IndexOf("failed=True", StringComparison.Ordinal) >= 0) break;
+                    if (report.IndexOf("prepared=True", StringComparison.Ordinal) >= 0 &&
+                        report.IndexOf("frame=True", StringComparison.Ordinal) >= 0) break;
+                }
+
+                string final = EntryReport(scope + "/video");
+                _formatPlayed = final.IndexOf("prepared=True", StringComparison.Ordinal) >= 0 &&
+                                final.IndexOf("frame=True", StringComparison.Ordinal) >= 0;
+
+                string name = Path.GetFileName(file);
+                Row((compat ? "FORMAT-" : "NATIVE-") + name, _formatPlayed ? "PLAYS" : "REFUSED",
+                    VideoMedia.Diagnose(file) + (final.Length > 0 ? " | " + Truncate(final, 120) : ""));
+
+                VideoSurface.Destroy("video", new Dictionary<string, object> { { "__instance", scope } }, out _);
+            }
+
+            /// <summary>One surface's report line, matched by key prefix.</summary>
+            private static string EntryReport(string key)
+            {
+                foreach (var part in VideoSurface.Report().Split(';'))
+                    if (part.TrimStart().StartsWith(key, StringComparison.Ordinal)) return part.Trim();
+                return "";
+            }
+
+            // ------------------------------------------------------------ helpers
+
+            private static bool ReportContains(string report, string text) =>
+                !string.IsNullOrEmpty(report) && report.IndexOf(text, StringComparison.Ordinal) >= 0;
+
+            private static string Truncate(string text, int max) =>
+                string.IsNullOrEmpty(text) ? "" : (text.Length <= max ? text : text.Substring(0, max) + "…");
+
+            /// <summary>The quad's live world position and scale, found through the surface.</summary>
+            private string QuadState()
+            {
+                string report = VideoSurface.Report();
+                foreach (var part in report.Split(';'))
+                {
+                    if (part.Contains("prepared=True")) return part.Trim();
+                }
+                return report;
+            }
+
+            private string QuadSort()
+            {
+                foreach (var part in VideoSurface.Report().Split(';'))
+                    if (part.Contains("prepared=True"))
+                    {
+                        int at = part.IndexOf("sort=", StringComparison.Ordinal);
+                        return at < 0 ? part.Trim() : part.Substring(at).Trim();
+                    }
+                return "none";
+            }
+
+            private string QuadOpacity()
+            {
+                foreach (var part in VideoSurface.Report().Split(';'))
+                    if (part.Contains("prepared=True"))
+                    {
+                        int at = part.IndexOf("opacity=", StringComparison.Ordinal);
+                        return at < 0 ? part.Trim() : part.Substring(at).Trim();
+                    }
+                return "none";
+            }
+
+            private string TimePosition()
+            {
+                foreach (var part in VideoSurface.Report().Split(';'))
+                    if (part.Contains("prepared=True"))
+                    {
+                        int at = part.IndexOf("t=", StringComparison.Ordinal);
+                        return at < 0 ? part.Trim() : part.Substring(at).Trim();
+                    }
+                return "none";
+            }
+        }
+    }
+}

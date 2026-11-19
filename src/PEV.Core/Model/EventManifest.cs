@@ -41,6 +41,15 @@ namespace PEV.Model
         public List<string> Options; // advisory; only used when we downgrade to String
         public string NoteKey;       // for type "Note": localization key holding the text
         public string CustomLabel;   // overrides the field's display name
+
+        /// <summary>
+        /// Which browser the game gives a <c>File</c> row: Audio, Image or Video.
+        ///
+        /// PropertyInfo takes this from the metadata it is built with, and a row without it
+        /// gets the default Audio browser — so a video file could not be picked at all. The
+        /// manifest names it explicitly and ToPropertyDict forwards it.
+        /// </summary>
+        public string FileKind;
         /// <summary>
         /// Per-locale labels, keyed by SystemLanguage name. CustomLabel is the English/plain
         /// fallback; this carries the rest.
@@ -120,6 +129,9 @@ namespace PEV.Model
             if (Max.HasValue) d["max"] = (float)Max.Value;
             if (!string.IsNullOrEmpty(Unit)) d["unit"] = Unit;
             if (!string.IsNullOrEmpty(NoteKey)) d["noteKey"] = NoteKey;
+            // A File row without an explicit kind gets the game's default browser, which only
+            // lists audio; a video parameter would then be unselectable.
+            if (!string.IsNullOrEmpty(FileKind)) d["fileType"] = FileKind;
             string label = ResolveLabel();
             if (!string.IsNullOrEmpty(label)) d["customLabel"] = label;
             // Grouping is what makes a 25-parameter event usable: without it the panel is
@@ -276,10 +288,14 @@ namespace PEV.Model
             m.DecorationBacked = root.Value<bool?>("decoration") ?? false;
             if (root["hostPrimitive"] != null)
             {
-                if (m.SchemaVersion < 3 || root["hostPrimitive"].Type != JTokenType.String ||
-                    root.Value<string>("hostPrimitive") != "fx.field")
-                { error = "invalid hostPrimitive (requires schemaVersion 3)"; return null; }
-                m.HostPrimitive = root.Value<string>("hostPrimitive");
+                // fx.field renders through the GPU noise field; fx.video renders through the
+                // video surface. Both are host-owned primitives that a decoration-backed
+                // package drives, and neither is an author-facing stable contract.
+                string primitive = root["hostPrimitive"].Type == JTokenType.String
+                    ? root.Value<string>("hostPrimitive") : null;
+                if (m.SchemaVersion < 3 || (primitive != "fx.field" && primitive != "fx.video"))
+                { error = "invalid hostPrimitive (requires schemaVersion 3 and fx.field or fx.video)"; return null; }
+                m.HostPrimitive = primitive;
             }
             m.Description = LocalizedValue(root["description"]) ?? "";
             m.DisplayName = LocalizedValue(root["name"]) ?? m.Id;
@@ -532,6 +548,13 @@ namespace PEV.Model
                         CustomLabel = LocalizedValue(p["label"]) ?? LocalizedValue(p["customLabel"]),
                         NoteKey = p.Value<string>("noteKey")
                     };
+                    if (p["fileType"] != null)
+                    {
+                        string kind = p["fileType"].Type == JTokenType.String ? p.Value<string>("fileType") : null;
+                        if (kind != "Audio" && kind != "Image" && kind != "Video")
+                        { error = "a File param's fileType must be Audio, Image or Video"; return null; }
+                        spec.FileKind = kind;
+                    }
                     ReadLocales(p["label"] ?? p["customLabel"], spec.Labels);
                     if (p["order"] != null) spec.Order = p.Value<int>("order");
                     spec.ShowIf = ReadPairs(p["showIf"]);

@@ -27,6 +27,12 @@ vanilla editor comments or native decoration rows.
 2. Download `PEV.Core-<version>.zip` from the [latest GitHub Release](https://github.com/ShakeCrane/ADOFAI-Custom-Events/releases/latest).
 3. In UMM, use **Mods → Install Mod** and pick the zip.
 4. To use the noise field, place [`NoiseField.event`](https://github.com/ShakeCrane/ADOFAI-Custom-Events/raw/refs/heads/main/template-events/NoiseField.event) next to the `.adofai` chart, then open the chart.
+5. To add a video, place `Video.event` next to the chart and put the video file beside it too.
+
+Video needs no extra software for MP4/MOV/M4V (H.264, HEVC, AV1), AVI, WMV and VP8 WebM.
+Other containers — MKV, FLV, TS, Ogg, ProRes, VP9 WebM — are converted once into
+`Mods/PEV.Core/video-cache/`, which needs `ffmpeg.exe` beside the mod, beside the chart, or
+on `PATH`. Without it those files report the exact reason instead of failing silently.
 
 The Core package contains no events. Each chart loads `.event` files from its own
 directory only. Missing declared packages produce a notification and preserve event data;
@@ -60,6 +66,7 @@ Download ready-to-use packages from [`template-events/`](template-events/) and p
 | `Pulse` | Continuous per-frame animation via `update(t)` |
 | `NoiseField` | Stored as a real decoration: place, drag, resize and retag it with the editor's own tools; MoveDecorations drives it by tag. [Download](https://github.com/ShakeCrane/ADOFAI-Custom-Events/raw/refs/heads/main/template-events/NoiseField.event) |
 | `NoiseFieldState` | Controls matching noise fields by tag, including warning and activation |
+| `Video` | Plays a video file on a real decoration, locked to the song clock. Drag, resize, rotate, depth and tag it like any decoration. Widely supported formats play directly; the rest are converted once to a cache. [Download](https://github.com/ShakeCrane/ADOFAI-Custom-Events/raw/refs/heads/main/template-events/Video.event) |
 
 ---
 

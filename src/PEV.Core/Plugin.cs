@@ -50,6 +50,7 @@ namespace PEV.Core
             Diagnostics.P3Harness.Configure(entry.Path);
             Diagnostics.P4Harness.Configure(entry.Path);
             Diagnostics.PN1Harness.Configure(entry.Path);
+            Diagnostics.VideoHarness.Configure(entry.Path);
             Diagnostics.ReviewHarness.Configure(entry.Path);
             Diagnostics.ChartHarness.Configure(entry.Path);
 #endif

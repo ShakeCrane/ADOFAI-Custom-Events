@@ -50,6 +50,13 @@ var fx = {
   },
   tagValue: function (o) {
     return JSON.parse(__hostFx('tagvalue', JSON.stringify(o || {})));
+  },
+  video: function (key, o) {
+    var a = o || {}; a.key = key;
+    return JSON.parse(__hostFx('video', JSON.stringify(a)));
+  },
+  videoDestroy: function (key) {
+    return JSON.parse(__hostFx('videodestroy', JSON.stringify({ key: key })));
   }
 };
 var __pevReady = true;
@@ -149,11 +156,28 @@ var __pevReady = true;
                 args["__eventOrder"] = _eventOrder;
 
                 bool ok = GameBridge.TryPlayNative(name, args, out string error);
-                return JsonConvert.SerializeObject(new Dictionary<string, object>
+
+                var reply = new Dictionary<string, object>
                 {
                     { "ok", ok },
                     { "error", error }
-                });
+                };
+
+                // A video's effective end depends on the media duration, which only exists
+                // after the decoder prepared the clip. Returning it lets the package clamp a
+                // loop or a trim window to a value it could not otherwise know; scripts that
+                // ignore the extra keys are unaffected.
+                if (string.Equals(name, "video", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        PEV.Scripting.VideoSurface.DescribeForScript(Str(args, "key"), Str(args, "__instance"),
+                            reply);
+                    }
+                    catch { }
+                }
+
+                return JsonConvert.SerializeObject(reply);
             }
             catch (Exception e)
             {
@@ -163,6 +187,13 @@ var __pevReady = true;
                     { "error", e.Message }
                 });
             }
+        }
+
+        /// <summary>Reads a host-call argument as a string, without the crash on odd shapes.</summary>
+        private static string Str(Dictionary<string, object> args, string key)
+        {
+            if (args != null && args.TryGetValue(key, out var value) && value != null) return value.ToString();
+            return null;
         }
 
         /// <summary>

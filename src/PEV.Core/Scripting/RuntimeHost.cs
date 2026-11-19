@@ -34,6 +34,13 @@ namespace PEV.Scripting
         private NoiseFieldGpuDriver _gpuDriver = new NoiseFieldGpuDriver();
         private bool _live;
 
+#if PEV_DIAGNOSTICS
+        /// <summary>Harness access: the live host and how many instances it armed.</summary>
+        public static RuntimeHost Instance => _instance;
+        public int ArmedCount => _instances.Count;
+        public IReadOnlyList<EventInstance> Instances => _instances;
+#endif
+
         public static RuntimeHost Ensure()
         {
             if (_instance == null)
@@ -168,6 +175,19 @@ namespace PEV.Scripting
                 EventOrder = _instances.Count
             };
 
+            // A video row is a decoration, and decorations exist for the whole level rather
+            // than from one tile onward. Its clock is therefore the song clock itself: the
+            // package's own start-beat parameter decides when the media begins, and before
+            // that it holds its first frame. Anchoring to the row's floor instead would make
+            // a video placed on a late tile stay blank through the part of the song a
+            // decoration is supposed to be visible in.
+            if (manifest.HostPrimitive == "fx.video")
+            {
+                inst.EntryTime = 0;
+                inst.EntryTimeResolved = true;
+                inst.AnchorAtLevelStart = true;
+            }
+
             // A decoration row is a decoration: bind the instance to it so every frame reads
             // the live component instead of the values frozen at the last save. The scope has
             // to be the same string the script host stamps into its calls, which is the
@@ -182,6 +202,12 @@ namespace PEV.Scripting
                 // floor. The placement tile is where the event sits, not when it appears.
                 if (describeFields && NoiseFieldRenderer.IsFieldEvent(manifest))
                     NoiseFieldRenderer.Describe(inst.Key, manifest.FieldPreviewKey, ev, data);
+
+                // A video row is likewise a decoration. Bind it so the quad follows the live
+                // transform from the first frame; the script supplies the clip and the clock
+                // only once the song reaches this tile.
+                if (manifest.HostPrimitive == "fx.video")
+                    VideoSurface.Describe(inst.Key, "video", ev);
             }
 
             _instances.Add(inst);
@@ -208,6 +234,13 @@ namespace PEV.Scripting
             // them over. Outside the early-outs below so a paused or not-yet-started song
             // still mirrors an editor drag or a MoveDecorations tween.
             try { NoiseFieldRenderer.Refresh(); } catch { }
+
+            // Same contract for video: geometry, sorting and visibility come from the bound
+            // decoration, and a paused surface must still hold the frame the clock asked for.
+            // Ownership is declared first: while the editor is idle the preview draws these
+            // rows and the runtime must not put a second quad on the same decoration.
+            VideoSurface.RuntimeActive = ADOBase.editor == null || ADOBase.editor.playMode;
+            try { VideoSurface.Refresh(); } catch { }
 
             if (!_live || _instances.Count == 0) return;
 
@@ -284,6 +317,7 @@ namespace PEV.Scripting
             // Bindings point at LevelEvent rows that the next decode replaces. Clearing them
             // is what stops a stale reference from resurrecting a destroyed decoration.
             try { NoiseFieldRenderer.UnbindAll(); } catch { }
+            try { VideoSurface.UnbindAll(); } catch { }
 
             // Belt and braces: even a script that leaked objects or crashed leaves nothing.
             try { GameBridge.DestroyAll(); } catch { }

@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 4,
+  "id": "pev.video",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "main.js",
+  "icon": "icon.png",
+  "category": "DecorationFx",
+  "name": {
+    "en": "Video",
+    "zh-CN": "视频",
+    "zh-TW": "影片",
+    "ja": "動画",
+    "ko": "비디오"
+  },
+  "description": {
+    "en": "Plays a video file on a decoration. Drag, resize, rotate and depth it like any decoration; MoveDecorations moves it by tag. Timing follows the song clock.",
+    "zh-CN": "在装饰上播放视频文件。可以像任何装饰一样拖动、缩放、旋转和调整层级；移动装饰事件可按标签移动它。播放时间跟随歌曲时钟。"
+  },
+  "decoration": true,
+  "hostPrimitive": "fx.video",
+  "decorationListName": "Video",
+  "decorationDefaults": {
+    "color": "ffffff"
+  },
+  "hiddenDecorationProperties": [
+    "maskingType",
+    "maskingTarget",
+    "syncFloorDepth"
+  ],
+  "params": [
+    {
+      "name": "file",
+      "type": "File",
+      "fileType": "Video",
+      "default": "",
+      "group": "Video",
+      "order": 0,
+      "label": {
+        "en": "Video File",
+        "zh-CN": "视频文件"
+      }
+    },
+    {
+      "name": "start",
+      "type": "Float",
+      "default": 0,
+      "min": -3600,
+      "max": 3600,
+      "unit": "beats",
+      "group": "Timing",
+      "order": 0,
+      "label": {
+        "en": "Start (from this tile)",
+        "zh-CN": "起始（相对本格）"
+      }
+    },
+    {
+      "name": "trimStart",
+      "type": "Float",
+      "default": 0,
+      "min": 0,
+      "max": 36000,
+      "unit": "s",
+      "group": "Timing",
+      "order": 1,
+      "label": {
+        "en": "Clip In",
+        "zh-CN": "裁剪起点"
+      }
+    },
+    {
+      "name": "trimEnd",
+      "type": "Float",
+      "default": 0,
+      "min": 0,
+      "max": 36000,
+      "unit": "s",
+      "group": "Timing",
+      "order": 2,
+      "label": {
+        "en": "Clip Out (0 = end)",
+        "zh-CN": "裁剪终点（0=片尾）"
+      }
+    },
+    {
+      "name": "speed",
+      "type": "Float",
+      "default": 1,
+      "min": 0.05,
+      "max": 8,
+      "group": "Timing",
+      "order": 3,
+      "label": {
+        "en": "Playback Speed",
+        "zh-CN": "播放速度"
+      }
+    },
+    {
+      "name": "loop",
+      "type": "Bool",
+      "default": false,
+      "group": "Timing",
+      "order": 4,
+      "label": {
+        "en": "Loop Clip Range",
+        "zh-CN": "循环裁剪区间"
+      }
+    },
+    {
+      "name": "holdEnd",
+      "type": "Bool",
+      "default": true,
+      "group": "Timing",
+      "order": 5,
+      "label": {
+        "en": "Hold Last Frame",
+        "zh-CN": "结束时保持末帧"
+      }
+    },
+    {
+      "name": "mode",
+      "type": "Choice",
+      "default": "Fit",
+      "options": ["Fit", "Fill", "Stretch"],
+      "group": "Layout",
+      "order": 0,
+      "label": {
+        "en": "Scaling",
+        "zh-CN": "缩放方式"
+      },
+      "optionLabels": {
+        "Fit": { "en": "Fit Inside", "zh-CN": "完整显示" },
+        "Fill": { "en": "Fill and Crop", "zh-CN": "填满并裁切" },
+        "Stretch": { "en": "Stretch", "zh-CN": "拉伸" }
+      }
+    },
+    {
+      "name": "volume",
+      "type": "Float",
+      "default": 100,
+      "min": 0,
+      "max": 100,
+      "unit": "%",
+      "group": "Audio",
+      "order": 0,
+      "label": {
+        "en": "Volume",
+        "zh-CN": "音量"
+      }
+    },
+    {
+      "name": "muted",
+      "type": "Bool",
+      "default": true,
+      "group": "Audio",
+      "order": 1,
+      "label": {
+        "en": "Mute",
+        "zh-CN": "静音"
+      }
+    }
+  ]
+}
