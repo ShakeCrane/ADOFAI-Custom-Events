@@ -113,13 +113,18 @@ namespace PEV.Diagnostics
             var panel = editor.GetComponent<PEV.Editor.ScreenEffectPanel>();
             if (panel == null) { Row(label + "/panel", "MISSING"); yield break; }
             Row(label + "/panel", "present");
-            for (int tab = 0; tab < 5; tab++)
+            for (int tab = 0; tab < 6; tab++)
             {
                 panel.ProbeTab(tab);
                 yield return null;
                 yield return null;
                 yield return CaptureBackbuffer(label + "-tab" + tab);
             }
+            var view = typeof(PEV.Editor.ScreenEffectPanel).GetField("_scopes",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.GetValue(panel);
+            var dump = view?.GetType().GetMethod("Dump", System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic);
+            if (dump != null) { try { dump.Invoke(view, new object[] { _dir }); } catch { } }
             panel.ProbeTab(0);
         }
 

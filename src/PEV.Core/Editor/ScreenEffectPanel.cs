@@ -26,9 +26,10 @@ namespace PEV.Editor
     public class ScreenEffectPanel : MonoBehaviour
     {
         private const float WindowWidth = 340f;
+        private const float ScopesWidth = 460f;
         private const int CurveResolution = 96;
 
-        private static readonly string[] Tabs = { "Curves", "Wheels", "LUT", "HSL", "Info" };
+        private static readonly string[] Tabs = { "Curves", "Wheels", "LUT", "HSL", "Scopes", "Info" };
         private static readonly string[] Channels = { "Master", "Red", "Green", "Blue" };
         private static readonly string[] HueChannels = { "Hue vs Hue", "Hue vs Sat", "Hue vs Luma" };
         private static readonly string[] BandNames =
@@ -70,6 +71,10 @@ namespace PEV.Editor
 
         private void OnDestroy()
         {
+            Scripting.ScreenEffectPipeline.CaptureScopes = false;
+            Scripting.ScreenEffectPipeline.ReleaseScope();
+            _scopes?.Dispose();
+            _scopes = null;
             if (_wheel != null) Destroy(_wheel);
             if (_white != null) Destroy(_white);
         }
@@ -99,7 +104,7 @@ namespace PEV.Editor
                 _window.x = Screen.width - WindowWidth - 24f;
             _window.x = Mathf.Clamp(_window.x, 0f, Mathf.Max(0f, Screen.width - WindowWidth));
             _window.y = Mathf.Clamp(_window.y, 0f, Mathf.Max(0f, Screen.height - 80f));
-            _window.width = WindowWidth;
+            _window.width = _tab == 4 ? ScopesWidth : WindowWidth;
             _window.height = height;
             _window = GUILayout.Window(GetInstanceID(), _window, Draw, "Color Grading");
         }
@@ -112,6 +117,7 @@ namespace PEV.Editor
                 case 1: return 430f;   // two rows of wheels
                 case 2: return 260f;   // LUT picker
                 case 3: return 330f;   // eight HSL rows
+                case 4: return 470f;   // four scopes
                 default: return 250f;  // info
             }
         }
@@ -158,6 +164,7 @@ namespace PEV.Editor
                 case 1: DrawWheels(entry.Event, data, manifest); break;
                 case 2: DrawLut(entry.Event, data, manifest); break;
                 case 3: DrawHsl(entry.Event, data, manifest); break;
+                case 4: DrawScopes(); break;
                 default: DrawInfo(entry.Event, data, manifest); break;
             }
 
@@ -560,6 +567,28 @@ namespace PEV.Editor
             }
             if (GUILayout.Button("Reset ranges")) SetValue(ev, data, name, FormatBands(new List<Vector3>
                 { Vector3.zero, Vector3.zero, Vector3.zero, Vector3.zero, Vector3.zero, Vector3.zero, Vector3.zero, Vector3.zero }));
+        }
+
+        // ── scopes ────────────────────────────────────────────────────────────────
+
+        private ScreenScopeView _scopes;
+
+        private void DrawScopes()
+        {
+            if (_scopes == null) _scopes = new ScreenScopeView();
+            // The driver only keeps the small frame while this flag is set, so closing the
+            // panel stops the capture as well as the analysis.
+            Scripting.ScreenEffectPipeline.CaptureScopes = true;
+            _scopes.Refresh();
+
+            if (!_scopes.Ready)
+            {
+                GUILayout.Label("Start playback, or select an active grade, to see the scopes.",
+                    _smallStyle);
+                GUILayout.Space(4);
+            }
+            _scopes.Draw(_window.width - 24f);
+            GUILayout.Label("Sampled four times a second from the grade's input frame.", _smallStyle);
         }
 
         // ── info ──────────────────────────────────────────────────────────────────

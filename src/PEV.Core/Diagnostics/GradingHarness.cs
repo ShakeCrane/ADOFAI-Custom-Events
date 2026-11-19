@@ -701,7 +701,6 @@ namespace PEV.Diagnostics
         private static void Performance(Action<string, string, string> row, EventManifest manifest,
             Texture2D input)
         {
-            const int iterations = 24;
             const string scope = "diagnostics/grading/perf";
             try
             {

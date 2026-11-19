@@ -83,6 +83,11 @@ namespace PEV.Scripting
         private static GameObject _driverObject;
         private static ScreenEffectDriver _driver;
 
+        // Scope capture is off unless a panel asks for it: a diagnostic view must not cost
+        // the running chart anything.
+        internal static bool CaptureScopes;
+        internal static RenderTexture ScopeTarget;
+
         internal static int LayerCount => Layers.Count;
 
         internal static string Report() =>
@@ -449,6 +454,7 @@ namespace PEV.Scripting
             foreach (var layer in layers) Dispose(layer);
             DetachDriver();
             LutCache.Clear();
+            ReleaseScope();
             _warnedLimit = 0;
         }
 
@@ -527,6 +533,43 @@ namespace PEV.Scripting
                 Layers.Remove(scope);
                 Dispose(layer);
             }
+        }
+
+        /// <summary>
+        /// Keeps a small copy of the incoming frame for the panel's scopes.
+        ///
+        /// Downscaled on the GPU rather than read back every frame: the scopes only need a
+        /// statistical sample, and a full-resolution readback four times a second would cost
+        /// more than the grade itself. Nothing here runs unless a panel is open.
+        /// </summary>
+        internal static void CaptureScope(RenderTexture source)
+        {
+            const int width = 192, height = 108;
+            try
+            {
+                if (ScopeTarget == null || ScopeTarget.width != width || ScopeTarget.height != height)
+                {
+                    if (ScopeTarget != null) { ScopeTarget.Release(); UnityEngine.Object.Destroy(ScopeTarget); }
+                    ScopeTarget = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32)
+                    {
+                        name = "PEV.Scope",
+                        filterMode = FilterMode.Point,
+                        wrapMode = TextureWrapMode.Clamp,
+                        hideFlags = HideFlags.DontSave
+                    };
+                    ScopeTarget.Create();
+                }
+                Graphics.Blit(source, ScopeTarget);
+            }
+            catch (Exception e) { PEV.Core.Plugin.Log("scope capture failed: " + e.Message); }
+        }
+
+        internal static void ReleaseScope()
+        {
+            if (ScopeTarget == null) return;
+            ScopeTarget.Release();
+            UnityEngine.Object.Destroy(ScopeTarget);
+            ScopeTarget = null;
         }
 
         private static void EnsureDriver()
@@ -619,6 +662,8 @@ namespace PEV.Scripting
             RenderTexture current = source;
             try
             {
+                if (ScreenEffectPipeline.CaptureScopes) ScreenEffectPipeline.CaptureScope(source);
+
                 for (int i = 0; i < layers.Count; i++)
                 {
                     var material = layers[i].Material;
