@@ -274,11 +274,13 @@ fx.video("video", {
 fx.videoDestroy("video");
 ```
 
-`time` 写绝对值，暂停、重开、检查点跳转和编辑器拖动都由宿主对齐到该值，不需要脚本自己累加时间。`trimEnd` 为 0 表示到片尾；返回的 `{ ok, error, ready, duration, width, height }` 里 `duration` 只有解码器准备好以后才非零，可用于把循环区间裁到片长。宿主自动换算 `fit`（`Fit` 完整显示、`Fill` 填满裁切、`Stretch` 拉伸）与装饰框的宽高比。
+`time` 写绝对值，暂停、重开、检查点跳转和编辑器拖动都由宿主对齐到该值，不需要脚本自己累加时间。`trimEnd` 为 0 表示到片尾；返回的 `{ ok, error, ready, duration, width, height }` 里 `duration` 只有解码器准备好以后才非零，可用于把循环区间裁到片长。宿主自动换算 `fit`（`Fit` 完整显示、`Fill` 填满裁切、`Stretch` 拉伸）与装饰框的宽高比。`visible` 为 `false` 时宿主撤下画面但保留装饰行；`Video.event` 用它在「不保持末帧」时让视频在片尾消失。
 
 格式：原生后端直接解码 MP4/MOV/M4V（H.264、HEVC、AV1、MPEG-4）、AVI（H.264、MJPEG）、WMV 和 VP8-in-WebM。其余容器（MKV、FLV、TS、OGG/Theora、ProRes、VP9-in-WebM）由兼容层自动转换一次并缓存到 `Mods/PEV.Core/video-cache/`；转换使用机器上的 FFmpeg，可从模组目录、谱面目录或 PATH 找到，没有 FFmpeg 时日志和返回值给出明确诊断而不是静默黑屏。视频素材放在谱面目录，路径写相对值，未安装本模组时原版仍能打开谱面。
 
-### 自定义区域、GPU 与包内状态[NoiseField 源码](../src/Events/NoiseField.event/)展示了可运行的装饰和 GPU 包。以下是该版本 Core 的内部接口。基于它们开发时固定 Core 构建和事件包版本，并对目标 Unity、图形后端和设备实测。
+### 自定义区域、GPU 与包内状态
+
+[NoiseField 源码](../src/Events/NoiseField.event/)展示了可运行的装饰和 GPU 包。以下是该版本 Core 的内部接口。基于它们开发时固定 Core 构建和事件包版本，并对目标 Unity、图形后端和设备实测。
 
 1. 从 manifest 和 [`main.js`](../src/Events/NoiseField.event/main.js) 跟踪一个参数，例如 `animationSpeed`。manifest 定义输入，入口逐帧传给 `fx.field(key, props)`，宿主处理与原生装饰的绑定，结束时用 `fx.fieldDestroy(key)`。`hostPrimitive: "fx.field"` 和 `fieldPreview` 将编辑态预览接到同一类原语，预览映射需和实际播放的参数一致。拖拽、缩放等原生实时属性交给装饰行提供。
 2. 把着色器、纹理和运算声明随包分发。用 `shaderBundle` 指向包内 bundle，用 `shaderAssets` 指定 bundle 内的资源角色，用 `imageAssets` 描述图片及采样。当前包的 `computeGraphs`、`vectorPrograms`、`keySpecs` 和 `pixelResources` 声明计算图、受限后台脚本、缓存键与像素输入。`runtimeBindings` 将宿主需要的角色绑定到声明。按参考包的 [pipelines](../src/Events/NoiseField.event/pipelines/) 和 [workers](../src/Events/NoiseField.event/workers/) 追踪输入、输出及 CPU 回退。要接入渲染，资源和角色须由宿主识别与消费。
