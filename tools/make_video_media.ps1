@@ -46,7 +46,10 @@ foreach ($job in $jobs) {
     if ((Test-Path -LiteralPath $target) -and -not $Force) { continue }
 
     $arguments = @('-hide_banner', '-loglevel', 'error', '-y') + ($job.a -split ' ') + @($target)
-    & $ffmpeg @arguments 2>&1 | Out-Null
+    # FFmpeg writes progress to stderr; with $ErrorActionPreference='Stop' a native program's
+    # stderr output becomes a terminating error, so it is captured instead of piped.
+    $ErrorActionPreference = 'Continue'
+    try { & $ffmpeg @arguments 2>$null | Out-Null } finally { $ErrorActionPreference = 'Stop' }
     if (-not (Test-Path -LiteralPath $target)) { throw "ffmpeg did not produce $($job.n)" }
     $made++
 }

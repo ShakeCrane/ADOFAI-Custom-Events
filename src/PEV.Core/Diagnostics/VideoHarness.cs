@@ -678,6 +678,23 @@ namespace PEV.Diagnostics
                 for (int i = 0; i < 2; i++) yield return null;
                 string opacity = QuadOpacity();
                 Row("RENDER-OPACITY", ReportContains(opacity, "opacity=0.5") ? "PASS" : "FAIL", opacity);
+
+                // The editor preview and playback must apply the same scaling. The package
+                // declares the input as `mode` and the host calls it `fit`, so this is exactly
+                // where the two can drift apart.
+                string fit = QuadFit();
+                Row("RENDER-FIT", fit == "Fit" ? "PASS" : "FAIL",
+                    "fit=" + fit + " (manifest default is Fit; a stretch here means the preview dropped the parameter)");
+            }
+
+            private string QuadFit()
+            {
+                int at = PlacedSurface().IndexOf("fit=", StringComparison.Ordinal);
+                if (at < 0) return "none";
+                int start = at + 4;
+                int end = PlacedSurface().IndexOf(' ', start);
+                if (end < 0) end = PlacedSurface().Length;
+                return PlacedSurface().Substring(start, Math.Max(0, end - start));
             }
 
             private void SetOpacity(float value)

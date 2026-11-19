@@ -121,6 +121,13 @@ namespace PEV.Editor
                 args["playing"] = false;
                 args["loop"] = false;
 
+                // The package declares this input as `mode` and forwards it to the host as
+                // `fit`; the preview sees the authored parameter names, so the same translation
+                // has to happen here or the editor draws a stretched picture while playback
+                // draws a fitted one.
+                if (args.TryGetValue("mode", out var mode) && mode != null)
+                    args["fit"] = mode.ToString();
+
                 VideoSurface.Set("video", args, out string error);
                 if (!string.IsNullOrEmpty(error)) PEV.Core.Plugin.Log("video preview: " + error);
                 _seen[uid] = "video";
