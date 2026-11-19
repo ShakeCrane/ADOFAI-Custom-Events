@@ -105,6 +105,7 @@ namespace PEV.Scripting
             public int SeekAttempts;
             public double LastObservedTime = -1;
             public int StallFrames;
+            public int LastRestartFrame = int.MinValue / 2;
 
             /// <summary>Geometry and tint, read from the bound decoration every frame.</summary>
             public Placement.Frame World;
@@ -353,11 +354,16 @@ namespace PEV.Scripting
                         if (entry.Renderer != null) entry.Renderer.enabled = false;
                         try { if (entry.Player != null && SafeBool(() => entry.Player.isPlaying)) entry.Player.Pause(); }
                         catch { }
+                        ApplyAudio(entry);
                         continue;
                     }
-
                     ApplyGeometry(entry);
                     RetryConverted(entry);
+                    // Audio is applied before the playback sequencer, not after it: that
+                    // sequencer returns early while it waits for a frame or a seek, and an
+                    // author who sets a volume expects it to take effect regardless of where
+                    // the decoder happens to be.
+                    ApplyAudio(entry);
                     Reconcile(entry);
                 }
                 catch (Exception e) { LogOnce(entry, "refresh: " + e.Message); }
@@ -461,6 +467,29 @@ namespace PEV.Scripting
             reply["height"] = entry.Height;
             if (!string.IsNullOrEmpty(entry.SourceError)) reply["error"] = entry.SourceError;
             if (!string.IsNullOrEmpty(entry.PlayerError)) reply["error"] = entry.PlayerError;
+        }
+
+        /// <summary>Diagnostics: the audio wiring of one surface.</summary>
+        public static string AudioReport(string scope, string key)
+        {
+            string id = Scoped(scope, key);
+            if (!Live.TryGetValue(id, out var entry))
+                return "no surface";
+            if (entry.Player == null) return "no player";
+
+            int tracks = SafeInt(() => entry.Player.audioTrackCount);
+            var audio = entry.Audio;
+            return "tracks=" + tracks +
+                   " target=" + (audio == null ? "none" : "AudioSource") +
+                   " volume=" + (audio == null ? "-" : audio.volume.ToString("F3")) +
+                   " mute=" + (audio == null ? "-" : audio.mute.ToString()) +
+                   " requestedVolume=" + entry.DesiredVolume.ToString("F3") +
+                   " requestedMuted=" + entry.DesiredMuted;
+        }
+
+        private static int SafeInt(Func<ushort> read)
+        {
+            try { return read(); } catch { return -1; }
         }
 
         /// <summary>Diagnostics: what each surface is doing, for the in-game harness.</summary>
@@ -711,22 +740,33 @@ namespace PEV.Scripting
             // A decoder that reports "playing" while its clock does not move is stalled, and
             // an assignment issued into that state never lands. Tracking the last position is
             // what distinguishes a slow seek from a wedged one.
+            //
+            // Only meaningful while motion is actually wanted: a surface that is paused on
+            // purpose — the editor is idle, the song is stopped — holds its position, and
+            // counting that as a stall would restart playback in a loop.
+            bool wantMotion = entry.DesiredPlaying && ClockRunning;
             bool advancing = now > entry.LastObservedTime + 1e-3;
             entry.LastObservedTime = now;
-            if (!advancing && SafeBool(() => vp.isPlaying)) entry.StallFrames++;
+            if (wantMotion && !advancing && SafeBool(() => vp.isPlaying)) entry.StallFrames++;
             else entry.StallFrames = 0;
 
             if (entry.StallFrames > 30)
             {
                 entry.StallFrames = 0;
                 entry.SeekPending = false;
-                PEV.Core.Plugin.Log("video " + entry.Key + ": decoder stalled; restarting playback");
-                try
+                // One restart per surface per few seconds. A decoder that cannot advance at all
+                // would otherwise be stopped and restarted on every stall window forever.
+                if (Time.frameCount - entry.LastRestartFrame > 180)
                 {
-                    vp.Stop();
-                    vp.Play();
+                    entry.LastRestartFrame = Time.frameCount;
+                    PEV.Core.Plugin.Log("video " + entry.Key + ": decoder stalled; restarting playback");
+                    try
+                    {
+                        vp.Stop();
+                        vp.Play();
+                    }
+                    catch (Exception e) { LogOnce(entry, "restart failed: " + e.Message); }
                 }
-                catch (Exception e) { LogOnce(entry, "restart failed: " + e.Message); }
                 return;
             }
 
@@ -760,6 +800,13 @@ namespace PEV.Scripting
                     entry.SeekPending = true;
                     entry.SeekFrames = 0;
                     entry.SeekTarget = target;
+
+                    // A paused surface asks the decoder to materialise the frame it just
+                    // seeked to. Without this the assignment can sit unapplied until some
+                    // later playback, which is what makes a scrubbed still image show the
+                    // previous frame.
+                    if (!entry.DesiredPlaying && SafeBool(() => vp.canStep))
+                        try { vp.StepForward(); } catch { }
                 }
                 catch (Exception e) { LogOnce(entry, "seek failed: " + e.Message); }
                 return;
@@ -779,10 +826,23 @@ namespace PEV.Scripting
 
             if (entry.Audio != null)
             {
-                entry.Audio.volume = entry.DesiredMuted ? 0f : Mathf.Clamp01(entry.DesiredVolume);
-                entry.Audio.mute = entry.DesiredMuted;
-                entry.Audio.loop = entry.DesiredLoop;
+                ApplyAudio(entry);
             }
+        }
+
+        /// <summary>
+        /// Copies the authored volume and mute onto the audio source.
+        ///
+        /// Kept separate from the playback sequencing because it must apply even when the
+        /// surface is not the one drawing: an author who mutes a video expects it muted the
+        /// moment they press play, not one frame after the runtime takes ownership.
+        /// </summary>
+        private static void ApplyAudio(Entry entry)
+        {
+            if (entry.Audio == null) return;
+            entry.Audio.volume = entry.DesiredMuted ? 0f : Mathf.Clamp01(entry.DesiredVolume);
+            entry.Audio.mute = entry.DesiredMuted;
+            entry.Audio.loop = entry.DesiredLoop;
         }
 
         private static bool SafeBool(Func<bool> read)

@@ -125,9 +125,133 @@ namespace PEV.Diagnostics
                 foreach (var step in CheckPerformance()) yield return step;
                 foreach (var step in CheckSaveReload()) yield return step;
                 foreach (var step in CheckPlayback()) yield return step;
+                foreach (var step in CheckReopen()) yield return step;
+                foreach (var step in CheckAudio()) yield return step;
                 foreach (var step in CheckDiagnostics()) yield return step;
 
                 File.AppendAllText(_resultPath, "DONE\tok\n");
+            }
+
+            // ------------------------------------------------------------ reopen
+
+            /// <summary>
+            /// Saves the chart, closes it, and opens it again.
+            ///
+            /// Reopening is where a storage bug becomes visible: the panel in memory can hold
+            /// values that never reached the file, and the restore path can drop ones that did.
+            /// The session here is the game's own — the same decode, the same editor start.
+            /// </summary>
+            private IEnumerable CheckReopen()
+            {
+                if (_placed == null) { Row("REOPEN", "SKIP", "no placed row"); yield break; }
+
+                string saved = "";
+                try { saved = _editor.levelData.Encode(); }
+                catch (Exception e) { Row("REOPEN", "EXCEPTION", One(e)); yield break; }
+
+                // Write the encoded chart next to the fixture and reopen it through the same
+                // entry point the editor uses, so this is not a second, synthetic path.
+                string reopened = _chartPath + ".reopen.adofai";
+                try { File.WriteAllText(reopened, saved); }
+                catch (Exception e) { Row("REOPEN", "EXCEPTION", "cannot write: " + One(e)); yield break; }
+
+                try { _editor.OpenLevel(reopened); }
+                catch (Exception e) { Row("REOPEN", "EXCEPTION", One(e)); TryDelete(reopened); yield break; }
+
+                // Wait for the decode to finish and for the row to be restored.
+                float deadline = Time.realtimeSinceStartup + 25f;
+                LevelEvent restored = null;
+                while (Time.realtimeSinceStartup < deadline)
+                {
+                    yield return null;
+                    if (_editor.isLoading) continue;
+                    var level = _editor.levelData;
+                    var rows = level != null ? level.decorations : null;
+                    if (rows == null) continue;
+                    foreach (var row in rows)
+                    {
+                        if (row == null) continue;
+                        if (!LevelStorage.TryGetData(row, out var data)) continue;
+                        if (data.Id == "pev.video") { restored = row; break; }
+                    }
+                    if (restored != null) break;
+                }
+
+                Row("REOPEN-ROW", restored != null ? "PASS" : "FAIL",
+                    restored == null ? "video row did not come back" : "uid=" + UidOf(restored));
+
+                if (restored != null)
+                {
+                    LevelStorage.TryGetData(restored, out var data);
+                    bool sameUid = UidOf(restored) == UidOf(_placed);
+                    Row("REOPEN-IDENTITY", sameUid ? "PASS" : "FAIL",
+                        "before=" + UidOf(_placed) + " after=" + UidOf(restored));
+
+                    // The surface must come back too: a row that exists but draws nothing is a
+                    // regression the row check alone would miss.
+                    float draw = Time.realtimeSinceStartup + 25f;
+                    string report = "";
+                    while (Time.realtimeSinceStartup < draw)
+                    {
+                        yield return null;
+                        report = VideoSurface.Report();
+                        if (report.Contains("prepared=True") && report.Contains("frame=True")) break;
+                    }
+                    Row("REOPEN-RENDERS", report.Contains("frame=True") ? "PASS" : "FAIL", Truncate(report, 220));
+
+                    _placed = restored;
+                }
+
+                TryDelete(reopened);
+            }
+
+            private static void TryDelete(string path)
+            {
+                try { if (File.Exists(path)) File.Delete(path); } catch { }
+            }
+
+            // ------------------------------------------------------------- audio
+
+            /// <summary>
+            /// Checks the audio track is wired to a controllable source.
+            ///
+            /// What is verified is that a file with an audio stream reports one, that the
+            /// surface drives volume and mute onto an AudioSource, and that the parametrised
+            /// values actually reach it. Whether the sound is *audible* is not something a
+            /// headless run can assert, and is listed as unverified rather than claimed.
+            /// </summary>
+            private IEnumerable CheckAudio()
+            {
+                if (string.IsNullOrEmpty(_mediaRoot)) { Row("AUDIO", "SKIP", "no media root"); yield break; }
+                string path = Path.Combine(_mediaRoot, "q-h264-audio.mp4");
+                if (!File.Exists(path)) { Row("AUDIO", "SKIP", "no fixture"); yield break; }
+
+                var args = new Dictionary<string, object>
+                {
+                    { "__instance", "audio" }, { "key", "video" }, { "file", path },
+                    { "time", 0.0 }, { "playing", true }, { "volume", 0.25 }, { "muted", false }
+                };
+                VideoSurface.Set("video", args, out _);
+
+                float deadline = Time.realtimeSinceStartup + 20f;
+                while (Time.realtimeSinceStartup < deadline)
+                {
+                    if (EntryReport("audio/video").IndexOf("prepared=True", StringComparison.Ordinal) >= 0) break;
+                    yield return null;
+                }
+                // Audio is applied on the refresh tick, not by the call itself; give the
+                // runtime a frame to run it before reading the source back.
+                for (int i = 0; i < 5; i++) yield return null;
+
+                Row("AUDIO-TRACK", VideoSurface.AudioReport("audio", "video"), "track count and volume wiring");
+
+                // Muting must reach the source, not just the parameter.
+                args["muted"] = true;
+                VideoSurface.Set("video", args, out _);
+                for (int i = 0; i < 3; i++) yield return null;
+                Row("AUDIO-MUTE", VideoSurface.AudioReport("audio", "video"), "muted=true");
+
+                VideoSurface.Destroy("video", new Dictionary<string, object> { { "__instance", "audio" } }, out _);
             }
 
             // ---------------------------------------------------------- playback
@@ -1115,37 +1239,51 @@ namespace PEV.Diagnostics
             private static string Truncate(string text, int max) =>
                 string.IsNullOrEmpty(text) ? "" : (text.Length <= max ? text : text.Substring(0, max) + "…");
 
-            /// <summary>The quad's live world position and scale, found through the surface.</summary>
-            private string QuadState()
+            /// <summary>
+            /// The report line for the surface that is actually drawing the placed row.
+            ///
+            /// In the idle editor the preview owns the row and the runtime's described surface
+            /// is dormant, so both appear in the report. Reading "the first prepared line"
+            /// therefore answered about the wrong one and reported a surface with no geometry.
+            /// </summary>
+            private string PlacedSurface()
             {
-                string report = VideoSurface.Report();
-                foreach (var part in report.Split(';'))
+                string previewKey = "editorvideo/" + UidOf(_placed) + "/video";
+                string runtimeKey = "pev.video#" + UidOf(_placed) + "/video";
+
+                string runtime = "", preview = "";
+                foreach (var part in VideoSurface.Report().Split(';'))
                 {
-                    if (part.Contains("prepared=True")) return part.Trim();
+                    var line = part.Trim();
+                    if (line.StartsWith(previewKey, StringComparison.Ordinal)) preview = line;
+                    else if (line.StartsWith(runtimeKey, StringComparison.Ordinal)) runtime = line;
                 }
-                return report;
+
+                // The owner is the one with geometry; fall back to the runtime line so a check
+                // still reports something meaningful outside the editor.
+                return preview.Length > 0 ? preview : runtime;
             }
+
+            private string QuadState() => PlacedSurface();
 
             private string QuadSort()
             {
-                foreach (var part in VideoSurface.Report().Split(';'))
-                    if (part.Contains("prepared=True"))
-                    {
-                        int at = part.IndexOf("sort=", StringComparison.Ordinal);
-                        return at < 0 ? part.Trim() : part.Substring(at).Trim();
-                    }
-                return "none";
+                foreach (var part in PlacedSurface().Split(';'))
+                {
+                    int at = part.IndexOf("sort=", StringComparison.Ordinal);
+                    if (at >= 0) return part.Substring(at).Trim();
+                }
+                return PlacedSurface();
             }
 
             private string QuadOpacity()
             {
-                foreach (var part in VideoSurface.Report().Split(';'))
-                    if (part.Contains("prepared=True"))
-                    {
-                        int at = part.IndexOf("opacity=", StringComparison.Ordinal);
-                        return at < 0 ? part.Trim() : part.Substring(at).Trim();
-                    }
-                return "none";
+                foreach (var part in PlacedSurface().Split(';'))
+                {
+                    int at = part.IndexOf("opacity=", StringComparison.Ordinal);
+                    if (at >= 0) return part.Substring(at).Trim();
+                }
+                return PlacedSurface();
             }
 
             private string TimePosition()
