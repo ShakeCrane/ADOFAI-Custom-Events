@@ -140,6 +140,27 @@ namespace PEV.Loading
         public static byte[] ReadResource(string packagePath, string relative) =>
             ReadResource(packagePath, relative, int.MaxValue);
 
+        /// <summary>
+        /// Whether a package contains a file, without reading it.
+        ///
+        /// A size probe through ReadResource cannot answer this: the helper refuses anything
+        /// larger than the budget it is given, so a legitimate 130 kB LUT looked absent.
+        /// </summary>
+        public static bool HasResource(string packagePath, string relative)
+        {
+            if (string.IsNullOrEmpty(packagePath) || !IsPackageRelativePath(relative)) return false;
+            relative = relative.Replace('\\', '/');
+            try
+            {
+                if (Directory.Exists(packagePath))
+                    return File.Exists(Path.Combine(packagePath, relative));
+                if (!File.Exists(packagePath)) return false;
+                using (var archive = ZipFile.OpenRead(packagePath))
+                    return archive.Entries.Any(e => e.FullName.Equals(relative, StringComparison.OrdinalIgnoreCase));
+            }
+            catch { return false; }
+        }
+
         /// <summary>Read at most maxBytes, including while decompressing a ZIP entry.</summary>
         public static byte[] ReadResource(string packagePath, string relative, int maxBytes)
         {

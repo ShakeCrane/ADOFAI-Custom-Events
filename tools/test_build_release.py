@@ -30,7 +30,7 @@ class SplitReleaseTest(unittest.TestCase):
             (docs / "third-party").mkdir()
             for name in ("Jint-LICENSE.txt", "Acornima-LICENSE.txt"):
                 (docs / "third-party" / name).write_text("third party license", encoding="utf-8")
-            for name in ("NoiseField.event",):
+            for name in ("NoiseField.event", "ColorGrading.event"):
                 folder = events / name
                 folder.mkdir(parents=True)
                 (folder / "main.js").write_text("function create() {}", encoding="utf-8")
@@ -51,10 +51,11 @@ class SplitReleaseTest(unittest.TestCase):
                     self.assertIn("PEV.Core/third-party-licenses/Acornima-LICENSE.txt", archive.namelist())
                     self.assertFalse(any(name.startswith("PEV.Core/Events/")
                                          for name in archive.namelist()))
-                for name in ("NoiseField.event",):
+                for name in ("NoiseField.event", "ColorGrading.event"):
                     with zipfile.ZipFile(output / name) as archive:
                         self.assertEqual(name, json.loads(archive.read("event.json"))["id"])
-                self.assertEqual({"PEV.Core-1.0.0.zip", "NoiseField.event"}, {p.name for p in output.iterdir()})
+                self.assertEqual({"PEV.Core-1.0.0.zip", "NoiseField.event", "ColorGrading.event"},
+                                 {p.name for p in output.iterdir()})
                 with self.assertRaises(SystemExit):
                     build_release.main()
                 self.assertEqual(original, core_zip.read_bytes())

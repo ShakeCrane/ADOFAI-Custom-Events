@@ -209,6 +209,11 @@ namespace PEV.Scripting
             // still mirrors an editor drag or a MoveDecorations tween.
             try { NoiseFieldRenderer.Refresh(); } catch { }
 
+            // Keep a package-declared full-screen stage attached to whichever camera is
+            // currently drawing the game. Outside the early-outs so a grade still appears
+            // while the song is paused or before play begins.
+            try { ScreenEffectPipeline.Tick(); } catch { }
+
             if (!_live || _instances.Count == 0) return;
 
             double songTime;

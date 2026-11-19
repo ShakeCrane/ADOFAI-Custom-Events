@@ -1,0 +1,696 @@
+{
+  "schemaVersion": 5,
+  "id": "pev.color-grading",
+  "version": "1.0.0",
+  "apiVersion": 2,
+  "entry": "main.js",
+  "icon": "icon.png",
+  "category": "VisualFx",
+  "name": {
+    "en": "Color Grading",
+    "zh-CN": "调色"
+  },
+  "description": {
+    "en": "Professional colour grading for the whole game picture: exposure, tone, curves, four-way colour wheels, LUTs and HSL ranges, animated on the song timeline.",
+    "zh-CN": "对整个游戏画面做专业调色：曝光、影调、曲线、四向色轮、LUT 与 HSL 分区间，可随时间轴动画。"
+  },
+  "shaderBundle": "assets/color-grading.bundle",
+  "shaderAssets": {
+    "grade": "ColorGrading"
+  },
+  "screenEffect": {
+    "shader": "grade"
+  },
+  "editorPanel": {
+    "title": {
+      "en": "Color Grading",
+      "zh-CN": "调色"
+    },
+    "curves": {
+      "master": "curveMaster",
+      "red": "curveRed",
+      "green": "curveGreen",
+      "blue": "curveBlue"
+    },
+    "hueCurves": {
+      "hue": "hueVsHue",
+      "saturation": "hueVsSat",
+      "luma": "hueVsLuma"
+    },
+    "wheels": [
+      {
+        "label": {
+          "en": "Lift",
+          "zh-CN": "提升"
+        },
+        "xy": "liftXY",
+        "luma": "liftL"
+      },
+      {
+        "label": {
+          "en": "Gamma",
+          "zh-CN": "中间调"
+        },
+        "xy": "gammaXY",
+        "luma": "gammaL"
+      },
+      {
+        "label": {
+          "en": "Gain",
+          "zh-CN": "增益"
+        },
+        "xy": "gainXY",
+        "luma": "gainL"
+      },
+      {
+        "label": {
+          "en": "Offset",
+          "zh-CN": "全局偏移"
+        },
+        "xy": "offsetXY",
+        "luma": "offsetL"
+      }
+    ],
+    "lut": {
+      "preset": "lutPreset",
+      "file": "lutFile",
+      "strength": "lutStrength"
+    },
+    "compare": "enabled"
+  },
+  "params": [
+    {
+      "name": "enabled",
+      "type": "Bool",
+      "default": true,
+      "group": "Basic",
+      "label": {
+        "en": "Enable grade",
+        "zh-CN": "启用调色"
+      }
+    },
+    {
+      "name": "strength",
+      "type": "Float",
+      "default": 1,
+      "min": 0,
+      "max": 1,
+      "group": "Basic",
+      "order": 1,
+      "label": {
+        "en": "Strength",
+        "zh-CN": "强度"
+      }
+    },
+    {
+      "name": "mode",
+      "type": "Choice",
+      "default": "Replace",
+      "options": [
+        "Replace",
+        "Stack"
+      ],
+      "optionLabels": {
+        "Replace": {
+          "en": "Replace previous",
+          "zh-CN": "替换前一个"
+        },
+        "Stack": {
+          "en": "Stack on previous",
+          "zh-CN": "叠加在前一个上"
+        }
+      },
+      "group": "Basic",
+      "order": 2,
+      "label": {
+        "en": "Combine",
+        "zh-CN": "组合方式"
+      }
+    },
+    {
+      "name": "duration",
+      "type": "Float",
+      "default": 0,
+      "min": 0,
+      "max": 64,
+      "unit": "beats",
+      "group": "Basic",
+      "order": 3,
+      "label": {
+        "en": "Fade in",
+        "zh-CN": "渐变时长"
+      }
+    },
+    {
+      "name": "ease",
+      "type": "Choice",
+      "default": "OutCubic",
+      "options": [
+        "Linear",
+        "InSine",
+        "OutSine",
+        "InOutSine",
+        "InQuad",
+        "OutQuad",
+        "InOutQuad",
+        "InCubic",
+        "OutCubic",
+        "InOutCubic",
+        "OutExpo"
+      ],
+      "group": "Basic",
+      "order": 4,
+      "label": {
+        "en": "Ease",
+        "zh-CN": "缓动"
+      }
+    },
+    {
+      "name": "exposure",
+      "type": "Float",
+      "default": 0,
+      "min": -5,
+      "max": 5,
+      "group": "Basic",
+      "order": 10,
+      "label": {
+        "en": "Exposure",
+        "zh-CN": "曝光"
+      },
+      "unit": "stops"
+    },
+    {
+      "name": "brightness",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Basic",
+      "order": 11,
+      "label": {
+        "en": "Brightness",
+        "zh-CN": "亮度"
+      }
+    },
+    {
+      "name": "contrast",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Basic",
+      "order": 12,
+      "label": {
+        "en": "Contrast",
+        "zh-CN": "对比度"
+      }
+    },
+    {
+      "name": "saturation",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Basic",
+      "order": 13,
+      "label": {
+        "en": "Saturation",
+        "zh-CN": "饱和度"
+      }
+    },
+    {
+      "name": "vibrance",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Basic",
+      "order": 14,
+      "label": {
+        "en": "Vibrance",
+        "zh-CN": "自然饱和度"
+      }
+    },
+    {
+      "name": "temperature",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Basic",
+      "order": 15,
+      "label": {
+        "en": "Temperature",
+        "zh-CN": "色温"
+      }
+    },
+    {
+      "name": "tint",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Basic",
+      "order": 16,
+      "label": {
+        "en": "Tint",
+        "zh-CN": "色调"
+      }
+    },
+    {
+      "name": "highlights",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Tone",
+      "label": {
+        "en": "Highlights",
+        "zh-CN": "高光"
+      }
+    },
+    {
+      "name": "shadows",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Tone",
+      "order": 1,
+      "label": {
+        "en": "Shadows",
+        "zh-CN": "阴影"
+      }
+    },
+    {
+      "name": "whites",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Tone",
+      "order": 2,
+      "label": {
+        "en": "Whites",
+        "zh-CN": "白色阶"
+      }
+    },
+    {
+      "name": "blacks",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Tone",
+      "order": 3,
+      "label": {
+        "en": "Blacks",
+        "zh-CN": "黑色阶"
+      }
+    },
+    {
+      "name": "gamma",
+      "type": "Float",
+      "default": 1,
+      "min": 0.2,
+      "max": 5,
+      "group": "Tone",
+      "order": 4,
+      "label": {
+        "en": "Gamma",
+        "zh-CN": "伽马"
+      }
+    },
+    {
+      "name": "gainR",
+      "type": "Float",
+      "default": 1,
+      "min": 0,
+      "max": 4,
+      "group": "Channels",
+      "label": {
+        "en": "Red gain",
+        "zh-CN": "红增益"
+      }
+    },
+    {
+      "name": "gainG",
+      "type": "Float",
+      "default": 1,
+      "min": 0,
+      "max": 4,
+      "group": "Channels",
+      "order": 1,
+      "label": {
+        "en": "Green gain",
+        "zh-CN": "绿增益"
+      }
+    },
+    {
+      "name": "gainB",
+      "type": "Float",
+      "default": 1,
+      "min": 0,
+      "max": 4,
+      "group": "Channels",
+      "order": 2,
+      "label": {
+        "en": "Blue gain",
+        "zh-CN": "蓝增益"
+      }
+    },
+    {
+      "name": "offsetR",
+      "type": "Float",
+      "default": 0,
+      "min": -0.5,
+      "max": 0.5,
+      "group": "Channels",
+      "order": 3,
+      "label": {
+        "en": "Red offset",
+        "zh-CN": "红偏移"
+      }
+    },
+    {
+      "name": "offsetG",
+      "type": "Float",
+      "default": 0,
+      "min": -0.5,
+      "max": 0.5,
+      "group": "Channels",
+      "order": 4,
+      "label": {
+        "en": "Green offset",
+        "zh-CN": "绿偏移"
+      }
+    },
+    {
+      "name": "offsetB",
+      "type": "Float",
+      "default": 0,
+      "min": -0.5,
+      "max": 0.5,
+      "group": "Channels",
+      "order": 5,
+      "label": {
+        "en": "Blue offset",
+        "zh-CN": "蓝偏移"
+      }
+    },
+    {
+      "name": "liftXY",
+      "type": "Vector2",
+      "default": [
+        0,
+        0
+      ],
+      "group": "Wheels",
+      "label": {
+        "en": "Lift colour",
+        "zh-CN": "提升色相"
+      }
+    },
+    {
+      "name": "liftL",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Wheels",
+      "order": 1,
+      "label": {
+        "en": "Lift luma",
+        "zh-CN": "提升亮度"
+      }
+    },
+    {
+      "name": "gammaXY",
+      "type": "Vector2",
+      "default": [
+        0,
+        0
+      ],
+      "group": "Wheels",
+      "order": 2,
+      "label": {
+        "en": "Gamma colour",
+        "zh-CN": "中间调色相"
+      }
+    },
+    {
+      "name": "gammaL",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Wheels",
+      "order": 3,
+      "label": {
+        "en": "Gamma luma",
+        "zh-CN": "中间调亮度"
+      }
+    },
+    {
+      "name": "gainXY",
+      "type": "Vector2",
+      "default": [
+        0,
+        0
+      ],
+      "group": "Wheels",
+      "order": 4,
+      "label": {
+        "en": "Gain colour",
+        "zh-CN": "增益色相"
+      }
+    },
+    {
+      "name": "gainL",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Wheels",
+      "order": 5,
+      "label": {
+        "en": "Gain luma",
+        "zh-CN": "增益亮度"
+      }
+    },
+    {
+      "name": "offsetXY",
+      "type": "Vector2",
+      "default": [
+        0,
+        0
+      ],
+      "group": "Wheels",
+      "order": 6,
+      "label": {
+        "en": "Offset colour",
+        "zh-CN": "偏移色相"
+      }
+    },
+    {
+      "name": "offsetL",
+      "type": "Float",
+      "default": 0,
+      "min": -1,
+      "max": 1,
+      "group": "Wheels",
+      "order": 7,
+      "label": {
+        "en": "Offset luma",
+        "zh-CN": "偏移亮度"
+      }
+    },
+    {
+      "name": "curveMaster",
+      "type": "Text",
+      "default": "0,0;1,1",
+      "group": "Curves",
+      "label": {
+        "en": "Master curve",
+        "zh-CN": "主曲线"
+      },
+      "hideIf": [
+        "showRaw",
+        "false"
+      ]
+    },
+    {
+      "name": "curveRed",
+      "type": "Text",
+      "default": "0,0;1,1",
+      "group": "Curves",
+      "order": 1,
+      "label": {
+        "en": "Red curve",
+        "zh-CN": "红曲线"
+      },
+      "hideIf": [
+        "showRaw",
+        "false"
+      ]
+    },
+    {
+      "name": "curveGreen",
+      "type": "Text",
+      "default": "0,0;1,1",
+      "group": "Curves",
+      "order": 2,
+      "label": {
+        "en": "Green curve",
+        "zh-CN": "绿曲线"
+      },
+      "hideIf": [
+        "showRaw",
+        "false"
+      ]
+    },
+    {
+      "name": "curveBlue",
+      "type": "Text",
+      "default": "0,0;1,1",
+      "group": "Curves",
+      "order": 3,
+      "label": {
+        "en": "Blue curve",
+        "zh-CN": "蓝曲线"
+      },
+      "hideIf": [
+        "showRaw",
+        "false"
+      ]
+    },
+    {
+      "name": "hueVsHue",
+      "type": "Text",
+      "default": "0,0.5;1,0.5",
+      "group": "Curves",
+      "order": 4,
+      "label": {
+        "en": "Hue vs Hue",
+        "zh-CN": "色相对色相"
+      },
+      "hideIf": [
+        "showRaw",
+        "false"
+      ]
+    },
+    {
+      "name": "hueVsSat",
+      "type": "Text",
+      "default": "0,0.5;1,0.5",
+      "group": "Curves",
+      "order": 5,
+      "label": {
+        "en": "Hue vs Saturation",
+        "zh-CN": "色相对饱和度"
+      },
+      "hideIf": [
+        "showRaw",
+        "false"
+      ]
+    },
+    {
+      "name": "hueVsLuma",
+      "type": "Text",
+      "default": "0,0.5;1,0.5",
+      "group": "Curves",
+      "order": 6,
+      "label": {
+        "en": "Hue vs Luma",
+        "zh-CN": "色相对亮度"
+      },
+      "hideIf": [
+        "showRaw",
+        "false"
+      ]
+    },
+    {
+      "name": "hslBands",
+      "type": "Text",
+      "default": "0,0,0;0,0,0;0,0,0;0,0,0;0,0,0;0,0,0;0,0,0;0,0,0",
+      "group": "HSL",
+      "label": {
+        "en": "HSL ranges",
+        "zh-CN": "HSL 分区间"
+      },
+      "hideIf": [
+        "showRaw",
+        "false"
+      ]
+    },
+    {
+      "name": "lutPreset",
+      "type": "Choice",
+      "default": "None",
+      "options": [
+        "None",
+        "BundledTealOrange",
+        "BundledBleachBypass",
+        "BundledWarmFilm"
+      ],
+      "optionLabels": {
+        "None": {
+          "en": "None",
+          "zh-CN": "无"
+        },
+        "BundledTealOrange": {
+          "en": "Teal & Orange",
+          "zh-CN": "青橙"
+        },
+        "BundledBleachBypass": {
+          "en": "Bleach Bypass",
+          "zh-CN": "漂白"
+        },
+        "BundledWarmFilm": {
+          "en": "Warm Film",
+          "zh-CN": "暖胶片"
+        }
+      },
+      "group": "LUT",
+      "label": {
+        "en": "Built-in LUT",
+        "zh-CN": "内置 LUT"
+      }
+    },
+    {
+      "name": "lutFile",
+      "type": "String",
+      "default": "",
+      "group": "LUT",
+      "order": 1,
+      "label": {
+        "en": "LUT file (.cube)",
+        "zh-CN": "LUT 文件（.cube）"
+      }
+    },
+    {
+      "name": "lutStrength",
+      "type": "Float",
+      "default": 1,
+      "min": 0,
+      "max": 1,
+      "group": "LUT",
+      "order": 2,
+      "label": {
+        "en": "LUT strength",
+        "zh-CN": "LUT 强度"
+      }
+    },
+    {
+      "name": "showRaw",
+      "type": "Bool",
+      "default": false,
+      "group": "HSL",
+      "order": 1,
+      "label": {
+        "en": "Show raw data fields",
+        "zh-CN": "显示原始数据字段"
+      }
+    }
+  ]
+}

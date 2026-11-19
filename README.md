@@ -101,6 +101,7 @@ Download ready-to-use packages from [`template-events/`](template-events/) and p
 | `CameraWarp` | One-shot effect driven by parameters |
 | `ScreenShake` | Two instances of one event keeping separate state |
 | `Pulse` | Continuous per-frame animation via `update(t)` |
+| `ColorGrading` | Full-screen post-processing: a package-owned shader, curves, colour wheels and LUTs, with a floating editor panel for the controls the native inspector cannot draw |
 | `NoiseField` | Stored as a real decoration: place, drag, resize and retag it with the editor's own tools; MoveDecorations drives it by tag. [Download](https://github.com/ShakeCrane/ADOFAI-Custom-Events/raw/refs/heads/main/template-events/NoiseField.event) |
 | `NoiseFieldState` | Controls matching noise fields by tag, including warning and activation |
 

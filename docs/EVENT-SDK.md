@@ -58,7 +58,7 @@ CameraWarp.event
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| `schemaVersion` | 是 | manifest 格式版本，支持 `1`、`2`、`3` 和 `4`；普通脚本包可继续使用 `1` |
+| `schemaVersion` | 是 | manifest 格式版本，支持 `1`、`2`、`3`、`4` 和 `5`；普通脚本包可继续使用 `1` |
 | `id` | 是 | **身份**，与文件名无关。建议 `作者.事件名` |
 | `version` | 是 | 事件定义版本，语义化版本 |
 | `apiVersion` | 否 | 脚本 API 版本，支持 `1` 和 `2`；全局设置需要 `2` |
@@ -79,6 +79,8 @@ CameraWarp.event
 | `computeGraphs` | 否 | schema 4 的包内计算和合成描述路径；目前是内部能力，接口尚未冻结 |
 | `pixelResources` | 否 | schema 4 的包内 PNG 路径；目前服务于内部后台运算，接口尚未冻结 |
 | `shaderAssets` | 否 | schema 4 的 bundle 内着色器角色；目前是内部渲染能力 |
+| `screenEffect` | 否 | schema 5 的全屏后处理声明；见「全屏屏幕效果」 |
+| `editorPanel` | 否 | schema 5 的编辑器面板声明；曲线和色轮无法用原生控件表达时使用 |
 | `imageAssets` | 否 | schema 4 的包内图片及采样配置；目前是内部渲染能力 |
 
 `shaderBundle` 必须是包内相对路径；打包器会检查文件存在。旧版 Core 不认识 schema 2，使用它的包需要更新 Core。声明该字段不会赋予脚本额外的文件、材质或 shader 访问权限。
@@ -338,8 +340,73 @@ function create(ctx, params) {
 
 ---
 
-### 按 tag 控制别的实例
+### 全屏屏幕效果（schema 5）
 
+`fx.field` 画的是世界里的四边形；要对**整个画面**做后处理（调色、变形、雾化……），用屏幕效果。
+它挂在游戏实际出画面的那台摄像机上，覆盖轨道、装饰、背景、粒子和视频；UI 是另一个相机之后绘制的叠加层，**不会被处理**，这是有意的边界。
+
+```json
+{
+  "schemaVersion": 5,
+  "shaderBundle": "assets/look.bundle",
+  "shaderAssets": { "look": "MyScreenShader" },
+  "screenEffect": { "shader": "look", "pass": 0 }
+}
+```
+
+```js
+fx.screen({
+  enabled: true,
+  weight: 1,              // 0..1，内核用它做淡入淡出；返回的材质里是 _PEVWeight
+  mode: 'replace',        // 'replace' 覆盖旧调色层，'stack' 叠加
+  order: 0,               // 同 order 时按创建顺序
+  fade: 0.5,              // 秒；替换时旧层用这个时长淡出
+  floats:   { "_Exposure": 0.4 },
+  vectors:  { "_Tint": [1, 0.5, 0.2, 0] },
+  colors:   { "_Wash": "ff8800" },
+  vectorArrays: { "_Bands": [[0,0,0,1],[0,0,0,1]] },
+  curves:   { "_CurveTex": { "master": [0,0,1,1], "red": [0,0,1,1] } },
+  lut:      { "enabled": true, "path": "assets/luts/look.cube" }
+});
+fx.screenClear();
+```
+
+约定：
+
+| 名称 | 说明 |
+|---|---|
+| 材质名 | 一律以 `_` 开头，只允许字母、数字、下划线，最长 32 字符 |
+| 保留名 | `_MainTex`、`_LutTex`、`_LutTex2D`、`_LutSize`、`_LutMode`、`_LutEnabled`、`_LutDomainMin`、`_LutDomainMax`、`_PEVLinearProject`、`_PEVWeight` 由内核写入 |
+| `curves` | 每个 key 是一个角色名，值里的四组控制点被烘焙成 256×1 的 RGBA 查找表：R/G/B 是分通道曲线，A 是主曲线。控制点是 `[x0,y0,x1,y1,…]`，取值 0..1，最多 16 个点，用单调三次插值 |
+| `lut` | `.cube` 文件，先找包内、再找谱面旁边；支持 `LUT_3D_SIZE`（2–64）和 `LUT_1D_SIZE`（2–4096）。着色器里用 `_LutTex`（3D）或 `_LutTex2D`（1D）采样，`_LutSize` 是格数，`_LutMode` 为 0/1 |
+| `fade` / `weight` | `weight` 由脚本按自己的时钟算好；旧层被替换时由内核用 `fade` 平滑淡出 |
+| `mode` | `replace` 只显示最新的调色层，`stack` 让后加的层叠加在前面的结果上 |
+
+屏幕效果**只做搬运**：内核不解释 `_Exposure` 或曲线的含义，着色器和参数都归事件包。
+所以一个包换了 shader 就可以是另一种画面效果，不需要改 Core。
+
+编辑器里的实时预览不需要额外实现：编辑器空闲时会用**同一个脚本、同一套参数、同一个材质**跑一遍，
+所以「调参数时看到的画面」和「播放时看到的画面」出自同一条代码路径。
+
+`editorPanel` 声明一个浮动面板，用来放原生属性面板表达不了的控件（曲线、色轮、LUT 选择器）：
+
+```json
+"editorPanel": {
+  "title": { "en": "Color Grading", "zh-CN": "调色" },
+  "curves": { "master": "curveMaster", "red": "curveRed" },
+  "hueCurves": { "hue": "hueVsHue", "saturation": "hueVsSat", "luma": "hueVsLuma" },
+  "wheels": [ { "label": { "en": "Lift" }, "xy": "liftXY", "luma": "liftL" } ],
+  "lut": { "preset": "lutPreset", "file": "lutFile", "strength": "lutStrength" },
+  "compare": "enabled"
+}
+```
+
+面板写回的是**普通参数**，所以谱面保存、复制、分享和未安装模组时的打开行为都不受影响。
+曲线参数用 `"0,0;0.25,0.3;1,1"` 这样的文本保存，可以直接读懂。
+
+---
+
+### 按 tag 控制别的实例
 `fx.field` 创建的对象可以带 `tag`，另一个事件用 `fx.fieldMove` 按 tag 改它。
 这在「先摆好区域，再按节奏改它」的分层编排里是必需的——移动事件不该知道区域是怎么创建的。
 

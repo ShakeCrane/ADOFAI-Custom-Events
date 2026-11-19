@@ -50,6 +50,12 @@ var fx = {
   },
   tagValue: function (o) {
     return JSON.parse(__hostFx('tagvalue', JSON.stringify(o || {})));
+  },
+  screen: function (o) {
+    return JSON.parse(__hostFx('screen', JSON.stringify({ __payload: JSON.stringify(o || {}) })));
+  },
+  screenClear: function () {
+    return JSON.parse(__hostFx('screenclear', JSON.stringify({})));
   }
 };
 var __pevReady = true;

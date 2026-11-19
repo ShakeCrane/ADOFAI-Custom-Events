@@ -63,6 +63,7 @@ namespace PEV.Scripting
         public static void DestroyAll()
         {
             Values.Clear();
+            try { ScreenEffectPipeline.ClearAll(); } catch { }
             try { ContinuousEffects.DestroyAll(); } catch { }
             // Before the canvas: texture release walks our own bookkeeping, and doing it
             // first keeps the ordering explicit if a texture ever outlives its object.
@@ -78,6 +79,7 @@ namespace PEV.Scripting
         public static void DestroyScope(string scope)
         {
             Values.Remove(scope);
+            try { ScreenEffectPipeline.Clear(scope); } catch { }
             ContinuousEffects.DestroyScope(scope);
             NoiseFieldRenderer.DestroyScope(scope);
             if (!string.IsNullOrEmpty(scope))
@@ -108,6 +110,17 @@ namespace PEV.Scripting
                 case "field": return NoiseFieldRenderer.Set(Str(args, "key"), args, out error);
                 case "fielddestroy": return NoiseFieldRenderer.Destroy(Str(args, "key"), args, out error);
                 case "fieldmove": return FieldOverride(args, effectName, out error);
+
+                // A package-declared full-screen post-processing stage. Core owns the render
+                // hook and uniform transport; the shader and every value in it belong to the
+                // package, so this surface stays free of any particular effect.
+                case "screen": return ScreenEffect(Str(args, "__instance"), args, out error);
+                case "screenclear":
+                {
+                    ScreenEffectPipeline.Clear(Str(args, "__instance"));
+                    error = null;
+                    return true;
+                }
                 default:
                     error = $"unsupported effect '{effectName}'";
                     return false;
@@ -118,6 +131,25 @@ namespace PEV.Scripting
         {
             string key = Str(args, "key");
             return string.IsNullOrEmpty(key) ? key : ScopedKey(Str(args, "__instance"), key);
+        }
+
+        /// <summary>
+        /// Applies one full-screen stage. The manifest is stamped by the script host, so a
+        /// package can only ever drive a shader it declared itself.
+        /// </summary>
+        private static bool ScreenEffect(string scope, Dictionary<string, object> args, out string error)
+        {
+            try
+            {
+                args.TryGetValue("__manifest", out var owner);
+                args.TryGetValue("__payload", out var payload);
+                var flattened = new Dictionary<string, object>(StringComparer.Ordinal)
+                {
+                    { "__payload", payload }
+                };
+                return ScreenEffectPipeline.Set(scope, owner as PEV.Model.EventManifest, flattened, out error);
+            }
+            catch (System.Exception e) { error = "screen: " + e.Message; return false; }
         }
 
         private static bool SetTaggedValue(Dictionary<string, object> args, out string error)

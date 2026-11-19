@@ -29,6 +29,28 @@ namespace PEV.Loading
         [ThreadStatic] private static LoadContext _current;
         [ThreadStatic] internal static bool Exporting;
 
+        /// <summary>
+        /// Directory the chart was opened from, or null when it has no usable path.
+        ///
+        /// Screen-space effects resolve side files (a LUT, for instance) the same way the
+        /// game resolves audio: next to the chart. Without this the only portable option
+        /// would be shipping every asset inside the event package.
+        /// </summary>
+        internal static string CurrentChartDirectory
+        {
+            get
+            {
+                try
+                {
+                    var context = _current;
+                    if (context == null || string.IsNullOrEmpty(context.Path) || !File.Exists(context.Path))
+                        return null;
+                    return Path.GetDirectoryName(Path.GetFullPath(context.Path));
+                }
+                catch { return null; }
+            }
+        }
+
         internal static LoadContext Begin(LevelData level, string path)
         {
             var context = new LoadContext { Level = level, Path = path, PreviousContext = _current,
