@@ -7,7 +7,11 @@
 param(
     [string]$Chart = "$PSScriptRoot\..\_probe\chart\level.adofai",
     [string]$Media = "$PSScriptRoot\..\_probe\media",
-    [int]$TimeoutSeconds = 240
+    [int]$TimeoutSeconds = 240,
+    # "editor" drives the editor acceptance suite; "play" loads the chart through scnGame and
+    # checks the video renders in real gameplay. They are separate runs because each takes
+    # over the scene at startup.
+    [ValidateSet('editor', 'play')][string]$Mode = 'editor'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,12 +27,13 @@ if (Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $gameEx
     throw 'Game is already running'
 }
 
-$resultPath = Join-Path $modDir 'video-results.txt'
-$triggerPath = Join-Path $modDir 'video-test.txt'
+if ($Mode -eq 'play') { $resultName = 'video-play-results.txt'; $triggerName = 'video-play-test.txt' } else { $resultName = 'video-results.txt'; $triggerName = 'video-test.txt' }
+$resultPath = Join-Path $modDir $resultName
+$triggerPath = Join-Path $modDir $triggerName
 
 $parked = @{}
 Get-ChildItem -LiteralPath $modDir -Filter '*-test.txt' -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -ne 'video-test.txt' } |
+    Where-Object { $_.Name -ne $triggerName } |
     ForEach-Object { $parked[$_.FullName] = [IO.File]::ReadAllBytes($_.FullName); Remove-Item -LiteralPath $_.FullName -Force }
 
 $savedTrigger = Test-Path -LiteralPath $triggerPath

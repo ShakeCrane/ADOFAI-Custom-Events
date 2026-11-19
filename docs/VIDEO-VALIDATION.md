@@ -60,6 +60,13 @@
 用 PN1 噪域 harness 做了回归：结果与 0.6.2 基线逐行一致（37 项通过，另有 3 项在基线上
 同样失败，属该夹具的既有问题）。两个包的参数名没有重名。
 
+## 真实游戏
+
+编辑器播放模式之外，另跑一次真机游玩：把谱面交给 `scnGame`，让它走自己的
+`LoadAndPlayLevel` 进关卡（`tools/run_video_test.ps1 -Mode play`）。这条路径没有编辑器、
+运行时所有权走另一个分支，是玩家真正会经历的。实测视频在关卡里解码出画面
+（`PLAY-RENDERS`），媒体时间随歌曲前进 1.03s → 1.20s（`PLAY-ADVANCES`）。
+
 ## 原版兼容
 
 谱面把视频存成原生 `AddDecoration` 行：所有键都是原生属性，事件体在 `maskingTarget` 里，标记图指向一个故意不存在的文件。`test_video_vanilla.ps1` 检查这两点，并在移除 `Mods/PEV.Core` 后确认游戏仍能正常启动、日志中没有 Core 加载记录。
