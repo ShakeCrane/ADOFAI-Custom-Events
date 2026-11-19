@@ -258,7 +258,7 @@ namespace PEV.Storage
                     locked = source.locked
                 };
 
-                row["decorationImage"] = DecorationCarrier.ImageMarker;
+                row["decorationImage"] = DecorationCarrier.MarkerFor(manifest);
                 info.propertiesInfo.TryGetValue("relativeTo", out var relativeToInfo);
                 row["relativeTo"] = ParamCoercion.Coerce(relativeToInfo, source.floor >= 0 ? "Tile" : "Camera");
                 row["depth"] = 0;

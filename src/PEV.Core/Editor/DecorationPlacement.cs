@@ -162,7 +162,7 @@ namespace PEV.Editor
             // The marker is what every other subsystem keys on: Restore recognises the row by
             // it, the injected parameter group shows itself by matching it, and the effect
             // renderer only mirrors rows that carry it.
-            row["decorationImage"] = DecorationCarrier.ImageMarker;
+            row["decorationImage"] = DecorationCarrier.MarkerFor(manifest);
             ApplyDecorationDefaults(row, manifest);
 
             row["tag"] = manifest.DecorationDefaultTag ?? DecorationCarrier.DefaultTag;

@@ -78,7 +78,7 @@ $chart = [ordered]@{
         [ordered]@{
             floor           = 1
             eventType       = 'AddDecoration'
-            decorationImage = 'pev/field'
+            decorationImage = 'pev/video'
             maskingTarget   = "pev1:$payload"
             position        = @(0.0, 0.0)
             relativeTo      = 'Tile'

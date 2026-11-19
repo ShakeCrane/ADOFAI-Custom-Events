@@ -55,8 +55,9 @@ for row in rows:
     payload = row.get('maskingTarget') or ''
     if not payload.startswith('pev1:'):
         problems.append('row carries no pev1 payload')
-    if row.get('decorationImage') != 'pev/field':
-        problems.append('unexpected marker %r' % row.get('decorationImage'))
+    marker = row.get('decorationImage') or ''
+    if not marker.startswith('pev/'):
+        problems.append('marker %r is not a carrier path' % marker)
 if problems:
     print('CHART-SHAPE fail: ' + '; '.join(problems)); sys.exit(1)
 print('CHART-SHAPE ok (%d row(s), native keys only, pev1 payload present)' % len(rows))

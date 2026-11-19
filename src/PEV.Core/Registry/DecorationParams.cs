@@ -139,14 +139,19 @@ namespace PEV.Registry
                     try
                     {
                         var dict = spec.ToPropertyDict();
-                        // Only for rows that carry our marker. Without this every native
-                        // decoration in the editor would grow an empty set of rows.
+                        // Only for rows that carry this package's marker. Without this every
+                        // native decoration in the editor would grow an empty set of rows, and
+                        // with a single shared marker every installed package's rows would
+                        // appear on every other package's decorations.
                         //
                         // The manifest's own conditions are kept and prepended, not replaced:
                         // feather exists only for the circle shape, and overwriting showIf with
                         // the marker alone would make it a permanent row on every field.
                         // CheckIfShown ANDs the pairs, so both conditions must hold.
-                        var conditions = new List<string> { "decorationImage", DecorationCarrier.ImageMarker };
+                        var conditions = new List<string>
+                        {
+                            "decorationImage", DecorationCarrier.MarkerFor(m)
+                        };
                         if (spec.ShowIf != null && spec.ShowIf.Count > 0)
                         {
                             conditions.AddRange(spec.ShowIf);

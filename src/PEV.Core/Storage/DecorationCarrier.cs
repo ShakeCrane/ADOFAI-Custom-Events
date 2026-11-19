@@ -25,6 +25,28 @@ namespace PEV.Storage
         /// <summary>Marker image path. Not a real file, by design.</summary>
         public const string ImageMarker = "pev/field";
 
+        /// <summary>
+        /// Every carrier marker starts with this. The suffix identifies which package owns the
+        /// row, because more than one decoration-backed package can be installed at once.
+        /// </summary>
+        public const string MarkerPrefix = "pev/";
+
+        /// <summary>
+        /// The marker a package's rows carry.
+        ///
+        /// Each decoration-backed package needs its own, since the properties panel decides
+        /// which rows to show by comparing the selected decoration's marker against a literal.
+        /// With one shared marker every package's parameters appear on every package's rows.
+        /// The default is the original marker, so charts and packages written before the
+        /// suffix existed keep working unchanged.
+        /// </summary>
+        public static string MarkerFor(PEV.Model.EventManifest manifest)
+        {
+            if (manifest == null) return ImageMarker;
+            if (!string.IsNullOrEmpty(manifest.DecorationMarker)) return manifest.DecorationMarker;
+            return ImageMarker;
+        }
+
         /// <summary>Default for older packages without an explicit tag declaration.</summary>
         public const string DefaultTag = "pev";
 
@@ -89,7 +111,10 @@ namespace PEV.Storage
 
         public static bool IsOurs(string decorationImage)
         {
-            return string.Equals(decorationImage, ImageMarker, StringComparison.OrdinalIgnoreCase);
+            // Any carrier marker counts, not one fixed string: several packages can be
+            // installed, each with its own suffix, and restore has to recognise them all.
+            return !string.IsNullOrEmpty(decorationImage) &&
+                   decorationImage.StartsWith(MarkerPrefix, StringComparison.OrdinalIgnoreCase);
         }
     }
 }

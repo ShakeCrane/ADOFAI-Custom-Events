@@ -20,6 +20,7 @@
   "decoration": true,
   "hostPrimitive": "fx.video",
   "decorationListName": "Video",
+  "decorationMarker": "pev/video",
   "decorationDefaults": {
     "color": "ffffff"
   },

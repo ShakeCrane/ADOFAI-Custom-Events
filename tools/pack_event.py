@@ -237,6 +237,16 @@ def validate(root, manifest, _included=False):
                 not isinstance(list_name, str) or not list_name.strip() or len(list_name) > 128):
             problems.append("invalid decorationListName for schema 4 decoration event")
 
+    if "decorationMarker" in manifest:
+        # A carrier marker is a deliberately nonexistent path. It has to stay inside the
+        # chart directory and start with the shared prefix, because that is how Core tells a
+        # carrier row apart from a real image decoration.
+        marker = manifest["decorationMarker"]
+        if (manifest.get("schemaVersion") != 4 or manifest.get("decoration") is not True or
+                not isinstance(marker, str) or not re.fullmatch(r"pev/[a-z0-9_-]+(/[a-z0-9_-]+)*", marker or "")):
+            problems.append("invalid decorationMarker for schema 4 decoration event "
+                            "(expected pev/<lower-case path>)")
+
     if "decorationMigration" in manifest:
         migrations = manifest["decorationMigration"]
         if manifest.get("schemaVersion") not in (3, 4) or manifest.get("decoration") is not True or not isinstance(migrations, list) or len(migrations) > 16:

@@ -190,6 +190,16 @@ namespace PEV.Model
         public string DecorationDefaultColor;
         public string DecorationDefaultTag;
         public string DecorationListName;
+
+        /// <summary>
+        /// The carrier marker this package's decoration rows use.
+        ///
+        /// Defaults to the shared marker so packages written before this field existed keep
+        /// their rows. Two decoration-backed packages installed together need different
+        /// markers, otherwise the properties panel shows each one's parameters on the other's
+        /// rows — the panel decides by comparing the selected row's marker to a literal.
+        /// </summary>
+        public string DecorationMarker;
         public readonly HashSet<string> HiddenDecorationProperties = new HashSet<string>(StringComparer.Ordinal);
         public string HostPrimitive;
         public readonly Dictionary<string, ImageAssetSpec> ImageAssets = new Dictionary<string, ImageAssetSpec>(StringComparer.Ordinal);
@@ -479,6 +489,15 @@ namespace PEV.Model
                 m.DecorationListName = listName;
             }
 
+            if (root["decorationMarker"] != null)
+            {
+                string marker = root["decorationMarker"].Type == JTokenType.String
+                    ? root.Value<string>("decorationMarker") : null;
+                if (m.SchemaVersion < 4 || !m.DecorationBacked || !IsValidMarker(marker))
+                { error = "invalid decorationMarker for schema 4 decoration event"; return null; }
+                m.DecorationMarker = marker;
+            }
+
             if (root["hiddenDecorationProperties"] != null)
             {
                 if (m.SchemaVersion < 4 || !m.DecorationBacked || !(root["hiddenDecorationProperties"] is JArray properties) || properties.Count > 32 ||
@@ -620,8 +639,27 @@ namespace PEV.Model
         /// declaration order explicit. Keys are matched case-sensitively, because they are enum
         /// member names and the dropdown looks them up by exactly that spelling.
         /// </summary>
-        private static void ReadOptionLabels(JObject p, ParamSpec spec)
+        /// <summary>
+        /// A carrier marker is a path, but a deliberately nonexistent one: it only has to be
+        /// distinct per package and to look like an image path so vanilla treats it as a
+        /// missing asset instead of failing to parse it. It also must not escape the chart
+        /// directory, since that is where it would be resolved from.
+        /// </summary>
+        private static bool IsValidMarker(string marker)
         {
+            if (string.IsNullOrEmpty(marker) || marker.Length > 64) return false;
+            if (!marker.StartsWith("pev/", StringComparison.Ordinal)) return false;
+            if (marker.Contains("..") || marker.Contains("\\") || marker.Contains(":")) return false;
+            for (int i = 4; i < marker.Length; i++)
+            {
+                char c = marker[i];
+                bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '/';
+                if (!ok) return false;
+            }
+            return marker.Length > 4;
+        }
+
+        private static void ReadOptionLabels(JObject p, ParamSpec spec)        {
             var token = p["optionLabels"] ?? p["option_labels"];
             if (token == null) return;
 

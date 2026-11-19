@@ -37,29 +37,23 @@ namespace PEV.Editor
                         if (known.Add(path)) __result.Add(path);
                     }
                 }
-                // The field carrier is a virtual marker, not a missing image asset.
-                string marker = Path.GetFullPath(Path.Combine(directory, DecorationCarrier.ImageMarker));
-                if (!File.Exists(marker) && MarkerUsedOnlyByEvents(__result))
-                    __result.RemoveAll(path => string.Equals(Path.GetFullPath(path), marker, StringComparison.OrdinalIgnoreCase));
+                // A carrier marker is a virtual path, not a missing image asset. There can be
+                // one per installed decoration package, so every carrier path is dropped
+                // rather than only the original single marker. Path.GetRelativePath is .NET
+                // Core only, so the prefix is stripped by hand.
+                string baseRoot = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar) +
+                              Path.DirectorySeparatorChar;
+                __result.RemoveAll(path =>
+                {
+                    string full;
+                    try { full = Path.GetFullPath(path); } catch { return false; }
+                    if (!full.StartsWith(baseRoot, StringComparison.OrdinalIgnoreCase)) return false;
+                    if (File.Exists(full)) return false;
+                    string relative = full.Substring(baseRoot.Length).Replace('\\', '/');
+                    return DecorationCarrier.IsOurs(relative);
+                });
             }
             catch (Exception e) { Plugin.Log("chart event export discovery failed: " + e.Message); }
-        }
-        private static bool MarkerUsedOnlyByEvents(IEnumerable<string> files)
-        {
-            bool found = false;
-            foreach (string path in files.Where(p => p.EndsWith(".adofai", StringComparison.OrdinalIgnoreCase)))
-            {
-                if (!File.Exists(path)) continue;
-                var root = JObject.Parse(File.ReadAllText(path));
-                if (!(root["decorations"] is JArray rows)) continue;
-                foreach (var row in rows.OfType<JObject>())
-                {
-                    if (!DecorationCarrier.IsOurs(row.Value<string>("decorationImage"))) continue;
-                    found = true;
-                    if (!DecorationCarrier.TryUnpack(row.Value<string>("maskingTarget"), out _)) return false;
-                }
-            }
-            return found;
         }
         private static Exception Finalizer(Exception __exception, bool __state)
         { ChartPackages.Exporting = __state; return __exception; }
