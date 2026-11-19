@@ -15,10 +15,9 @@ vanilla editor comments or native decoration rows.
   category, name and icon. You place, copy, delete and edit them the same way, using the
   game's own property controls.
 - **In game** — each placed event runs its package's JavaScript, driven by the song clock.
-  Instances are fully isolated: two copies of one event never share state.
-- **Without the mod** — the level opens normally. If a package is missing, the event shows
-  as a read-only *Missing Event* placeholder and its data is preserved byte-for-byte, so
-  installing the package later restores it.
+  Each instance has its own script state.
+- **Without the mod** — the level opens in the vanilla game. With Core enabled, a missing
+  package leaves its event data in the chart so that reinstalling the package can restore it.
 
 ---
 
@@ -37,58 +36,16 @@ the game's chart export includes declared packages.
 
 ## Write an event
 
-An `.event` is a ZIP containing a manifest and a script:
-
-```
-MyEvent.event
-├── event.json
-├── main.js
-└── icon.png
-```
-
-`event.json`:
-
-```json
-{
-  "schemaVersion": 1,
-  "id": "yourname.my-event",
-  "version": "1.0.0",
-  "entry": "main.js",
-  "icon": "icon.png",
-  "category": "VisualFx",
-  "name": { "en": "My Event" },
-  "params": [
-    { "name": "strength", "type": "Float", "default": 0.8, "min": 0, "max": 2 }
-  ]
-}
-```
-
-`main.js`:
-
-```js
-function create(ctx, params) {
-  var fired = false;
-  return {
-    update: function (t) {
-      if (t < 0 || fired) return;
-      fired = true;
-      fx.flash({ color: "ffffff", duration: 0.2 });
-    },
-    dispose: function () { fired = false; }
-  };
-}
-```
-
-Validate and pack:
+Start with the **[.event authoring guide](docs/EVENT-SDK.md)**. It includes a working starter
+package, the manifest and JavaScript reference, and an editor and playback test checklist.
+Run these commands from the repository root to build the `Pulse` example:
 
 ```bash
-python tools/pack_event.py --check MyEvent.event
-python tools/pack_event.py MyEvent.event
+python tools/pack_event.py --check src/Events/Pulse.event
+python tools/pack_event.py src/Events/Pulse.event -o Pulse.event
 ```
 
-The full reference — parameter types, the effect API, sandbox limits and a
-troubleshooting table — is in **[docs/EVENT-SDK.md](docs/EVENT-SDK.md)**. It is written to
-be usable by both people and AI agents.
+Place the resulting `Pulse.event` next to a saved `.adofai` chart and reopen it with Core enabled.
 
 ---
 
@@ -98,8 +55,8 @@ Download ready-to-use packages from [`template-events/`](template-events/) and p
 
 | Event | Demonstrates |
 |---|---|
-| `CameraWarp` | One-shot effect driven by parameters |
-| `ScreenShake` | Two instances of one event keeping separate state |
+| `CameraWarp` | One-shot flash and shake driven by parameters |
+| `ScreenShake` | One-shot camera shake with a per-instance trigger |
 | `Pulse` | Continuous per-frame animation via `update(t)` |
 | `NoiseField` | Stored as a real decoration: place, drag, resize and retag it with the editor's own tools; MoveDecorations drives it by tag. [Download](https://github.com/ShakeCrane/ADOFAI-Custom-Events/raw/refs/heads/main/template-events/NoiseField.event) |
 | `NoiseFieldState` | Controls matching noise fields by tag, including warning and activation |

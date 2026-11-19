@@ -1,107 +1,149 @@
-# Programmable Events — 事件开发指南
+# ADOFAI `.event` 开发指南
 
-> 本文包含当前开发版 Core 的 schema 4 / API 2；旧版 Core 不支持这些新增字段。校准游戏版本 r150（ADOFAI 3.4+）。
-> 读者：事件作者，以及代为编写事件的 AI Agent。
+`.event` 是可独立分发的 ZIP 包。它定义编辑器里的事件入口、可编辑参数和执行效果的 JavaScript。谱面记录事件实例，PEV.Core 负责加载包、接入原生编辑器并按歌曲时间执行。开发、校验和打包普通事件只需要本仓库与 Python 3。在编辑器和游戏内验收时需要 ADOFAI、Unity Mod Manager 和启用的 PEV.Core，见[安装说明](INSTALL-zh-CN.md)。
 
----
+本文以仓库当前的 schema 1–4、API 1–2 为准。项目的实机校准环境是 ADOFAI r150、Unity 6000.3.25f1、UMM 0.32.5.0。分发时注明实测的 Core 与游戏版本，尤其是使用内部渲染接口的事件。
 
-## 1. 一个事件是什么
+## 1. 从构想选到实现
 
-一个 `.event` 文件是一个 ZIP 包，里面有一个 `event.json` 描述它，一个 `main.js` 实现它。
+| 要做什么 | 从哪里开始 |
+|---|---|
+| 到指定格时闪屏或震屏 | 普通事件，在 `update(t)` 中触发一次。见本页最小示例和 [ScreenShake](../src/Events/ScreenShake.event/main.js) |
+| 随时间移动、淡入淡出或循环 | 普通事件，用 `fx.create/set/destroy` 管理图形，以 `t` 求出当前状态。见本页连续动画示例和 [Pulse](../src/Events/Pulse.event/main.js) |
+| 可用原生工具拖拽、变换、赋标签的区域 | 采用装饰载体。跟随装饰的渲染需要对应宿主原语。见[装饰与渲染](#6-装饰多入口和高级渲染) |
+| 同一包提供多个编辑器按钮 | 用 schema 4 的 `includedEvents`。每个入口有自己的 ID、参数和脚本 |
+| 需要宿主尚未开放的游戏数据或操作 | 先查 [GameBridge 的调用分发](../src/PEV.Core/Scripting/EventContext.cs)。需要新能力时，为 Core 增加可复用原语，再由包组合它，见第 6 节 |
 
-```
-CameraWarp.event
-├── event.json      ← 元数据与参数声明
-├── main.js         ← 执行逻辑
-├── icon.png        ← 编辑器里的图标（强烈建议提供）
-└── assets/         ← 任意附带资源
-```
+动手前确定事件何时开始、何时结束、输入的默认值和单位，以及暂停、重开、从中途开始时应看到什么。把每个参数追到一次计算或宿主调用。分类只决定按钮位置，例如 `Gameplay` 分类本身不会赋予改动判定的权限。
 
-将打包好的 `.event` 文件放在使用它的 `.adofai` 文件旁，再打开谱面。只扫描谱面所在目录中的文件，不读取模组的全局事件目录，也不把源码目录当作事件包。
+## 2. 十分钟做出第一个包
 
-谱面保存时会在根对象的 `pevEvents` 数组中记录依赖，例如 `{"id":"yourname.my-event","version":"1.0.0","file":"MyEvent.event"}`。`file` 是谱面目录中的文件名，不能是路径；已声明文件名时必须与同目录内文件匹配。没有声明的旧谱面仍可从事件数据恢复并在保存时补记。缺失依赖时左上角提示，原始事件数据和声明保留；原生谱面导出会带上声明的事件包。没有放置实例的显式声明也会保留。
+在仓库根目录新建 `BeatFlash/`，将以下两个文件用 UTF-8 保存进去。示例省略图标，Core 会借用游戏内置图标。
 
-没有安装对应 `.event` 的谱面仍能打开，事件会显示为 **Missing Event** 占位。占位事件：
-
-- 在轨道上可见，因此不会让人误以为事件丢了
-- 参数面板显示缺失的 `id`、写入版本与实例 uid，且不可编辑
-- **不执行**，也不会被改写——保存时原始数据原样写回
-
-装上对应的事件包后重新打开谱面，事件自动恢复正常，参数完整保留。
-
----
-
-## 2. `event.json`
+**`BeatFlash/event.json`**
 
 ```json
 {
   "schemaVersion": 1,
-  "id": "rhytropy.camera-warp",
-  "version": "1.0.0",
   "apiVersion": 1,
+  "id": "example.beat-flash",
+  "version": "1.0.0",
   "entry": "main.js",
-  "icon": "icon.png",
   "category": "VisualFx",
-  "name": { "en": "Camera Warp", "zh-CN": "镜头扭曲" },
-  "description": { "en": "Warps the camera." },
+  "name": { "en": "Beat Flash", "zh-CN": "节拍闪光" },
   "params": [
-    { "name": "strength", "type": "Float", "default": 0.8, "min": 0, "max": 2 },
-    { "name": "duration", "type": "Float", "default": 2, "min": 0, "max": 16, "unit": "beats" },
-    { "name": "ease", "type": "Enum:Ease", "default": "OutQuad" },
-    { "name": "color", "type": "Color", "default": "ffffff" },
-    { "name": "target", "type": "Tile", "default": [0, "ThisTile"] }
+    { "name": "color", "type": "Color", "default": "66ddff",
+      "label": { "en": "Color", "zh-CN": "颜色" } },
+    { "name": "duration", "type": "Float", "default": 0.5,
+      "min": 0.1, "max": 4, "unit": "beats",
+      "label": { "en": "Duration", "zh-CN": "持续拍数" } }
   ]
 }
 ```
 
-### 字段
+**`BeatFlash/main.js`**
 
-| 字段 | 必填 | 说明 |
+```js
+function create(ctx, params) {
+  var fired = false;
+
+  return {
+    update: function (t) {
+      if (t < 0 || fired) return;
+      fired = true;
+
+      var beats = Math.max(0.1, Math.min(4, Number(params.duration) || 0.5));
+      var seconds = beats * ctx.secondsPerBeat;
+      if (t >= seconds) return;
+
+      var result = fx.flash({
+        color: params.color,
+        duration: seconds - t,
+        alpha: 0.6 * (1 - t / seconds)
+      });
+      if (!result.ok) throw new Error(result.error || "fx.flash failed");
+    }
+  };
+}
+```
+
+在仓库根目录依次校验源码、打包并列出归档内容。
+
+```bash
+python tools/pack_event.py --check BeatFlash
+python tools/pack_event.py BeatFlash -o BeatFlash.event
+python -m zipfile -l BeatFlash.event
+```
+
+`--check` 输入源码目录。打包器默认在当前目录输出 `<id>.event`，`-o` 可以指定输出路径和文件名。归档顶层应直接出现 `event.json` 和 `main.js`。将产出的 **文件** `BeatFlash.event` 放在一张已保存的 `.adofai` 旁，重新打开谱面，在 VisualFx 类别选择“节拍闪光”，放置、改色并试玩。120 BPM 下，默认半拍对应 0.25 秒。若从事件结束之后开始播放，这个示例会跳过闪光。
+
+加图标时，把可解码的 PNG 放入源码目录，并在 manifest 加入 `"icon": "icon.png"`。仓库样例目录名带 `.event` 后缀，也照样作为源码目录传给打包器，例如 `python tools/pack_event.py src/Events/Pulse.event -o Pulse.event`。
+
+## 3. Manifest 与参数
+
+### 版本、路径和名称
+
+| 字段 | 值和用途 |
+|---|---|
+| `schemaVersion` | 必填整数。普通脚本从 `1` 开始。Schema 2 起可声明内部原语的 `shaderBundle`。Schema 3 起支持 `Choice`、全局设置、装饰默认值和迁移。Schema 4 加入多入口、装饰面板定制与当前内部渲染资源声明 |
+| `apiVersion` | 可选整数，默认为 `1`。读取 `ctx.settings` 用 `2` |
+| `id` | 必填，大小写敏感。建议用 `作者.事件名` 形式，例如 `team-rhytropy.beat-flash`，并保持稳定 |
+| `version` | 必填，使用三段数字，例如 `1.2.0`。Core 读取旧实例时用主版本号判断是否过新，完整的兼容性由作者验收 |
+| `entry` | 必填，入口脚本在包根目录下的相对路径。例 `scripts/main.js` |
+| `icon` | 可选，图标在包内的相对路径。缺失或解码失败会使用内置图标 |
+| `name`、`description` | 字符串或语言对象，例如 `{ "en": "Beat Flash", "zh-CN": "节拍闪光" }`。常用语言键还有 `zh-TW`、`ja`、`ko` |
+| `category` | 默认为 `VisualFx`。打包器允许 `Gameplay`、`TrackFx`、`DecorationFx`、`VisualFx`、`FxModifiers`、`Conveniences`、`Jank`、`Favorites` |
+| `params` | 可选，参数对象数组。名称在一个 manifest 内唯一，`__pevUid` 由 Core 保留 |
+
+包内路径统一用 `/`，以包根目录为基准，使用与文件一致的拼写，避开绝对路径、盘符和 `..`。源码目录只放要分发的文件。打包器会递归收集其中的文件，跳过以 `.event` 结尾的文件及输出文件自身。包里可以附素材和许可，但素材须有对应的宿主消费者才会在游戏里生效。`main.js` 作为一段脚本执行。有多份 JS 源码时，在打包前合并或构建成一个入口文件。
+
+### 控件和脚本形状
+
+每项写 `name`、`type` 和匹配类型的 `default`。下表给出常用类型的默认值与脚本形状。
+
+| `type` | JSON 默认值举例 | `params[name]` 的形状 |
 |---|---|---|
-| `schemaVersion` | 是 | manifest 格式版本，支持 `1`、`2`、`3` 和 `4`；普通脚本包可继续使用 `1` |
-| `id` | 是 | **身份**，与文件名无关。建议 `作者.事件名` |
-| `version` | 是 | 事件定义版本，语义化版本 |
-| `apiVersion` | 否 | 脚本 API 版本，支持 `1` 和 `2`；全局设置需要 `2` |
-| `entry` | 是 | 脚本入口，通常是 `main.js` |
-| `icon` | 否 | 图标路径。**缺失时编辑器会借用一个内置图标** |
-| `category` | 否 | 见下文，默认 `VisualFx` |
-| `name` / `description` | 否 | 字符串，或 `{ "en": "...", "zh-CN": "..." }` |
-| `params` | 否 | 参数声明数组 |
-| `decoration` | 否 | 为 `true` 时使用原生 AddDecoration 载体，可被装饰的 tag 和移动事件控制 |
-| `shaderBundle` | 否 | schema 2 及以上的包内资源路径；供 Core 内置原语加载，脚本不能自行加载 shader |
-| `globalSettings` | 否 | schema 3、API 2 的事件级全局设置声明；由 Core 通用绘制到 UMM 面板 |
-| `decorationDefaults` | 否 | schema 3 的原生装饰新建默认值，支持六位十六进制 `color` 及 `tag`，用空字符串新建无标签装饰 |
-| `hiddenDecorationProperties` | 否 | schema 4 的装饰事件可声明隐藏的原生面板属性名，最多 32 项，只影响该事件的面板 |
-| `decorationListName` | 否 | schema 4 的装饰事件可指定装饰列表名称。列表图标使用事件包的 `icon` |
-| `decorationMigration` | 否 | schema 3 的旧事件数据到原生装饰属性的声明式迁移映射 |
-| `includedEvents` | 否 | schema 4 的包内其他事件 manifest 路径数组，最多 16 个；所有路径相对于事件包根目录 |
-| `vectorPrograms` | 否 | schema 4 的包内后台运算程序路径；目前是内部能力，接口尚未冻结 |
-| `computeGraphs` | 否 | schema 4 的包内计算和合成描述路径；目前是内部能力，接口尚未冻结 |
-| `pixelResources` | 否 | schema 4 的包内 PNG 路径；目前服务于内部后台运算，接口尚未冻结 |
-| `shaderAssets` | 否 | schema 4 的 bundle 内着色器角色；目前是内部渲染能力 |
-| `imageAssets` | 否 | schema 4 的包内图片及采样配置；目前是内部渲染能力 |
+| `Float`、`Int`、`Rating` | `0.8`、`3`、`5` | 数字 |
+| `Bool` | `true` | 布尔值 |
+| `String`、`Text` | `"hello"` | 字符串，分别用单行与多行控件 |
+| `Color` | `"66ddff"` | 颜色字符串。传给 `fx` 时使用六位 RGB |
+| `File` | `""` | 文件选择器返回的字符串。JS 没有读取文件的接口 |
+| `Vector2`、`FloatPair` | `[1.0, 0.5]` | 两个数字组成的数组 |
+| `Tile` | `[0, "ThisTile"]` | `[格位整数, 相对位置枚举名]`。解析到游戏对象需要宿主能力 |
+| `Enum:Ease` 等 | `"OutQuad"` | 枚举成员名字符串。内置类型用 `Enum:<类型名>`，宿主已加载的自定义枚举用 `Enum:<命名空间.类型名>, <程序集>` |
+| `Choice` | `"Normal"` | 包定义的选项名字符串，要求 schema 3 或 4 |
 
-`shaderBundle` 必须是包内相对路径；打包器会检查文件存在。旧版 Core 不认识 schema 2，使用它的包需要更新 Core。声明该字段不会赋予脚本额外的文件、材质或 shader 访问权限。
+打包器还接受 `Array`、`Export`、`FilterProperties`、`List`、`MinMaxGradient`、`Note`、`ParticlePlayback` 等原生类型字面量，并对 `Enum:...` 检查格式。使用这些专用控件时，以目标游戏构建的 `PropertyInfo` 和实机结果为准，逐一确认默认值、控件、回存和脚本形状。打包通过本身无法验证这些行为。
 
-`includedEvents` 适合一个 `.event` 包提供多个相关的编辑器入口。例如 `"includedEvents": ["included/state.json"]` 会连同主事件一起注册状态事件；被包含 manifest 的 `entry` 和图标路径也相对于同一包根目录。包内事件必须有不同的 ID，不支持嵌套包含；一个被包含 manifest 无效时，整个包不注册。卸载这个包会同时移除这些定义，谱面中保存的数据继续遵循缺失事件规则。这个功能需要 schema 4 Core；旧版包格式保持不变。
+```json
+[
+  {
+    "name": "mode", "type": "Choice", "default": "Normal",
+    "options": ["Normal", "Strong"],
+    "optionLabels": { "Normal": { "en": "Normal", "zh-CN": "普通" },
+                      "Strong": { "en": "Strong", "zh-CN": "强烈" } },
+    "group": "Effect", "order": 0
+  },
+  {
+    "name": "strength", "type": "Float", "default": 0.8, "min": 0, "max": 1,
+    "label": { "en": "Strength", "zh-CN": "强度" },
+    "group": "Effect", "order": 1, "showIf": ["mode", "Strong"]
+  }
+]
+```
 
-`vectorPrograms` 将程序名映射到包内 JavaScript 文件。它们在独立后台 Jint 沙箱执行，只能通过受限的通用批量运算接口处理输入，无法访问 CLR、Unity 对象或文件网络；运行有时间、内存、工作量和并发限制。当前噪域使用其中的 `palette` 程序；该内部绑定和接口尚未作为第三方稳定契约发布。
+把这段数组写入 `params`，同时把 `schemaVersion` 改为 `3` 或 `4`。`Choice` 要有 1–64 个唯一选项，每项是最长 64 字符的标识符（字母或下划线开头，后续可含数字，排除 `value__`）。默认值须是其中一项。给自定义下拉选项用 `Choice`，避免依赖游戏类型。选项名和参数名随谱面存储，翻译只改显示。
 
-`computeGraphs` 和 `pixelResources` 同样只接受包内相对路径。后台图像输入由 Core 在工作线程解码为只读快照，脚本只能通过受限句柄采样，不能借此访问文件或 Unity 对象。图像数量、解压尺寸和内存均有限制。上述后台计算与渲染接线仍在迁移，现阶段不属于稳定的第三方脚本接口。
+- `min`、`max`、`unit` 用于编辑器输入。脚本仍要校验会影响时长、循环、分配和范围的值。标注 `"beats"` 不会自动单位换算。
+- `label` 设置显示名，`group` 建立普通事件的面板页签，`order` 指定排序值。启用分组时建议每个参数都声明组名，首个声明的组为默认页签。
+- `showIf` 或 `hideIf` 使用成对条件，例如 `["mode", "Strong"]`。需要合并条件时继续追加键和值。值写成控件匹配的字符串，如 `"Strong"`、`"true"`、`"2"`。在实机上验证显示与隐藏，脚本自行决定是否使用隐藏参数。
 
-`shaderAssets` 的值是包内 bundle 的资源名；`imageAssets` 由包指定 PNG 路径、环绕方式、过滤方式、颜色空间和是否翻转行。图片在后台解码，纹理在主线程分帧创建；包路径不能越界。这些字段当前也属于内部接口。
+### 全局设置
 
-### 事件级全局设置
-
-需要全局开关的事件在自己的 `event.json` 声明，而不是修改 Core 的 UMM 界面：
+作者放置的每个实例用 `params` 调节。本机统一开关使用 schema 3 或 4 加 API 2，并在 manifest 顶层声明 `globalSettings`。
 
 ```json
 {
-  "schemaVersion": 3,
-  "apiVersion": 2,
-  "id": "example.my-event",
-  "version": "1.0.0",
-  "entry": "main.js",
   "globalSettings": [
     { "name": "enabled", "type": "Bool", "default": true,
       "label": { "en": "Enable effect", "zh-CN": "启用效果" } }
@@ -109,382 +151,145 @@ CameraWarp.event
 }
 ```
 
-Core 按已加载事件自动生成面板，按事件 ID 和设置名隔离数据。值保存在 Core 模组目录的 `event-settings.json`，不写入谱面；事件卸载后不显示，其保存值会保留，重新安装后恢复。损坏的设置文件不会被自动覆盖。目前只支持布尔开关；名称不能重复或使用 `__proto__`、`constructor`、`prototype`。
+当前只支持 `Bool`。名称不可重复，请避开 `__proto__`、`constructor` 和 `prototype`。Core 为已加载定义绘制 UMM 开关，按事件 ID 和设置名存入模组目录的 `event-settings.json`。值跟随本机，卸载事件包后仍保留。脚本每次 `update` 从 `ctx.settings.enabled` 读取当前的只读快照。持续效果关闭时主动清除已创建对象。重新开启时按当下的 `t` 恢复。一次性效果应明确重新开启时是否补触发。
 
-API 2 的脚本通过 `ctx.settings.enabled` 读取本包的当前值。`ctx.settings` 是冻结的普通 JavaScript 数据快照；开关变更后，下一次 `update` 会收到新快照，脚本应在 `update` 内读取，而不是永久缓存初始值。脚本不能借此修改持久化设置或读取其他包的设置。API 1 和旧包保持原有行为。
+## 4. 脚本生命周期和效果接口
 
-`hostPrimitive`、`fieldPreview` 和 `runtimeBindings` 是当前字段原语的内部接线，并非稳定的通用脚本 API。GPU 资源、计算流程、合成常量与波形和 CPU 回退程序由事件包声明；旧版 `fieldUniforms`、`fieldWaves`、`legacyFieldTextures`、`legacyFieldProfile`、`fieldTextures`、`fieldShaders` 已不再用于当前核心。事件包的布尔设置可以直接作为合成条件，不需要核心为具体开关预设绑定。脚本不能自行加载 shader。多个不同有效 bundle 同时运行仍需实机验证。
+入口在 Jint 的严格模式运行，定义全局函数 `create(ctx, params)` 并返回对象。只需要初始化工作时可以返回 `{}`。`update(t)` 和 `dispose()` 均可选。把可变状态放在 `create` 的闭包里。每个放置实例有独立引擎和参数快照。
 
-`decorationDefaults` 用于新建装饰和旧事件迁移，不覆盖已有装饰行的原生属性。升级本版 Core 时必须同时升级噪域事件包至 1.0.1 或更新版本：1.0.0 包缺少迁移到包内的纹理，无法单独搭配新 Core 渲染；旧谱面数据由升级后的同 ID 事件包读取。详细边界及未验证项见 [Core 边界审计](CORE-BOUNDARY-AUDIT.md)。
+| 时机 | 行为 |
+|---|---|
+| 歌曲时间到达或越过该格 | Core 初始化脚本并调用 `create`。从中间开始播放时，首个 `t` 可能大于零 |
+| 歌曲时间向前推进且已到该格 | 每帧调用 `update(t)`，参数 `t` 是相对该格的秒数。暂停时停止调用 |
+| 重开、检测到明显回退、退出关卡 | 宿主释放实例，正常释放时调用 `dispose()`。回退后根据时间重新初始化 |
+| 脚本抛错或超限 | Core 记录该实例错误并回收它的宿主资源。故障时可能跳过 `dispose()` |
 
-### `category` 的合法值
+`create` 可用 `params`、`ctx.eventTime`、`ctx.floorSeq` 和 BPM 信息做初始化。使用首个 `update` 里的播放时间计算起始画面。`create` 时的 `ctx.time`、`ctx.t`、`ctx.beat` 与播放标志还是初始值。
 
-`Gameplay` `TrackFx` `DecorationFx` `VisualFx` `FxModifiers` `Conveniences` `Jank` `Favorites`
+| `ctx` 字段 | 值 |
+|---|---|
+| `time`、`eventTime`、`t` | 歌曲时间、所在格进入时间、两者的差。单位均为秒 |
+| `bpm`、`secondsPerBeat` | 当前 BPM 与 `60 / BPM`。固定时长可在首帧换算。需要跟随变速时单独设计时间逻辑 |
+| `beat` | 当前实现为 `t * bpm / 60`。跨变速时，它不能表示累计经过的精确拍数 |
+| `floorSeq` | 实例所在格的序号，可用于定位和诊断，同格实例可相同 |
+| `isPlaying`、`isPaused` | 播放标志，实际收到的 `update` 处于播放中 |
+| `settings` | API 2 的当前事件设置快照 |
 
-只能取这些。写错会回退到 `VisualFx`。
+使用 `t` 求当前状态，避免按帧累加时间。为动画定义终点并主动回收资源，宿主会继续调用仍处于运行态的实例。入口是同步的，请在当前回调中完成效果调用。只有 JSON 数据和白名单效果跨过 JS 与宿主的边界。无浏览器、Node、文件、网络或 CLR 接口，字符串编译（`eval`、`new Function`）被禁用。当前 `ScriptHost` 配置的故障保护上限是 200,000 条语句、2 秒超时和 64 层递归。每帧尽量少分配、少调用宿主，把纯数据预处理放在初始化或打包阶段。
 
----
+### 通用 `fx` 方法
 
-## 3. 参数类型
+| 调用 | 参数与行为 |
+|---|---|
+| `fx.flash({color, duration, alpha})` | 全屏闪光并淡出。默认白色、0.3 秒、透明度 0.6 |
+| `fx.shake({strength, duration})` | 镜头震动并衰减。默认幅度 0.2、0.4 秒。同一镜头共用震动控制器，重叠时后一次调用接管 |
+| `fx.create(key, props)` | 创建一个纯色方形图形。可设 `x`、`y`、`scale`、`angle`、`color`、`alpha`，建对象时可设 `sortingOrder`（默认 1000） |
+| `fx.set(key, props)` | 更新传入的绘制属性，省略的沿用上次状态。键不存在时按传入参数创建 |
+| `fx.destroy(key)` | 删除本实例的图形。同一键可以重复清理 |
 
-`type` 必须是下列字面量之一。**写错不会报错，但控件不会出现**，作者只会看到空白。
+`x`、`y` 以画面中心为原点，`±1` 约对应画面边缘。`angle` 用度，`alpha` 用 0–1。键只需在**本实例**内唯一，例如 `"ring"` 和 `"core"`。不同实例可以复用同一个键，包括放在同一格的两个实例。每次调用返回 `{ ok, error }`（成功时 `error` 通常是 `null`）。检查必要调用的返回值，避免把宿主错误当作成功。
 
-| type | 编辑器控件 | 脚本里拿到的值 |
-|---|---|---|
-| `Float` | 数值输入框 | `number` |
-| `Int` | 整数输入框 | `number` |
-| `Bool` | 开关 | `boolean` |
-| `String` | 单行文本 | `string` |
-| `Text` | 多行文本 | `string` |
-| `Color` | 取色器 | `string`，如 `"ffffff"` |
-| `File` | 文件选择 | `string` |
-| `Vector2` | 两个数 | `[x, y]` |
-| `FloatPair` | 两个数 | `[a, b]` |
-| `Tile` | 格选择 | `[floor, relativeTo]` |
-| `Enum:<类型名>` | 下拉框 | `string`（成员名） |
-| `Choice` | 包声明选项的下拉框（schema 3） | `string`（选项名） |
+下面是一个可直接替换第 2 节 `main.js` 的连续效果，复用它的 `color` 和 `duration`。发布成第二个包时给 manifest 新的 ID 和显示名。
 
-`Choice` 不要求事件作者修改 Core 来添加 CLR 枚举。例如：
+```js
+function create(ctx, params) {
+  var key = "pulse";
+  var duration;
+  var visible = false;
 
-```json
-{ "name": "mode", "type": "Choice", "default": "Normal",
-  "options": ["Normal", "Strong"],
-  "optionLabels": {
-    "Normal": { "en": "Normal", "zh-CN": "普通" },
-    "Strong": { "en": "Strong", "zh-CN": "强烈" }
+  function expect(result) {
+    if (!result.ok) throw new Error(result.error || "Pulse effect failed");
   }
-}
-```
 
-选项必须是 1–64 个互不重复的标识符（字母或下划线开头，后续为字母、数字或下划线；每个最多 64 字符，不能是 `value__`），默认值必须是其中之一。选项名作为谱面中的稳定值保存，翻译只影响显示。Core 为原生面板生成仅包含这些值的枚举，包与包之间的类型和翻译互相隔离；这不向脚本开放反射或动态代码能力。
-
-### 枚举的两种写法
-
-```json
-{ "name": "ease", "type": "Enum:Ease", "default": "OutQuad" }
-{ "name": "myMode", "type": "Enum:MyNamespace.MyMode, MyAssembly", "default": "A" }
-```
-
-- 游戏内置枚举（`Ease`、`TileRelativeTo`、`SpeedType`）直接写名字即可。
-- **自定义枚举必须写全限定名加程序集名**。只写 `Enum:MyMode` 会解析失败，控件退化成空。
-- 如果拿不准，**降级成 `String`**，在脚本里自己比较字符串。这是最稳的做法。
-
-### 其他参数键
-
-| 键 | 说明 |
-|---|---|
-| `default` | 默认值，必须与 `type` 匹配 |
-| `min` / `max` | 数值范围 |
-| `unit` | 显示单位，如 `"beats"`、`"x"` |
-| `label` | 显示名，字符串或 `{ "en": ..., "zh-CN": ... }` |
-| `group` | 属性面板分组（页签）。不写则整个事件是一列平铺的参数 |
-| `order` | 同组内的排序位置，不写则按声明顺序 |
-| `showIf` | 条件显示：`["shape", "Rect"]`，当另一属性等于该值时这一行才出现 |
-| `hideIf` | 条件隐藏：同上，等于该值时这一行消失 |
-
-`group` 是长参数事件的关键。原生事件都按页签分组；一个参数列表直接平铺出二十多个控件时，作者找不到自己想要的参数。
-
-```json
-{ "name": "size",   "type": "Vector2", "default": [4, 3], "group": "Geometry", "showIf": ["shape", "Rect"] },
-{ "name": "radius", "type": "Float",   "default": 2, "group": "Geometry", "showIf": ["shape", "Circle"] }
-```
-
-`showIf` / `hideIf` 的值必须与目标的**存储形式**一致：枚举写成员名，`Bool` 写 `"true"` / `"false"`，数值写数字的字符串形式。
-
-`default` 的类型很重要：`Float` 参数写 `2` 和写 `2.0` 都能用，但 `Tile` 必须写成 `[0, "ThisTile"]` 这样的数组。
-
----
-
-## 4. 脚本接口
-
-`main.js` 必须定义一个 `create` 函数。
-
-```js
-function create(ctx, params) {
-  return {
-    update: function (t) { /* 每帧 */ },
-    dispose: function () { /* 清理 */ }
-  };
-}
-```
-
-### 生命周期
-
-| 时机 | 调用 |
-|---|---|
-| 播放首次越过该事件所在格 | `create(ctx, params)` 一次 |
-| 每帧（播放中） | `update(t)` |
-| 暂停 | 不调用 |
-| 时间回退（重开 / 检查点） | `dispose()`，之后重新 `create` |
-| 退出关卡 | `dispose()` |
-
-### `ctx` 里有什么
-
-```js
-ctx.time            // 当前歌曲时间（秒）
-ctx.eventTime       // 本事件所在格的进入时间
-ctx.t               // time - eventTime
-ctx.beat            // 按 bpm 换算的拍数
-ctx.bpm             // 关卡 BPM
-ctx.secondsPerBeat  // 60 / bpm，把"拍"参数换算成秒时用它
-ctx.floorSeq        // 所在格的序号
-ctx.isPlaying
-ctx.isPaused
-```
-
-`update(t)` 的参数 `t` 与 `ctx.t` 相同，单位是秒。
-
-参数如果写的是"拍"，换算成秒不要写死 120 BPM：
-
-```js
-var seconds = params.duration * ctx.secondsPerBeat;
-```
-
-**`t` 是相对时间，不是累计帧时间。** 暂停会冻结它，重开会归零。不要自己累加 `deltaTime`，否则暂停和重开时行为会错。
-
----
-
-## 5. 可用的效果
-
-### 一次性效果
-
-```js
-fx.flash({ color: "ffffff", duration: 0.3, alpha: 0.6 });
-fx.shake({ strength: 0.2, duration: 0.4 });
-```
-
-| 方法 | 参数 |
-|---|---|
-| `fx.flash` | `color`（十六进制，可带或不带 `#`）、`duration`（秒）、`alpha` |
-| `fx.shake` | `strength`、`duration`（秒） |
-
-### 持续型对象
-
-要做出逐帧变化的图形，用这三个：
-
-```js
-fx.create(key, { color: "66ddff", scale: 0.3, alpha: 0 });   // 建一次
-fx.set(key,    { x: 0.2, scale: 0.5, alpha: 0.8, angle: 45 }); // 每帧更新
-fx.destroy(key);                                               // 结束时清理
-```
-
-| 方法 | 参数 |
-|---|---|
-| `fx.create` | `key`（你自己起的名字）、`color`、`scale`、`alpha`、`sortingOrder` |
-| `fx.set` | `key`，以及 `x` `y` `scale` `alpha` `angle` `color` 中任意几个 |
-| `fx.destroy` | `key` |
-
-坐标说明：`x` / `y` 是相对画面中心的归一化坐标，`1.0` 约等于半屏。这样换分辨率或缩放时位置不会跑偏。
-
-**`key` 必须每个实例不同。** 最常见的是拼上 `ctx.floorSeq`：
-
-```js
-var key = "pulse:" + ctx.floorSeq;
-```
-
-同一个事件放两次而 `key` 相同，两个实例会抢同一个对象，后写的覆盖先写的。
-
-### 完整示例：持续动画
-
-`Pulse.event` 是随模组分发的参考实现，核心部分：
-
-```js
-function create(ctx, params) {
-  var key = "pulse:" + ctx.floorSeq;
-  var started = false;
-  var duration = params.duration > 0 ? params.duration : 1;
+  function remove() {
+    if (!visible) return;
+    expect(fx.destroy(key));
+    visible = false;
+  }
 
   return {
     update: function (t) {
       if (t < 0) return;
-
-      // 过了生命周期就收掉，否则对象会一直留在画面上
-      if (t > duration) {
-        if (started) { started = false; fx.destroy(key); }
+      if (duration === undefined) {
+        var beats = Math.max(0.1, Math.min(4, Number(params.duration) || 0.5));
+        duration = beats * ctx.secondsPerBeat;
+      }
+      if (t >= duration) {
+        remove();
         return;
       }
-
-      if (!started) {
-        started = true;
-        fx.create(key, { color: params.color, scale: params.size, alpha: 0 });
+      if (!visible) {
+        expect(fx.create(key, { color: params.color, alpha: 0 }));
+        visible = true;
       }
 
-      var p = t / duration;                          // 0..1
-      var wave = Math.sin(p * params.cycles * Math.PI * 2);
-
-      fx.set(key, {
-        scale: params.size * (1 + wave * 0.25),
-        alpha: 0.35 * (0.6 + 0.4 * wave),
-        x: Math.sin(p * Math.PI * 2) * params.drift,
-        angle: p * 360
-      });
+      var p = t / duration;
+      expect(fx.set(key, { x: p - 0.5, scale: 0.3 + p, alpha: 1 - p }));
     },
-
-    dispose: function () {
-      if (started) fx.destroy(key);
-      started = false;
-    }
+    dispose: remove
   };
 }
 ```
 
-三个要点：
+## 5. 安装、依赖和升级
 
-1. **用 `started` 标志保证 `create` 只跑一次**，`set` 每帧跑。
-2. **自己判断生命周期**。`update(t)` 不会因为过了某个时长就停止调用，脚本要自己决定何时收尾。
-3. **`dispose` 里也要 `destroy`**。重开、检查点跳转、退出关卡都会触发 `dispose`；宿主也会兜底回收，但显式清理更干净。
+- Core 扫描当前谱面的目录顶层，加载其中的 `.event` 文件。首次试用时先保存谱面。新增或替换包后重新打开谱面，脚本和注册信息会重新加载。
+- Core 在保存时写入谱面根对象的 `pevEvents`，条目形如 `{"id":"example.beat-flash","version":"1.0.0","file":"BeatFlash.event"}`。已有 `file` 声明时按文件名匹配，因此用过的包应保持文件名。谱面目录下多个文件定义同一 ID 时，若声明无法唯一选定文件，Core 会报告冲突。发布前通过编辑器导出并检查依赖文件也在归档里。
+- 普通事件用原生 `EditorComment` 保存 `@PEV1` 数据，装饰型事件用原生 `AddDecoration` 行。Core 管理载体、实例 UID 和依赖，谱面可在原版游戏打开。
+- Core 启用但缺包时，普通事件显示只读的 Missing Event 占位，原始注释保留。对应装饰保留为原生装饰行。装回匹配的文件再重开，检查两种载体都能恢复。
+- 升级时沿用 ID、参数名、类型和选项值。新增参数提供兼容默认值，旧实例缺该值时用默认值补齐。重命名字段或改变值含义需要显式兼容逻辑，Core 没有通用 JS 迁移回调。较低主版本的包无法执行由较高主版本写入的实例。新版的包仍应自己兼容旧谱面的值。用旧谱面副本验收，再分发新版。
 
-所有方法都返回 `{ ok: boolean, error: string }`。**不在白名单里的效果会返回 `ok: false` 而不是静默失败**，调试时值得检查。
+## 6. 装饰、多入口和高级渲染
 
----
+### 装饰载体
 
-### 按 tag 控制别的实例
+顶层 `"decoration": true` 为事件使用原生装饰行。作者能用编辑器工具移动、调整大小、改标签。装饰载体提供这些编辑与存储能力。要使渲染效果跟随拖动、`MoveDecorations`、视差或深度，须用能读取原生装饰实时状态的宿主原语。通用 `fx.create` 生成的是屏幕图形。
 
-`fx.field` 创建的对象可以带 `tag`，另一个事件用 `fx.fieldMove` 按 tag 改它。
-这在「先摆好区域，再按节奏改它」的分层编排里是必需的——移动事件不该知道区域是怎么创建的。
-
-```js
-// 在创建方：
-fx.field("key", { tag: "wave", /* ... */ });
-
-// 在控制方：写的是绝对值，脚本每帧按 t 重新算，暂停和跳转自动正确
-fx.fieldMove({ tag: "wave", offset: [2 * k, 0], rotation: 15 * k, scale: 1 + 0.5 * k, alpha: 1 });
-fx.fieldMove({ tag: "wave", alpha: 0.5, visibility: 1 });
-
-// 事件结束时还原，否则区域会停在最后一个位置
-fx.fieldMove({ tag: "wave", clear: true });
-```
-
-`visibility`：`0` 不改、`1` 强制可见、`2` 强制隐藏。tag 可以是空格分隔的多个，命中任意一个即可。
-
-> 这些是宿主原语，与 `fx.create/set/destroy` 一样**不在对外 SDK 的兼容承诺内**；
-> 对外承诺的是 `.event` 包格式（zip + metadata + 脚本约定）。
-
----
-
-## 6. 沙箱边界
-
-脚本运行在隔离引擎里，以下都不可用：
-
-- `System` / 任意 .NET 类型
-- `eval`、`new Function`
-- 文件、网络、线程
-- Promise / async（脚本全部在主线程同步执行）
-
-超出语句预算（约 20 万条）或时间预算的脚本会被中断，该实例标记为失效，**其它事件不受影响**。
-
-每个实例有独立的引擎，所以：
-
-- 你改 `Array.prototype` 不会影响别人，别人也影响不到你
-- 但你也不能靠全局变量在实例之间共享状态——同一个事件放两次，`create` 会跑两次，各自持有自己的闭包
-
----
-
-## 7. 常见写法
-
-### 一次性的效果
-
-```js
-function create(ctx, params) {
-  var fired = false;
-  return {
-    update: function (t) {
-      if (t < 0 || fired) return;
-      fired = true;
-      fx.flash({ color: params.color, duration: 0.2 });
-    },
-    dispose: function () { fired = false; }
-  };
-}
-```
-
-### 持续一段时间的效果
-
-```js
-function create(ctx, params) {
-  var started = false;
-  var seconds = params.duration * ctx.secondsPerBeat;   // 拍 -> 秒，跟随关卡 BPM
-
-  return {
-    update: function (t) {
-      if (t < 0 || started || t > seconds) return;
-      started = true;
-      fx.shake({ strength: params.strength, duration: seconds });
-    },
-    dispose: function () { started = false; }
-  };
-}
-```
-
-### 用参数控制分支
-
-```js
-function create(ctx, params) {
-  return {
-    update: function (t) {
-      if (t < 0) return;
-      if (params.variant === "Red") fx.flash({ color: "ff0000", duration: 0.2 });
-      else                        fx.flash({ color: "00ff00", duration: 0.2 });
-    }
-  };
-}
-```
-
----
-
-## 8. 打包与测试
-
-```bash
-python tools/pack_event.py MyEvent.event        # 校验并打包
-python tools/pack_event.py --check MyEvent.event # 只校验
-```
-
-校验会检查必填字段、脚本是否存在、参数类型是否合法、分类是否有效。
-
-测试流程：
-
-1. 把打包好的 `.event` 放在测试谱面的 `.adofai` 文件旁
-2. 启动游戏，打开编辑器
-3. 事件应出现在快捷栏对应分类下
-4. 放置、改参数、保存
-5. 播放，观察效果
-
----
-
-## 9. 排障
-
-| 现象 | 原因 |
+| 字段 | 怎么用 |
 |---|---|
-| 快捷栏里没有这个事件 | `id` 为空、`event.json` 不是合法 JSON、`schemaVersion` 过高。看 `Mods/PEV.Core/pev-core.log` |
-| 有按钮但点击没反应 | 少见；通常是 `category` 写错导致归类异常 |
-| 参数面板是空的 | `params[].type` 写错。写错不报错，只是控件不出现 |
-| 某个参数显示 0 而不是默认值 | `default` 类型与 `type` 不匹配 |
-| 事件显示为"缺失" | `.event` 不在谱面目录、文件名与声明不一致，或 `id` 与谱面里记录的不一致 |
-| 播放时没有效果 | 脚本报错。检查日志里带 `uid` 的那行 |
-| 改了 `.event` 但行为没变 | 脚本在谱面加载时缓存。重新打开谱面 |
-| 参数滑块拖了但画面没变化 | 最常见的原因是**脚本没把参数传下去**。宿主只读脚本调用里带的参数，缺一项就用宿主默认值，不报错。在 `create` 里把 `params.x` 存进对象、在每帧的调用里逐项写出来；两边漏一个都会静默失效 |
-| 效果看起来像"参数全丢了" | 同上，且通常是**总开关类参数**（例如噪域的 `displace`）没传：一个参数为 0 会让整组参数都不显现 |
+| `decorationDefaults` | Schema 3 起可设新建装饰的 `color`（六位 RGB）与 `tag`（`""` 表示新装饰无标签） |
+| `decorationMigration` | Schema 3 起支持从旧注释实例迁入原生装饰属性。每项为 `{ "source": "旧键", "target": "原生键", "conversion": "转换名" }`，最多 16 项，目标不可重复 |
+| `hiddenDecorationProperties` | Schema 4 可列出最多 32 个原生属性名，只在该事件面板隐藏 |
+| `decorationListName` | Schema 4 可指定装饰列表名称，长度至多 128。可搭配 `icon` 自定义列表图标 |
 
-日志位置：`Mods/PEV.Core/pev-core.log`。
+迁移支持 `scale/tilesToScale`、`position/vector2`、`rotation/float`、`tag/string`、`color/string`、`depth/int`、`opacity/percent`。原生已有字段如 `scale`、`rotation`、`opacity`、`depth`、`tag` 由原生面板负责。额外控件进入共享的 AddDecoration 面板，使用有事件前缀的自定义参数名以减少不同装饰包之间的定义冲突。装饰面板采用原生页签布局。
 
----
+### 一个包注册多个入口
 
-## 10. 给 AI Agent 的要点
+主 `event.json` 使用 schema 4，加上 `"includedEvents": ["included/control.json"]`。在同一归档放入 `included/control.json` 和它声明的入口脚本。子 manifest 的 `entry`、`icon` 也相对包根，例如 `"entry": "included/control.js"`。支持 1–16 个子 manifest，每个入口的 ID 唯一。子定义可使用适合自己的 schema/API。子 manifest 无效或嵌套包含，以及入口脚本文件缺失，都会使整包注册失败。可按 [NoiseField 主入口](../src/Events/NoiseField.event/event.json)和[状态入口](../src/Events/NoiseField.event/included/state.json)对照目录与字段。
 
-如果由 Agent 生成事件，按这个顺序做：
+### 自定义区域、GPU 与包内状态
 
-1. 从 `tools/pack_event.py` 里的 `VALID_TYPES` / `VALID_CATEGORIES` 取合法值，不要臆造类型名。
-2. `id` 用 `作者.事件名` 形式，小写、连字符分隔，**不要用中文或空格**。
-3. `default` 的类型必须和 `type` 一致：`Float` → 数字，`Color` → 六位十六进制字符串，`Tile` → `[int, "ThisTile"]`。
-4. 枚举优先写成 `Enum:<游戏内置类型>`；不确定就降级成 `String`，并在脚本里比较字符串。
-5. `create` 必须返回对象；不需要的行为可以省略 `update` 或 `dispose`。
-6. **不要假设 `t` 会单调递增**——重开时它会归零。
-7. 不要在实例之间共享可变状态；同一个事件放两次是两份独立闭包。
-8. 打包前跑 `--check`。
+[NoiseField 源码](../src/Events/NoiseField.event/)展示了可运行的装饰和 GPU 包。以下是该版本 Core 的内部接口。基于它们开发时固定 Core 构建和事件包版本，并对目标 Unity、图形后端和设备实测。
 
-常见错误，按出现频率排序：
+1. 从 manifest 和 [`main.js`](../src/Events/NoiseField.event/main.js) 跟踪一个参数，例如 `animationSpeed`。manifest 定义输入，入口逐帧传给 `fx.field(key, props)`，宿主处理与原生装饰的绑定，结束时用 `fx.fieldDestroy(key)`。`hostPrimitive: "fx.field"` 和 `fieldPreview` 将编辑态预览接到同一类原语，预览映射需和实际播放的参数一致。拖拽、缩放等原生实时属性交给装饰行提供。
+2. 把着色器、纹理和运算声明随包分发。用 `shaderBundle` 指向包内 bundle，用 `shaderAssets` 指定 bundle 内的资源角色，用 `imageAssets` 描述图片及采样。当前包的 `computeGraphs`、`vectorPrograms`、`keySpecs` 和 `pixelResources` 声明计算图、受限后台脚本、缓存键与像素输入。`runtimeBindings` 将宿主需要的角色绑定到声明。按参考包的 [pipelines](../src/Events/NoiseField.event/pipelines/) 和 [workers](../src/Events/NoiseField.event/workers/) 追踪输入、输出及 CPU 回退。要接入渲染，资源和角色须由宿主识别与消费。
+3. 需要另一个入口驱动状态时，参照[状态脚本](../src/Events/NoiseField.event/included/state.js)向宿主发布 `fx.tagValue({tag, key, value})`。当前字段渲染管线按同包、标签和键消费字符串状态，按事件时间和顺序选值。普通脚本没有通用的读值接口。`fx.fieldMove({tag, offset, rotation, scale, alpha, visibility, clear})` 是当前另一个按标签覆盖字段的内部方法。`visibility` 为 0 时采用字段自己的可见性，1 强制可见，2 强制隐藏。结束时可用 `{tag, clear: true}` 还原。
+4. 只改参数和脚本时重新校验打包即可。改了着色器时按[源码和 bundle 构建说明](../src/UnityShaders/Reference/README.md)重建，再验证渲染、预览、回退、重叠和资源回收。复用素材时随包保留所需许可与来源。
 
-- 参数类型写成 `Number` / `Integer` / `Boolean`（应为 `Float` / `Int` / `Bool`）
-- `default` 写成字符串 `"0.8"` 而不是数字 `0.8`
-- 忘记提供 `icon`，导致编辑器借用别的图标
-- 在 `update` 里无条件触发效果，导致每帧都触发
+如果设计需要目前没有的能力，例如读取星球坐标供任意脚本使用、直接改变轨道或调用新的渲染操作，把它当作 Core 扩展。先定义可复用操作的输入、输出、单位和生命周期，再从 [ScriptHost](../src/PEV.Core/Scripting/ScriptHost.cs) 的 JS 边界和 [GameBridge](../src/PEV.Core/Scripting/EventContext.cs) 的分发接入，给参数做类型及范围校验，按实例管理资源，覆盖回退、故障和 teardown。事件的算法、专属参数和素材仍放进包内。若变更是新的 manifest 字段，同步检查 [EventManifest](../src/PEV.Core/Model/EventManifest.cs) 和[打包器](../tools/pack_event.py)。构建 Core 按[仓库说明](../README.md#build-from-source)操作。
+
+## 7. 验收与排障
+
+| 阶段 | 验收 |
+|---|---|
+| 离线 | 用 `pack_event.py --check` 校验源码，再打包并检查 ZIP 根目录、入口及所有声明资源。JS 可用 `node --check` 检查语法，但宿主兼容性以实际 Jint 和游戏为准 |
+| 编辑器 | 在已保存谱面旁加载包，核对分类、图标、标签、控件、默认值和条件。修改参数后直接试玩，再保存重开。检查同格与异格的多个实例、复制、撤销、重做和删除 |
+| 播放 | 确认开始与结束时点、极值、重叠、暂停继续、死亡重开、检查点或从中段播放。确认退出和结束后没有残留。装饰型事件还要验证拖拽、缩放、改标签和 `MoveDecorations` |
+| 兼容分发 | 用谱面副本验证缺包后仍可打开、装回可恢复，关闭 Core 后原版能打开。用旧谱面检查升级，用原生导出核对已声明包确实被包含 |
+| 交付 | 提供打包后的 `.event`、源码、使用方式、实测环境及结果。有素材时附许可。仅完成离线检查时，标明实机项目待测 |
+
+打包器会检查主要 manifest 规则和受检资源路径，但无法确认 JS 是否定义了可运行的入口、所有参数默认值是否可被原生控件采用、或素材是否会成功渲染。
+
+| 现象 | 先查什么 |
+|---|---|
+| 打包失败 | 找到 `--check` 报出的文件和字段，确认传入的是含 `event.json` 的目录，并检查声明路径 |
+| 快捷栏缺入口 | 查看包是否与已保存谱面同级、ZIP 根目录是否有 manifest，再看日志中的 schema/API、重复 ID、资源路径和加载问题 |
+| 参数没显示或不生效 | 检查类型拼写、枚举解析、分组、显示条件和装饰共享属性名。再沿 `params` 查到脚本的真正消费点 |
+| Missing Event | 核对 `pevEvents` 的文件名、manifest ID 和主版本。确认正确包就位以后重新打开 |
+| 游戏里没有效果 | 检查事件激活状态、当前 `t`、单位、`fx` 返回值。日志里的 `create failed`、`init failed`、`instance faulted` 可定位阶段 |
+| 重开后状态不对 | 检查脚本是否从 `t` 重算，用同格两个实例确认对象键作用域，检查 `dispose` 与正常结束路径 |
+
+Core 日志在 `Mods/PEV.Core/pev-core.log`。排查时记录包 ID、实例 UID（日志可见）、目标格、参数、游戏/Core 版本和最短复现步骤。
+
+需要查实现时，面板和存档字段以 [EventManifest](../src/PEV.Core/Model/EventManifest.cs) 与 [LevelStorage](../src/PEV.Core/Storage/LevelStorage.cs) 为准，调用和时间以 [ScriptHost](../src/PEV.Core/Scripting/ScriptHost.cs) 与 [EventInstance](../src/PEV.Core/Scripting/EventInstance.cs) 为准。
