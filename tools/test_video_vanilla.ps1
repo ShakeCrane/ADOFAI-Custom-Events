@@ -89,7 +89,10 @@ try {
         $moved = $true
     }
 
-    $before = if (Test-Path -LiteralPath $log) { (Get-Item -LiteralPath $log).Length } else { 0 }
+    # The game truncates Player.log on each launch, so a byte offset from before the launch
+    # is meaningless — the new file is shorter than the old one. The launch time is the
+    # signal instead: the menu line only counts if the log was written after it.
+    $launch = Get-Date
     $process = Start-Process -FilePath $gameExe -WorkingDirectory $gameDir -WindowStyle Hidden -PassThru
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -98,14 +101,18 @@ try {
         Start-Sleep -Milliseconds 500
         if ($process.HasExited) { break }
         if (Test-Path -LiteralPath $log) {
-            $length = (Get-Item -LiteralPath $log).Length
-            if ($length -gt $before) {
-                $stream = [IO.File]::Open($log, 'Open', 'Read', 'ReadWrite')
+            $info = Get-Item -LiteralPath $log
+            if ($info.LastWriteTime -ge $launch) {
+                # The game holds the log open for writing; a shared-read stream is the only
+                # way to read it while the process is alive.
+                $tail = ''
                 try {
-                    $stream.Seek($before, 'Begin') | Out-Null
-                    $reader = New-Object IO.StreamReader($stream)
-                    $tail = $reader.ReadToEnd()
-                } finally { $stream.Dispose() }
+                    $stream = [IO.File]::Open($log, 'Open', 'Read', 'ReadWrite')
+                    try {
+                        $reader = New-Object IO.StreamReader($stream)
+                        $tail = $reader.ReadToEnd()
+                    } finally { $stream.Dispose() }
+                } catch { }
                 if ($tail -match 'Go to Menu' -or $tail -match 'Mods detected') { $reachedMenu = $true; break }
             }
         }
@@ -113,6 +120,11 @@ try {
 
     if ($process.HasExited) { throw "Game exited after the mod was removed (exit $($process.ExitCode))" }
     if (-not $reachedMenu) { throw "Game did not reach the menu within ${TimeoutSeconds}s" }
+
+    # The live process holds the log open, so it is released before the file is examined.
+    Stop-Process -Id $process.Id -Force
+    $process.WaitForExit()
+    Start-Sleep -Milliseconds 300
 
     $text = [IO.File]::ReadAllText($log)
     if ($text -match '\[PEV\.Core\] Version') { throw 'PEV.Core was still loaded; the vanilla condition was not met' }
