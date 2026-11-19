@@ -57,7 +57,7 @@ function create(ctx, params) {
     // Before the clip's start the surface shows the first frame of the window and holds it:
     // an author who scrubs to the beginning of the level still sees the video they placed.
     if (now < begin) {
-      return { time: trimStart, playing: false };
+      return { time: trimStart, playing: false, visible: true };
     }
 
     var media = trimStart + (now - begin) * speed;
@@ -67,11 +67,13 @@ function create(ctx, params) {
     if (reportedDuration > 0) {
       var end = trimEnd > 0 ? Math.min(trimEnd, reportedDuration) : reportedDuration;
       if (!loop && media >= end) {
-        return { time: end, playing: holdEnd ? false : false };
+        // Past the end the two choices are genuinely different pictures: hold the last
+        // frame, or take the video off the screen and let what is behind it show through.
+        return { time: end, playing: false, visible: holdEnd };
       }
     }
 
-    return { time: media, playing: true };
+    return { time: media, playing: true, visible: true };
   }
 
   return {
@@ -86,6 +88,7 @@ function create(ctx, params) {
         trimStart: trimStart,
         trimEnd: trimEnd,
         holdEnd: holdEnd,
+        visible: state.visible,
         volume: volume,
         muted: muted,
         fit: mode

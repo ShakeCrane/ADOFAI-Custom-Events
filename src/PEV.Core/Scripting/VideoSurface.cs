@@ -78,6 +78,15 @@ namespace PEV.Scripting
             /// <summary>Whether to fall back to a converted copy when the backend refuses a file.</summary>
             public bool AllowConversion = true;
 
+            /// <summary>
+            /// Whether the package wants the picture on screen.
+            ///
+            /// Distinct from the decoration's own visibility: a package that reaches the end of
+            /// a clip with "hold last frame" off takes the picture down while the decoration row
+            /// stays where the author put it.
+            /// </summary>
+            public bool DesiredVisible = true;
+
             /// <summary>Native media duration once known; 0 until prepared.</summary>
             public double Duration;
             public int Width, Height;
@@ -197,6 +206,15 @@ namespace PEV.Scripting
 
         public static bool CaptureActive;
 
+        /// <summary>
+        /// The duration reported to a package while <see cref="CaptureActive"/> is set.
+        ///
+        /// The real duration comes from the decoder, which is exactly what capture mode skips.
+        /// A package that clamps to the media length cannot be tested without one, so the
+        /// harness supplies it here rather than reaching into the script's closure.
+        /// </summary>
+        public static double CaptureDuration;
+
         /// <summary>Creates or updates the surface for <paramref name="key"/>.
         ///
         /// Arguments are absolute, never deltas: time is the media position that should be
@@ -238,6 +256,7 @@ namespace PEV.Scripting
                 entry.DesiredLoop = Bool(args, "loop", false);
                 entry.DesiredVolume = (float)Num(args, "volume", 1.0);
                 entry.DesiredMuted = Bool(args, "muted", false);
+                entry.DesiredVisible = Bool(args, "visible", true);
                 entry.TrimStart = Math.Max(0, Num(args, "trimStart", 0));
                 entry.TrimEnd = Math.Max(0, Num(args, "trimEnd", 0));
                 string fit = Str(args, "fit", null);
@@ -454,6 +473,19 @@ namespace PEV.Scripting
         public static void DescribeForScript(string key, string scope, Dictionary<string, object> reply)
         {
             if (reply == null) return;
+
+            // In capture mode no media is opened, so the duration a package would learn from
+            // the decoder has to be supplied by the harness or a length-clamping test cannot
+            // run at all.
+            if (CaptureActive)
+            {
+                reply["ready"] = true;
+                reply["duration"] = CaptureDuration;
+                reply["width"] = 0;
+                reply["height"] = 0;
+                return;
+            }
+
             string id = Scoped(scope, key);
             if (!Live.TryGetValue(id, out var entry))
             {
@@ -512,6 +544,7 @@ namespace PEV.Scripting
                     .Append(" sort=").Append(e.SortingLayerID).Append('/').Append(e.SortingOrder)
                     .Append(" layer=").Append(e.UnityLayer)
                     .Append(" opacity=").Append(e.Opacity.ToString("F3"))
+                    .Append(" shown=").Append(e.DesiredVisible)
                     .Append(" playingNow=").Append(e.Player != null ? SafeBool(() => e.Player.isPlaying).ToString() : "?")
                     .Append(" seekPending=").Append(e.SeekPending)
                     .Append(" seeks=").Append(e.SeekAttempts)
@@ -963,7 +996,7 @@ namespace PEV.Scripting
         {
             if (entry.GameObject == null) return;
 
-            bool show = entry.Visible && entry.Renderable;
+            bool show = entry.Visible && entry.Renderable && entry.DesiredVisible;
             if (entry.Renderer != null) entry.Renderer.enabled = show;
             if (!show) return;
 

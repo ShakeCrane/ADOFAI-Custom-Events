@@ -520,6 +520,55 @@ namespace PEV.Diagnostics
                     VideoSurface.CaptureActive = false;
                     try { host.Dispose(); } catch { }
                 }
+
+                // Hold-last-frame off must actually take the picture down at the end, not
+                // merely stop advancing. The two choices are different images and the package
+                // can only express the second by telling the host to hide.
+                var holder = ScriptHost.Create(source, "math-end", out _, manifest);
+                if (holder == null) { Row("MATH-HOLD", "FAIL", "script did not compile"); yield break; }
+                VideoSurface.Capture.Clear();
+                VideoSurface.CaptureActive = true;
+                VideoSurface.CaptureDuration = 3.0;
+                try
+                {
+                    var keep = new Dictionary<string, object>
+                    {
+                        { "file", "x.mp4" }, { "start", 0.0 }, { "speed", 1.0 },
+                        { "trimStart", 0.0 }, { "trimEnd", 0.0 }, { "loop", false },
+                        { "holdEnd", false }, { "mode", "Fit" }, { "volume", 100.0 }, { "muted", true }
+                    };
+                    var context = new EventContext
+                    {
+                        Bpm = 120, Time = 0, EventTime = 0, TileTime = 1.0, T = 0, FloorSeq = 8,
+                        Params = keep
+                    };
+                    if (!holder.Initialize(context, keep, out string initError))
+                    {
+                        Row("MATH-HOLD", "FAIL", "create threw: " + initError);
+                        yield break;
+                    }
+
+                    // The first update teaches the package the media length; the rest of the
+                    // sequence is what the two hold modes differ on.
+                    Drive(holder, context, 1.5);
+                    Drive(holder, context, 1.6);
+                    var inside = LastCapture();
+                    Row("MATH-HOLD-INSIDE", inside != null && Truth(inside, "visible") ? "PASS" : "FAIL",
+                        "1.6s is inside the clip; " + DescribeLast(inside));
+
+                    // Past the end with holdEnd=false the package must report visible=false.
+                    Drive(holder, context, 9.0);
+                    var pastEnd = LastCapture();
+                    Row("MATH-HOLD-OFF", pastEnd != null && !Truth(pastEnd, "visible") ? "PASS" : "FAIL",
+                        "9.0s is past the clip; " + DescribeLast(pastEnd));
+                }
+                catch (Exception e) { Row("MATH-HOLD", "EXCEPTION", One(e)); }
+                finally
+                {
+                    VideoSurface.CaptureActive = false;
+                    VideoSurface.CaptureDuration = 0;
+                    try { holder.Dispose(); } catch { }
+                }
             }
 
             private static void Drive(ScriptHost host, EventContext context, double songTime)
@@ -550,7 +599,7 @@ namespace PEV.Diagnostics
             {
                 if (args == null) return "no call captured";
                 var note = new StringBuilder();
-                foreach (var key in new[] { "time", "playing", "speed" })
+                foreach (var key in new[] { "time", "playing", "speed", "visible" })
                 {
                     if (args.TryGetValue(key, out var v)) note.Append(key).Append('=').Append(v).Append(' ');
                 }
