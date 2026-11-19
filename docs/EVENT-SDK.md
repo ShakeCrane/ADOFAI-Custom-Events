@@ -251,6 +251,7 @@ function create(ctx, params) {
 | `decorationMigration` | Schema 3 起支持从旧注释实例迁入原生装饰属性。每项为 `{ "source": "旧键", "target": "原生键", "conversion": "转换名" }`，最多 16 项，目标不可重复 |
 | `hiddenDecorationProperties` | Schema 4 可列出最多 32 个原生属性名，只在该事件面板隐藏 |
 | `decorationListName` | Schema 4 可指定装饰列表名称，长度至多 128。可搭配 `icon` 自定义列表图标 |
+| `decorationMarker` | Schema 4 可指定本包装饰行的载体标记，形如 `pev/<小写路径>`，缺省为共享的 `pev/field`。同时安装多个装饰包时要各用各的标记，否则面板会把别人的参数显示在你的装饰上 |
 
 迁移支持 `scale/tilesToScale`、`position/vector2`、`rotation/float`、`tag/string`、`color/string`、`depth/int`、`opacity/percent`。原生已有字段如 `scale`、`rotation`、`opacity`、`depth`、`tag` 由原生面板负责。额外控件进入共享的 AddDecoration 面板，使用有事件前缀的自定义参数名以减少不同装饰包之间的定义冲突。装饰面板采用原生页签布局。
 
