@@ -222,6 +222,37 @@ var __pevReady = true;
             return value;
         }
 
+        /// <summary>
+        /// Re-runs create() with new parameters on the engine that already compiled the script.
+        ///
+        /// Recompiling the source for every slider movement is the obvious implementation and
+        /// it makes the editor stutter: Jint parses and compiles the whole entry script on
+        /// each create. The engine itself is stateless between instances, so disposing the
+        /// previous instance and calling create again gives exactly the same result for a
+        /// fraction of the cost.
+        /// </summary>
+        public bool Reinitialize(EventContext context, IDictionary<string, object> parameters, out string error)
+        {
+            error = null;
+            try
+            {
+                if (!Faulted && _instance != null && _instance.IsObject() &&
+                    _disposeFn != null && _disposeFn.IsObject())
+                {
+                    var call = _engine.Evaluate("(function(fn, self){ return fn.call(self); })");
+                    _engine.Invoke(call, _disposeFn, _instance);
+                }
+            }
+            catch { /* a throwing dispose must not prevent the rebuild */ }
+            finally
+            {
+                _instance = JsValue.Undefined;
+                _updateFn = JsValue.Undefined;
+                _disposeFn = JsValue.Undefined;
+            }
+            return Initialize(context, parameters, out error);
+        }
+
         public bool Initialize(EventContext context, IDictionary<string, object> parameters, out string error)
         {
             error = null;

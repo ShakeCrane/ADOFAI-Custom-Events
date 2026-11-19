@@ -82,11 +82,26 @@ namespace PEV.Editor
                 return;
             }
 
-            instance?.Host?.Dispose();
+            // Reuse the compiled engine when one already exists; only the parameters changed.
+            if (instance?.Host != null)
+            {
+                if (TryReinitialize(instance, manifest, data, ev, out string reinitError))
+                {
+                    instance.Signature = signature;
+                    TickInstance(instance, bpm);
+                    return;
+                }
+                PEV.Core.Plugin.Log("screen preview rebuild: " + reinitError);
+                instance.Host.Dispose();
+                instance.Host = null;
+            }
+
             if (!TryCreate(manifest, data, ev, scope, out var created, out string error))
             {
                 PEV.Core.Plugin.Log("screen preview: " + error);
-                Live[uid] = new Instance { Signature = signature };
+                // No signature means "try again next frame": a failure here is often a shader
+                // bundle that is still loading, not a permanent one.
+                Live[uid] = new Instance();
                 return;
             }
             created.Signature = signature;
@@ -123,6 +138,24 @@ namespace PEV.Editor
                 return false;
             }
             instance = new Instance { Host = host, Context = context };
+            return true;
+        }
+
+        private static bool TryReinitialize(Instance instance, PEV.Model.EventManifest manifest,
+            EventInstanceData data, LevelEvent ev, out string error)
+        {
+            var parameters = LiveParams(data, ev);
+            var context = new EventContext
+            {
+                Bpm = ReadBpmSafe(),
+                EventTime = 0,
+                FloorSeq = ev.floor,
+                EventOrder = 0,
+                Params = parameters
+            };
+            if (manifest.ApiVersion >= 2) context.Settings = PEV.Core.Plugin.EventSettings.Snapshot(manifest);
+            if (!instance.Host.Reinitialize(context, parameters, out error)) return false;
+            instance.Context = context;
             return true;
         }
 

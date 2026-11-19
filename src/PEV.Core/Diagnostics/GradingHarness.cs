@@ -132,6 +132,7 @@ namespace PEV.Diagnostics
                 HslProbe(row, manifest, input, target);
                 ScriptMapping(row, manifest);
                 Timeline(row);
+                PreviewParity(row);
                 Composition(row);
                 Lifecycle(row);
                 EdgeCases(row, manifest, input, target);
@@ -198,6 +199,9 @@ namespace PEV.Diagnostics
             string forceLut = null)
         {
             string probeLutKey = null;
+            // The reference has to know which colour space the project renders in; the shader is
+            // told by the pipeline, so the two would silently diverge under a linear project.
+            settings.LinearProject = QualitySettings.activeColorSpace == ColorSpace.Linear;
             string payload = Payload(settings, forceLut);
             if (!ScreenEffectPipeline.Set(Scope, manifest, new Dictionary<string, object> { { "__payload", payload } },
                     out string error))
@@ -395,6 +399,81 @@ namespace PEV.Diagnostics
             }
             catch (Exception e) { row("GRADING-timeline", "FAIL", e.ToString()); }
             finally { ScreenEffectPipeline.Clear(scope); }
+        }
+
+        /// <summary>
+        /// The editor preview and playback must agree, and the preview's engine reuse must not
+        /// change what the script sends. Both are checked by comparing the payload a settled
+        /// preview produces with the payload of a fresh instance on the same parameters.
+        /// </summary>
+        private static void PreviewParity(Action<string, string, string> row)
+        {
+            var problems = new List<string>();
+            string first = "diagnostics/grading/parity-a";
+            string second = "diagnostics/grading/parity-b";
+            try
+            {
+                if (!GradingTimelineTests.TryCreate(first, out var a, out var aContext, out string error))
+                { row("GRADING-preview-parity", "FAIL", error); return; }
+                try
+                {
+                    if (!GradingTimelineTests.TryCreate(second, out var b, out var bContext, out string secondError))
+                    { row("GRADING-preview-parity", "FAIL", secondError); return; }
+                    try
+                    {
+                        GradingTimelineTests.Tick(a, aContext, 3600.0);
+                        GradingTimelineTests.Tick(b, bContext, 3600.0);
+                        string payloadA = GradingTimelineTests.PayloadOf(first);
+                        string payloadB = GradingTimelineTests.PayloadOf(second);
+                        if (payloadA == null || payloadB == null) problems.Add("a payload was missing");
+                        else if (payloadA != payloadB) problems.Add("two instances disagree on the same parameters");
+
+                        // Same instance, new parameters, reusing the compiled engine: this is
+                        // the path a slider drag takes.
+                        var changed = GradingTimelineTests.BaseParams();
+                        changed["exposure"] = 1.25;
+                        changed["curveMaster"] = "0,0;0.3,0.4;1,1";
+                        var context = new EventContext
+                        {
+                            Bpm = 120, EventTime = 0, FloorSeq = 1, Params = changed
+                        };
+                        if (!b.Reinitialize(context, changed, out string reinitError))
+                            problems.Add("reinitialize failed: " + reinitError);
+                        else
+                        {
+                            GradingTimelineTests.Tick(b, context, 3600.0);
+                            string reused = GradingTimelineTests.PayloadOf(second);
+
+                            string freshScope = "diagnostics/grading/parity-c";
+                            if (GradingTimelineTests.TryCreate(freshScope, out var c, out var cContext,
+                                    out string freshError, changed))
+                            {
+                                try
+                                {
+                                    GradingTimelineTests.Tick(c, cContext, 3600.0);
+                                    string fresh = GradingTimelineTests.PayloadOf(freshScope);
+                                    if (reused != fresh)
+                                        problems.Add("a reused engine sends different values than a fresh one");
+                                }
+                                finally { c.Dispose(); ScreenEffectPipeline.Clear(freshScope); }
+                            }
+                            else problems.Add(freshError);
+                        }
+                    }
+                    finally { b?.Dispose(); ScreenEffectPipeline.Clear(second); }
+                }
+                finally { a?.Dispose(); ScreenEffectPipeline.Clear(first); }
+            }
+            catch (Exception e) { row("GRADING-preview-parity", "FAIL", e.ToString()); }
+            finally
+            {
+                ScreenEffectPipeline.Clear(first);
+                ScreenEffectPipeline.Clear(second);
+            }
+
+            row("GRADING-preview-parity", problems.Count == 0 ? "PASS" : "FAIL",
+                problems.Count == 0 ? "settled preview == playback; engine reuse == fresh create"
+                    : string.Join("; ", problems));
         }
 
         /// <summary>
