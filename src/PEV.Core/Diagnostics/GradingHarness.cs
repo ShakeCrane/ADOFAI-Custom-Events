@@ -135,6 +135,7 @@ namespace PEV.Diagnostics
                 PreviewParity(row);
                 Composition(row);
                 Lifecycle(row);
+                Performance(row, manifest, input);
                 EdgeCases(row, manifest, input, target);
             }
             catch (Exception e)
@@ -689,6 +690,92 @@ namespace PEV.Diagnostics
         /// and an absent LUT. None of them may throw, blank the screen, or leave a layer that
         /// outlives its event.
         /// </summary>
+        /// <summary>
+        /// What the grade costs per frame.
+        ///
+        /// Measured as the difference between blitting through the grade material and
+        /// blitting through nothing, both with a readback so the GPU actually finishes. The
+        /// readback dominates the absolute number, which is why only the difference is
+        /// reported: it is the part the effect is responsible for.
+        /// </summary>
+        private static void Performance(Action<string, string, string> row, EventManifest manifest,
+            Texture2D input)
+        {
+            const int iterations = 24;
+            const string scope = "diagnostics/grading/perf";
+            try
+            {
+                var settings = With(s =>
+                {
+                    s.Exposure = 0.35f;
+                    s.Contrast = 0.2f;
+                    s.Saturation = -0.2f;
+                    s.MasterCurve = new[] { 0f, 0f, 0.3f, 0.34f, 0.7f, 0.74f, 1f, 1f };
+                    s.Lift = new Vector4(-0.2f, 0.15f, 0f, 0f);
+                });
+                int w = Mathf.Max(320, Screen.width), h = Mathf.Max(180, Screen.height);
+                var fullInput = new Texture2D(w, h, TextureFormat.RGBA32, false)
+                {
+                    filterMode = FilterMode.Point, hideFlags = HideFlags.DontSave
+                };
+                var fullPixels = new Color32[w * h];
+                var small = input.GetPixels32();
+                for (int i = 0; i < fullPixels.Length; i++) fullPixels[i] = small[i % small.Length];
+                fullInput.SetPixels32(fullPixels);
+                fullInput.Apply(false, false);
+                var fullTarget = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32)
+                {
+                    antiAliasing = 1, filterMode = FilterMode.Point
+                };
+                fullTarget.Create();
+                var readback = new Texture2D(w, h, TextureFormat.RGBA32, false);
+
+                if (!ScreenEffectPipeline.Set(scope, manifest,
+                        new Dictionary<string, object> { { "__payload", Payload(settings, null) } }, out string error))
+                { row("GRADING-performance", "FAIL", error); return; }
+                var layer = ScreenEffectPipeline.Find(scope);
+                if (layer == null) { row("GRADING-performance", "FAIL", "no layer"); return; }
+                layer.Material.SetFloat("_PEVWeight", 1f);
+
+                // Time the full presented resolution, not the small test chart: a per-pixel
+                // cost that looks small at 192x48 is what actually decides whether a chart
+                // can hold a grade through a whole song.
+                var warm = new System.Diagnostics.Stopwatch();
+                warm.Start();
+                for (int i = 0; i < 4; i++) BlitTimed(fullInput, fullTarget, layer.Material, readback, w, h);
+                warm.Stop();
+                if (warm.Elapsed.TotalMilliseconds > 3000)
+                {
+                    row("GRADING-performance", "SKIP", "readback path is too slow to time here");
+                    return;
+                }
+
+                var baseline = new System.Diagnostics.Stopwatch();
+                baseline.Start();
+                for (int i = 0; i < 12; i++) BlitTimed(fullInput, fullTarget, null, readback, w, h);
+                baseline.Stop();
+
+                var graded = new System.Diagnostics.Stopwatch();
+                graded.Start();
+                for (int i = 0; i < 12; i++) BlitTimed(fullInput, fullTarget, layer.Material, readback, w, h);
+                graded.Stop();
+
+                double bare = baseline.Elapsed.TotalMilliseconds / 12;
+                double withGrade = graded.Elapsed.TotalMilliseconds / 12;
+                row("GRADING-performance", "INFO",
+                    $"{w}x{h} plain blit {bare:F2} ms, graded {withGrade:F2} ms, " +
+                    $"delta {withGrade - bare:F2} ms per frame (readback included, " +
+                    $"{FrameCapture.DescribeEnvironment()})");
+
+                UnityEngine.Object.Destroy(readback);
+                fullTarget.Release();
+                UnityEngine.Object.Destroy(fullTarget);
+                UnityEngine.Object.Destroy(fullInput);
+            }
+            catch (Exception e) { row("GRADING-performance", "FAIL", e.Message); }
+            finally { ScreenEffectPipeline.Clear(scope); }
+        }
+
         private static void EdgeCases(Action<string, string, string> row, EventManifest manifest,
             Texture2D input, RenderTexture target)
         {
@@ -732,9 +819,26 @@ namespace PEV.Diagnostics
                 problems.Count == 0 ? "7 hostile payloads" : string.Join("; ", problems));
         }
 
+        /// <summary>Blit and read one pixel so the GPU has finished before the timer stops.</summary>
+        private static void BlitTimed(Texture source, RenderTexture target, Material material, Texture2D read,
+            int width, int height)
+        {
+            if (material == null) Graphics.Blit(source, target);
+            else Graphics.Blit(source, target, material);
+            var previous = RenderTexture.active;
+            try
+            {
+                RenderTexture.active = target;
+                read.ReadPixels(new Rect(0, 0, 1, 1), 0, 0);
+                read.Apply(false);
+            }
+            finally { RenderTexture.active = previous; }
+        }
+
         private static Color32[] Render(Texture2D input, RenderTexture target, Material material)
         {
-            Graphics.Blit(input, target, material);
+            if (material == null) Graphics.Blit(input, target);
+            else Graphics.Blit(input, target, material);
             var previous = RenderTexture.active;
             Texture2D read = null;
             try
