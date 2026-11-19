@@ -489,7 +489,10 @@ namespace PEV.Scripting
         {
             if (Layers.Count == 0) { DetachDriver(); return; }
             AdvanceFades();
-            if (Layers.Count == 0) { DetachDriver(); return; }
+            // A layer that exists but is switched off still has to cost nothing: keeping the
+            // component attached would put the camera through an image-effect pass that only
+            // copies the frame.
+            if (Layers.Count == 0 || ActiveLayers().Count == 0) { DetachDriver(); return; }
             EnsureDriver();
         }
 
