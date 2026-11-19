@@ -1044,7 +1044,8 @@ namespace PEV.Diagnostics
                     { "n-prores.mov", true },
                     { "o-h264.ts", true },
                     { "p-hevc.mkv", true },
-                    { "q-h264-audio.mp4", true }
+                    { "q-h264-audio.mp4", true },
+                    { "v-vfr.mp4", true }
                 };
 
                 var files = new List<string>();
@@ -1093,7 +1094,7 @@ namespace PEV.Diagnostics
                     { "h-av1.mp4", true }, { "i-h264.mkv", false }, { "j-mpeg4.mp4", true },
                     { "k-mjpeg.avi", true }, { "l-wmv2.wmv", true }, { "m-theora.ogv", false },
                     { "n-prores.mov", false }, { "o-h264.ts", false }, { "p-hevc.mkv", false },
-                    { "q-h264-audio.mp4", true }
+                    { "q-h264-audio.mp4", true }, { "v-vfr.mp4", true }
                 };
                 var direct = new List<string>();
                 int nativeAgree = 0, nativeTested = 0;

@@ -13,10 +13,11 @@
 | AVI | H.264、MJPEG | 播放 |
 | WMV | WMV2 | 播放 |
 | WebM | VP8 | 播放 |
+| MP4 | H.264，可变帧率 | 播放 |
 
 原生拒绝、经兼容层转换后可播放：MKV（H.264、HEVC）、FLV、MPEG-TS、OGG/Theora、ProRes、WebM/VP9。转换优先无损 remux，不行再转码为 H.264 MP4，结果缓存在 `Mods/PEV.Core/video-cache/`，按路径、大小和修改时间做键。
 
-两个矩阵都是 16/16：`FORMAT-MATRIX`（开启兼容层，全部可播放）与 `FORMAT-NATIVE`（关闭兼容层，逐项符合上表）。
+两个矩阵都是 17/17：`FORMAT-MATRIX`（开启兼容层，全部可播放）与 `FORMAT-NATIVE`（关闭兼容层，逐项符合上表）。测试素材覆盖 320×180 到 3840×2160、30 与 60 fps、含音轨与无音轨、有损与无损编码，以及可变帧率。
 
 **透明视频不支持。** VP8 WebM 的 alpha 平面不会进入 RenderTexture，画面是不透明的。这是后端限制，本版未规避。
 

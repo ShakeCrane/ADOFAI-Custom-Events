@@ -37,7 +37,11 @@ $jobs = @(
     @{ n = 'p-hevc.mkv';          a = "$src -c:v libx265 -pix_fmt yuv420p" },
     @{ n = 'q-h264-audio.mp4';    a = "$src -f lavfi -i sine=frequency=440:duration=3 -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest" },
     @{ n = 'x-1080p60.mp4';       a = '-f lavfi -i testsrc2=size=1920x1080:rate=60:duration=3 -c:v libx264 -preset ultrafast -pix_fmt yuv420p' },
-    @{ n = 'z-4k.mp4';            a = '-f lavfi -i testsrc2=size=3840x2160:rate=30:duration=1 -c:v libx264 -preset ultrafast -pix_fmt yuv420p' }
+    @{ n = 'z-4k.mp4';            a = '-f lavfi -i testsrc2=size=3840x2160:rate=30:duration=1 -c:v libx264 -preset ultrafast -pix_fmt yuv420p' },
+    # Variable frame rate: the same nominal 30 fps clip whose packets switch to 10 fps
+    # halfway through. Seeking by media time has to land on the right picture here, which
+    # is exactly what frame-number arithmetic would get wrong.
+    @{ n = 'v-vfr.mp4';           a = "-f lavfi -i testsrc2=size=320x180:rate=30:duration=3 -vf `"setpts='if(lt(N,45),N/30,(45/30)+(N-45)/12)/TB'`" -vsync vfr -c:v libx264 -pix_fmt yuv420p" }
 )
 
 $made = 0
