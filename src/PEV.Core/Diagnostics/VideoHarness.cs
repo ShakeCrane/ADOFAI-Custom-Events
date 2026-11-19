@@ -124,9 +124,97 @@ namespace PEV.Diagnostics
                 foreach (var step in CheckMultiInstance()) yield return step;
                 foreach (var step in CheckPerformance()) yield return step;
                 foreach (var step in CheckSaveReload()) yield return step;
+                foreach (var step in CheckPlayback()) yield return step;
                 foreach (var step in CheckDiagnostics()) yield return step;
 
                 File.AppendAllText(_resultPath, "DONE\tok\n");
+            }
+
+            // ---------------------------------------------------------- playback
+
+            /// <summary>
+            /// Presses play and checks the video follows the song clock.
+            ///
+            /// Everything before this drives the surface directly, which proves the machinery
+            /// but not the product: the claim is that a placed video event advances with the
+            /// song, holds when paused, and lands on the right frame after a jump. Only real
+            /// playback and a real transport control can show that.
+            /// </summary>
+            private IEnumerable CheckPlayback()
+            {
+                if (_placed == null || _editor == null) { Row("PLAY", "SKIP", "no placed row"); yield break; }
+
+                string before = TimePosition();
+
+                try { _editor.Play(); }
+                catch (Exception e) { Row("PLAY", "EXCEPTION", One(e)); yield break; }
+
+                // The countdown runs before the song starts; give it enough frames for the
+                // clock to begin, then sample the surface twice.
+                float deadline = Time.realtimeSinceStartup + 25f;
+                double first = -1, second = -1;
+                while (Time.realtimeSinceStartup < deadline)
+                {
+                    yield return null;
+                    double now = ParseTime(EntryReport("pev.video#" + UidOf(_placed) + "/video"));
+                    if (now > 0.2 && first < 0) first = now;
+                    else if (first >= 0 && now > first + 0.15) { second = now; break; }
+                }
+
+                Row("PLAY-ADVANCES", second > first && first >= 0 ? "PASS" : "FAIL",
+                    "media " + first.ToString("F2") + " -> " + second.ToString("F2") + " during playback");
+
+                // Pausing the song must freeze the picture; a decoder left running is exactly
+                // the desync the whole clock-driven design exists to prevent. The pause goes
+                // through the controller, because pausedInPlayMode only touches camera settings.
+                bool paused = false;
+                try
+                {
+                    if (ADOBase.controller != null) { ADOBase.controller.TogglePauseGame(); paused = true; }
+                }
+                catch (Exception e) { Row("PLAY-PAUSE", "EXCEPTION", One(e)); }
+
+                for (int i = 0; i < 5; i++) yield return null;
+                double held1 = ParseTime(EntryReport("pev.video#" + UidOf(_placed) + "/video"));
+                for (int i = 0; i < 45; i++) yield return null;
+                double held2 = ParseTime(EntryReport("pev.video#" + UidOf(_placed) + "/video"));
+                Row("PLAY-HOLDS", Math.Abs(held2 - held1) < 0.12 ? "PASS" : "FAIL",
+                    "paused at " + held1.ToString("F2") + ", 45 frames later " + held2.ToString("F2") +
+                    " (pauseIssued=" + paused + ")");
+
+                // Resuming must continue from where the song is, not resume a stale frame.
+                try { if (ADOBase.controller != null) ADOBase.controller.TogglePauseGame(); }
+                catch { }
+                for (int i = 0; i < 45; i++) yield return null;
+                double resumed = ParseTime(EntryReport("pev.video#" + UidOf(_placed) + "/video"));
+                Row("PLAY-RESUMES", resumed > held2 + 0.05 ? "PASS" : "FAIL",
+                    "resumed to " + resumed.ToString("F2") + " from " + held2.ToString("F2"));
+
+                try { _editor.SwitchToEditMode(); }
+                catch (Exception e) { Row("PLAY-EXIT", "EXCEPTION", One(e)); }
+                for (int i = 0; i < 5; i++) yield return null;
+
+                Row("PLAY-IDLE-RETURN", "INFO", "before=" + before + " after-exit=" + TimePosition());
+            }
+
+            private static string UidOf(LevelEvent row)
+            {
+                return LevelStorage.TryGetData(row, out var data) ? data.Uid : "";
+            }
+
+            /// <summary>The decoded position from one surface's report line.</summary>
+            private static double ParseTime(string report)
+            {
+                if (string.IsNullOrEmpty(report)) return -1;
+                int at = report.IndexOf(" t=", StringComparison.Ordinal);
+                if (at < 0) at = report.StartsWith("t=", StringComparison.Ordinal) ? -1 : -2;
+                if (at == -2) return -1;
+                int start = at < 0 ? 2 : at + 3;
+                int end = report.IndexOf(' ', start);
+                double value;
+                return double.TryParse(report.Substring(start, Math.Max(0, end - start)),
+                    System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture,
+                    out value) ? value : -1;
             }
 
             // ---------------------------------------------------- package timing math
