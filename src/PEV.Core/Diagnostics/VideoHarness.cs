@@ -454,6 +454,72 @@ namespace PEV.Diagnostics
                     VideoSurface.CaptureActive = false;
                     try { host.Dispose(); } catch { }
                 }
+
+                foreach (var step in CheckTempoChange()) yield return step;
+            }
+
+            /// <summary>
+            /// A tempo change before the tile must not move when the clip starts.
+            ///
+            /// The beat offset is measured from the tile, so its conversion needs the tempo at
+            /// the tile. A video instance starts at the level start, where the tempo is the
+            /// chart's opening one — using it would start the clip at the wrong moment on any
+            /// chart that changes BPM in between. This drives exactly that shape.
+            /// </summary>
+            private IEnumerable CheckTempoChange()
+            {
+                if (!EventRegistry.TryGetById("pev.video", out var manifest)) yield break;
+                string source = EventScriptCache.Get(manifest);
+                if (source == null) yield break;
+
+                var host = ScriptHost.Create(source, "math-bpm", out string error, manifest);
+                if (host == null) { Row("MATH-BPM", "FAIL", "script did not compile: " + error); yield break; }
+
+                VideoSurface.Capture.Clear();
+                VideoSurface.CaptureActive = true;
+                try
+                {
+                    var parameters = new Dictionary<string, object>
+                    {
+                        { "file", "x.mp4" }, { "start", 2.0 }, { "speed", 1.0 },
+                        { "trimStart", 0.0 }, { "trimEnd", 0.0 }, { "loop", false },
+                        { "holdEnd", true }, { "mode", "Fit" }, { "volume", 100.0 }, { "muted", true }
+                    };
+                    var context = new EventContext
+                    {
+                        Bpm = 60, Time = 0, EventTime = 0, TileTime = 4.0, T = 0, FloorSeq = 8,
+                        Params = parameters
+                    };
+                    if (!host.Initialize(context, parameters, out string initError))
+                    {
+                        Row("MATH-BPM", "FAIL", "create threw: " + initError);
+                        yield break;
+                    }
+
+                    // Opening tempo 60 (1 s/beat). The tile sits at 4.0 s; with the tile tempo
+                    // at 120 the two-beat offset is 1 s, so the clip must begin at 5.0 s. Using
+                    // the opening tempo would give 6.0 s instead.
+                    Drive(host, context, 1.0);
+                    context.Bpm = 120;
+                    Drive(host, context, 4.5);
+                    Drive(host, context, 4.9);
+                    var beforeStart = LastCapture();
+                    Row("MATH-BPM-BEFORE", beforeStart != null && !Truth(beforeStart, "playing") ? "PASS" : "FAIL",
+                        "4.9s is before the real 5.0s start; " + DescribeLast(beforeStart));
+
+                    Drive(host, context, 5.1);
+                    var afterStart = LastCapture();
+                    // 0.1 s into the clip, so media 0.1. Starting at 6.0 would still be holding.
+                    Row("MATH-BPM-AFTER", afterStart != null && Truth(afterStart, "playing") &&
+                        Near(afterStart, "time", 0.1) ? "PASS" : "FAIL",
+                        "5.1s should be 0.1s into the clip; " + DescribeLast(afterStart));
+                }
+                catch (Exception e) { Row("MATH-BPM", "EXCEPTION", One(e)); }
+                finally
+                {
+                    VideoSurface.CaptureActive = false;
+                    try { host.Dispose(); } catch { }
+                }
             }
 
             private static void Drive(ScriptHost host, EventContext context, double songTime)

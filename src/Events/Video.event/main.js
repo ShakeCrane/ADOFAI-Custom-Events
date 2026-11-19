@@ -28,15 +28,22 @@ function create(ctx, params) {
   var volume = num(params.volume, 100) / 100;
   var muted = params.muted !== false;
 
-  // The beat offset is measured from this event's own tile. Converting it needs the tempo in
-  // force at that tile, not at the level start, so the conversion happens the first time the
-  // song actually reaches the tile and is then frozen. A chart with tempo changes would
-  // otherwise start the clip at the wrong moment.
+  // The beat offset is measured from this event's own tile, so converting it needs the tempo
+  // in force *at that tile*, not at the level start. A video instance begins when the level
+  // begins, which means `secondsPerBeat` on the first update is the wrong tempo for a chart
+  // that changes BPM before this tile. So the conversion is frozen at the first moment the
+  // song has crossed into the window; before then it is recomputed each frame, which costs
+  // nothing because the picture is holding its first frame anyway.
   var startTime = null;
-  function startSeconds() {
+  function startSeconds(now) {
+    var tile = num(ctx.tileTime, 0);
+    var offset = num(params.start, 0) * num(ctx.secondsPerBeat, 0.5);
     if (startTime === null) {
-      var tile = num(ctx.tileTime, 0);
-      startTime = tile + num(params.start, 0) * num(ctx.secondsPerBeat, 0.5);
+      // A clip that starts on or after its tile freezes exactly at the tile, where the tempo
+      // is the one the author meant. One that starts earlier can only be resolved when the
+      // song gets there, which is the same instant for a constant-tempo chart.
+      if (now >= Math.min(tile, tile + offset)) startTime = tile + offset;
+      else return tile + offset;
     }
     return startTime;
   }
@@ -45,7 +52,7 @@ function create(ctx, params) {
 
   function frame() {
     var now = num(ctx.time, 0);
-    var begin = startSeconds();
+    var begin = startSeconds(now);
 
     // Before the clip's start the surface shows the first frame of the window and holds it:
     // an author who scrubs to the beginning of the level still sees the video they placed.
