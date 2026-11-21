@@ -134,7 +134,7 @@ class Program
         try { canceledWorker.Update(1, 1, 1f, areas, 0xff5454); throw new Exception("Disposed worker accepted work"); }
         catch (ObjectDisposedException) { }
         Console.WriteLine("Worker disposal and cancellation: PASS");
-        var staging = new NoiseFieldGroupStaging<int, Resource>();
+        var staging = new ResourceGroupStaging<int, Resource>();
         var keep = new Dictionary<int, bool> { [1] = true };
         var originalResource = new Resource(); var replacement = new Resource();
         var superseded = new Resource(); var removed = new Resource();

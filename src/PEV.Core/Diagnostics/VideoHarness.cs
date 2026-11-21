@@ -487,7 +487,7 @@ namespace PEV.Diagnostics
                     };
                     var context = new EventContext
                     {
-                        Bpm = 60, Time = 0, EventTime = 0, TileTime = 4.0, T = 0, FloorSeq = 8,
+                        Bpm = 60, TileBpm = 120, Time = 0, EventTime = 0, TileTime = 4.0, T = 0, FloorSeq = 8,
                         Params = parameters
                     };
                     if (!host.Initialize(context, parameters, out string initError))
@@ -754,6 +754,9 @@ namespace PEV.Diagnostics
 
                 Row("RENDER-SURFACE", ReportContains(report, "prepared=True") ? "PASS" : "FAIL", Truncate(report, 320));
                 Row("RENDER-FRAME", ReportContains(report, "frame=True") ? "PASS" : "FAIL", "decoded at least one frame");
+                var renderer = VideoSurface.FindVisibleRenderer("editorvideo/pev.video#" + UidOf(_placed), "preview");
+                bool pixels = VideoPlayHarness.ReadVideoPixels(renderer, out string pixelDetail);
+                Row("RENDER-PIXELS", pixels ? "PASS" : "FAIL", pixelDetail);
 
                 var dec = DecorationBridge.Find(_placed);
                 Row("RENDER-CARRIER", dec != null ? "PASS" : "FAIL", dec == null ? "no scrDecoration" : dec.GetType().Name);
@@ -800,6 +803,38 @@ namespace PEV.Diagnostics
                 string fit = QuadFit();
                 Row("RENDER-FIT", fit == "Fit" ? "PASS" : "FAIL",
                     "fit=" + fit + " (manifest default is Fit; a stretch here means the preview dropped the parameter)");
+                if (renderer != null)
+                {
+                    var fitScale = renderer.transform.localScale;
+                    object mode = _placed.Get<object>("mode");
+                    if (mode is Enum choice)
+                    {
+                        _placed["mode"] = Enum.Parse(choice.GetType(), "Fill");
+                        yield return null;
+                        yield return null;
+                        var fillScale = renderer.transform.localScale;
+                        var uv = renderer.GetComponent<MeshFilter>().sharedMesh.uv;
+                        bool cropped = Mathf.Abs(fillScale.x / fillScale.y - 4f / 3f) < .01f &&
+                            Mathf.Abs(fitScale.x / fitScale.y - 16f / 9f) < .01f &&
+                            uv[0].x > 0f && uv[2].x < 1f;
+                        Row("RENDER-FILL", cropped ? "PASS" : "FAIL", $"fit={fitScale} fill={fillScale}, uv {uv[0]}–{uv[2]}");
+                        _placed["mode"] = mode;
+                    }
+                }
+
+                string scope = "editorvideo/pev.video#" + UidOf(_placed);
+                string source = _placed.GetString("file");
+                _placed["file"] = "missing-preview-source.mp4";
+                yield return null;
+                yield return null;
+                bool hidden = VideoSurface.FindVisibleRenderer(scope, "preview") == null;
+                _placed["file"] = source;
+                float opened = Time.realtimeSinceStartup + 10f;
+                while (VideoSurface.FindVisibleRenderer(scope, "preview") == null && Time.realtimeSinceStartup < opened)
+                    yield return null;
+                bool restored = VideoSurface.FindVisibleRenderer(scope, "preview") != null;
+                Row("RENDER-SOURCE-CHANGE", hidden && restored ? "PASS" : "FAIL",
+                    $"missing file hidden={hidden}, original source restored={restored}");
             }
 
             private string QuadFit()
@@ -969,6 +1004,26 @@ namespace PEV.Diagnostics
                 }
                 catch (Exception e) { Row("SAVE-ROUNDTRIP", "EXCEPTION", One(e)); }
 
+                string exportDir = Path.Combine(Path.GetTempPath(), "pev-video-" + Guid.NewGuid().ToString("N"));
+                try
+                {
+                    var export = AccessTools.Method(typeof(scnEditor), "GetExportLevelFiles",
+                        new[] { typeof(string), typeof(bool).MakeByRefType(), typeof(DLCManager[]).MakeByRefType() });
+                    var paths = (List<string>)export.Invoke(_editor, new object[] { exportDir, false, null });
+                    var names = new HashSet<string>(paths.Select(Path.GetFileName), StringComparer.OrdinalIgnoreCase);
+                    string file = _placed.GetString("file");
+                    Row("SAVE-EXPORT", names.Contains("Video.event") && names.Contains(file) ? "PASS" : "FAIL",
+                        string.Join(", ", names));
+                }
+                catch (Exception e) { Row("SAVE-EXPORT", "EXCEPTION", One(e)); }
+                finally
+                {
+                    if (Directory.Exists(exportDir))
+                    {
+                        foreach (string file in Directory.GetFiles(exportDir)) File.Delete(file);
+                        Directory.Delete(exportDir);
+                    }
+                }
                 yield break;
             }
 
@@ -984,8 +1039,7 @@ namespace PEV.Diagnostics
                 // Missing file.
                 args["file"] = "definitely-missing-video.mp4";
                 bool okMissing = VideoSurface.Set("video", args, out string errorMissing);
-                string report = VideoSurface.Report();
-                Row("DIAG-MISSING", okMissing && !string.IsNullOrEmpty(errorMissing) ? "PASS" : "FAIL",
+                Row("DIAG-MISSING", !okMissing && !string.IsNullOrEmpty(errorMissing) ? "PASS" : "FAIL",
                     errorMissing ?? "no error reported");
 
                 // A file that exists but is not media at all.
@@ -994,7 +1048,8 @@ namespace PEV.Diagnostics
                 args["file"] = junk;
                 var args2 = new Dictionary<string, object>(args) { ["__instance"] = "test/junk" };
                 bool okJunk = VideoSurface.Set("video", args2, out string errorJunk);
-                Row("DIAG-JUNK", okJunk ? "PASS" : "FAIL", errorJunk ?? "accepted (set returns true; prepare will fail)");
+                Row("DIAG-JUNK", !okJunk && !string.IsNullOrEmpty(errorJunk) ? "PASS" : "FAIL",
+                    errorJunk ?? "no error reported");
                 try { File.Delete(junk); } catch { }
 
                 // Diagnostics must name what the backend refused, not just say "failed".
@@ -1009,7 +1064,8 @@ namespace PEV.Diagnostics
                     }
                 }
 
-                VideoSurface.DestroyScope("test");
+                VideoSurface.DestroyScope("test/bad");
+                VideoSurface.DestroyScope("test/junk");
                 yield break;
             }
 
@@ -1381,7 +1437,7 @@ namespace PEV.Diagnostics
             /// </summary>
             private string PlacedSurface()
             {
-                string previewKey = "editorvideo/" + UidOf(_placed) + "/video";
+                string previewKey = "editorvideo/pev.video#" + UidOf(_placed) + "/preview";
                 string runtimeKey = "pev.video#" + UidOf(_placed) + "/video";
 
                 string runtime = "", preview = "";

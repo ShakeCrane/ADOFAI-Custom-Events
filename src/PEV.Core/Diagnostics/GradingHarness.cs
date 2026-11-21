@@ -504,12 +504,28 @@ namespace PEV.Diagnostics
                         GradingTimelineTests.Tick(first, firstContext, 0.0);
                         var a = ScreenEffectPipeline.Find(firstScope);
                         if (a == null) { row("GRADING-composition", "FAIL", "first layer missing"); return; }
+                        var invalid = new Dictionary<string, object>
+                        {
+                            ["__payload"] = "{\"floats\":{\"_PEVWeight\":0.5}}"
+                        };
+                        if (ScreenEffectPipeline.Set(secondScope, a.Manifest, invalid, out _) ||
+                            ScreenEffectPipeline.Set(secondScope, a.Manifest, invalid, out _) ||
+                            a.FadingOut || ScreenEffectPipeline.Find(secondScope) != null)
+                            problems.Add("an invalid replacement modified the stack or was cached as successful");
 
                         GradingTimelineTests.Tick(second, secondContext, 0.0);
                         var b = ScreenEffectPipeline.Find(secondScope);
                         if (b == null) { row("GRADING-composition", "FAIL", "second layer missing"); return; }
                         if (!a.FadingOut)
                             problems.Add("a replace layer did not supersede the previous grade");
+                        if (a.FadeOutDuration == 0f)
+                        {
+                            ScreenEffectPipeline.Tick();
+                            var resend = new Dictionary<string, object> { ["__payload"] = a.Payload };
+                            if (!ScreenEffectPipeline.Set(firstScope, a.Manifest, resend, out _) ||
+                                ScreenEffectPipeline.Find(firstScope) != null || b.FadingOut)
+                                problems.Add("a superseded layer reappeared after its script resubmitted");
+                        }
 
                         // Stack mode keeps both.
                         var stack = GradingTimelineTests.BaseParams();

@@ -26,6 +26,7 @@ namespace PEV.Scripting
         /// tile" still has to name a specific moment.
         /// </summary>
         public double TileTime;
+        public double TileBpm;
         public bool IsPlaying;
         public bool IsPaused;
 
@@ -47,6 +48,8 @@ namespace PEV.Scripting
                 { "secondsPerBeat", Bpm > 0 ? 60.0 / Bpm : 0.5 },
                 { "floorSeq", FloorSeq },
                 { "tileTime", TileTime },
+                { "tileBpm", TileBpm > 0 ? TileBpm : Bpm },
+                { "tileSecondsPerBeat", TileBpm > 0 ? 60.0 / TileBpm : (Bpm > 0 ? 60.0 / Bpm : 0.5) },
                 { "isPlaying", IsPlaying },
                 { "isPaused", IsPaused }
             };

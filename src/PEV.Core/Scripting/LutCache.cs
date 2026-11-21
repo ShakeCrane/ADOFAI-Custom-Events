@@ -55,9 +55,7 @@ namespace PEV.Scripting
 
         /// <summary>
         /// Resolves a LUT path for a package. A package may ship LUTs, and an author may
-        /// also drop a `.cube` beside the chart, which is how the game already treats
-        /// audio files. Absolute paths are allowed but are the caller's portability
-        /// problem, so they are the last resort.
+        /// also drop a `.cube` beside the chart and reference its relative path.
         /// </summary>
         internal static string Resolve(string path, string packagePath, out string error)
         {
@@ -69,14 +67,8 @@ namespace PEV.Scripting
                 EventLoader.HasResource(packagePath, candidate))
                 return packagePath + "|" + candidate;
 
-            if (Path.IsPathRooted(candidate) && File.Exists(candidate)) return Path.GetFullPath(candidate);
-
-            string chartDirectory = ChartPackages.CurrentChartDirectory;
-            if (!string.IsNullOrEmpty(chartDirectory))
-            {
-                string beside = Path.Combine(chartDirectory, candidate.Replace('/', Path.DirectorySeparatorChar));
-                if (File.Exists(beside)) return Path.GetFullPath(beside);
-            }
+            string beside = ChartPackages.ResolveChartAsset(candidate);
+            if (beside != null) return beside;
 
             error = $"LUT '{path}' was not found in the package or next to the chart";
             return null;

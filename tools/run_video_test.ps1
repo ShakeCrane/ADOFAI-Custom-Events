@@ -30,19 +30,21 @@ if (Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $gameEx
 if ($Mode -eq 'play') { $resultName = 'video-play-results.txt'; $triggerName = 'video-play-test.txt' } else { $resultName = 'video-results.txt'; $triggerName = 'video-test.txt' }
 $resultPath = Join-Path $modDir $resultName
 $triggerPath = Join-Path $modDir $triggerName
+$installedDll = Join-Path $modDir 'PEV.Core.dll'
+$savedDll = if (Test-Path -LiteralPath $installedDll) { [IO.File]::ReadAllBytes($installedDll) }
+$savedChart = $env:PEV_VIDEO_TEST_CHART
+$savedMedia = $env:PEV_VIDEO_TEST_MEDIA
 
 $parked = @{}
-Get-ChildItem -LiteralPath $modDir -Filter '*-test.txt' -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -ne $triggerName } |
-    ForEach-Object { $parked[$_.FullName] = [IO.File]::ReadAllBytes($_.FullName); Remove-Item -LiteralPath $_.FullName -Force }
-
-$savedTrigger = Test-Path -LiteralPath $triggerPath
 $process = $null
 try {
+    Get-ChildItem -LiteralPath $modDir -File |
+        Where-Object { $_.Name -like '*-test.txt' -or $_.Name -eq 'cg-probe.txt' } |
+        ForEach-Object { $parked[$_.FullName] = [IO.File]::ReadAllBytes($_.FullName); Remove-Item -LiteralPath $_.FullName -Force }
     # A stale result file would be read as this run's evidence the moment the loop starts.
     if (Test-Path -LiteralPath $resultPath) { Remove-Item -LiteralPath $resultPath -Force }
     [IO.File]::WriteAllText($triggerPath, '')
-    Copy-Item -LiteralPath $dllSrc -Destination (Join-Path $modDir 'PEV.Core.dll') -Force
+    Copy-Item -LiteralPath $dllSrc -Destination $installedDll -Force
 
     # UnityModManager caches assemblies beside the DLL; a stale copy can shadow a new build.
     Get-ChildItem -LiteralPath $modDir -Filter 'PEV.Core.dll.*.cache' -File -ErrorAction SilentlyContinue |
@@ -63,13 +65,19 @@ try {
 
     if ($output -notmatch '(?m)^DONE') { throw "Harness did not finish in ${TimeoutSeconds}s`n$output" }
     Write-Output $output
+    if ($output -match '(?im)^[^\t\r\n]+\t(?:FAIL|EXCEPTION)(?:\t|\r?$)' -or $output -notmatch '(?m)^DONE\tok\r?$') {
+        throw "Video $Mode harness reported failures"
+    }
 } finally {
     if ($null -ne $process -and -not $process.HasExited) {
         Stop-Process -Id $process.Id -Force
         $process.WaitForExit()
     }
-    if (-not $savedTrigger -and (Test-Path -LiteralPath $triggerPath)) { Remove-Item -LiteralPath $triggerPath -Force }
+    if (Test-Path -LiteralPath $triggerPath) { Remove-Item -LiteralPath $triggerPath -Force }
     foreach ($path in $parked.Keys) { [IO.File]::WriteAllBytes($path, $parked[$path]) }
-    Remove-Item Env:PEV_VIDEO_TEST_CHART -ErrorAction SilentlyContinue
-    Remove-Item Env:PEV_VIDEO_TEST_MEDIA -ErrorAction SilentlyContinue
+    if ($null -ne $savedDll) { [IO.File]::WriteAllBytes($installedDll, [byte[]]$savedDll) }
+    elseif (Test-Path -LiteralPath $installedDll) { Remove-Item -LiteralPath $installedDll -Force }
+    Get-ChildItem -LiteralPath $modDir -Filter 'PEV.Core.dll.*.cache' -File | Remove-Item -Force
+    $env:PEV_VIDEO_TEST_CHART = $savedChart
+    $env:PEV_VIDEO_TEST_MEDIA = $savedMedia
 }

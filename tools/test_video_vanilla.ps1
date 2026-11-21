@@ -20,9 +20,20 @@ param(
 $ErrorActionPreference = 'Stop'
 $gameDir = 'D:\Program Files (x86)\Steam\steamapps\common\A Dance of Fire and Ice'
 if ($env:ADOFAI_GAME_DIR) { $gameDir = $env:ADOFAI_GAME_DIR }
+$gameDir = (Resolve-Path -LiteralPath $gameDir).Path
 $gameExe = Join-Path $gameDir 'A Dance of Fire and Ice.exe'
-$modDir = Join-Path $gameDir 'Mods\PEV.Core'
-$parkedMod = Join-Path $gameDir 'Mods-off\PEV.Core.vanilla-check'
+$modDir = [IO.Path]::GetFullPath((Join-Path $gameDir 'Mods\PEV.Core'))
+$parkedMod = [IO.Path]::GetFullPath((Join-Path $gameDir ('Mods-off\PEV.Core.vanilla-check-' + [Guid]::NewGuid().ToString('N'))))
+$gameRoot = $gameDir.TrimEnd('\') + '\'
+foreach ($path in @($modDir, $parkedMod)) {
+    if (-not $path.StartsWith($gameRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Mod test path must be inside the game installation: $path"
+    }
+    $parent = Split-Path -Parent $path
+    if ((Test-Path -LiteralPath $parent) -and ((Get-Item -LiteralPath $parent).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Mod test parent is a reparse point: $parent"
+    }
+}
 $log = Join-Path $env:USERPROFILE 'AppData\LocalLow\7th Beat Games\A Dance of Fire and Ice\Player.log'
 
 # ---- data shape ----------------------------------------------------------------
@@ -63,7 +74,7 @@ if problems:
 print('CHART-SHAPE ok (%d row(s), native keys only, pev1 payload present)' % len(rows))
 '@
 
-$shapeFile = Join-Path ([IO.Path]::GetTempPath()) 'pev-video-shape-check.py'
+$shapeFile = Join-Path ([IO.Path]::GetTempPath()) ('pev-video-shape-' + [Guid]::NewGuid().ToString('N') + '.py')
 [IO.File]::WriteAllText($shapeFile, $shape, [Text.UTF8Encoding]::new($false))
 try {
     & python $shapeFile $Chart

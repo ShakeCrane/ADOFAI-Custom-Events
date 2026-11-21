@@ -91,7 +91,7 @@ function vec2(value) {
 function create(ctx, params) {
   var easeName = typeof params.ease === 'string' ? params.ease : 'OutCubic';
   var ease = EASES[easeName] || EASES.OutCubic;
-  var seconds = Math.max(0, num(params.duration, 0)) * (ctx.secondsPerBeat || 0.5);
+  var seconds = Math.max(0, num(params.duration, 0)) * (ctx.tileSecondsPerBeat || ctx.secondsPerBeat || 0.5);
   var mode = params.mode === 'Stack' ? 'stack' : 'replace';
 
   var master = parseCurve(params.curveMaster, [0, 0, 1, 1]);

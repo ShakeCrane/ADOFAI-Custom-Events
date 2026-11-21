@@ -10,7 +10,7 @@ using PEV.Storage;
 
 namespace PEV.Editor
 {
-    /// <summary>Add chart-declared packages to the game's normal export and missing-file checks.</summary>
+    /// <summary>Add chart-declared packages and event file inputs to the game's normal export.</summary>
     [HarmonyPatch]
     internal static class ChartExport
     {
@@ -25,6 +25,7 @@ namespace PEV.Editor
                 string directory = scnGame.instance == null ? null : Path.GetDirectoryName(scnGame.instance.levelPath);
                 if (string.IsNullOrEmpty(directory)) return;
                 var known = new HashSet<string>(__result, StringComparer.OrdinalIgnoreCase);
+                ILookup<string, PEV.Model.EventManifest> definitions = null;
                 foreach (string level in __result.Where(path => path.EndsWith(".adofai", StringComparison.OrdinalIgnoreCase)).ToArray())
                 {
                     if (!File.Exists(level)) continue;
@@ -35,6 +36,31 @@ namespace PEV.Editor
                         if (string.IsNullOrEmpty(entry.File)) continue;
                         string path = Path.Combine(directory, entry.File);
                         if (known.Add(path)) __result.Add(path);
+                    }
+                    foreach (var data in ChartDependencies.UsedEvents(root))
+                    {
+                        if (definitions == null)
+                            definitions = EventLoader.ScanChartDirectory(directory).Loaded
+                                .ToLookup(manifest => manifest.Id, StringComparer.Ordinal);
+                        string package = state.Entries.FirstOrDefault(item => item.Id == data.Id)?.File;
+                        var candidates = definitions[data.Id].Where(manifest => string.IsNullOrEmpty(package) ||
+                            string.Equals(Path.GetFileName(manifest.SourcePath), package, StringComparison.OrdinalIgnoreCase));
+                        var matches = candidates.Take(2).ToList();
+                        if (matches.Count != 1) continue;
+                        foreach (var param in matches[0].Params)
+                        {
+                            if (param.Type != "File") continue;
+                            string value = data.Raw.TryGetValue(param.Name, out var stored)
+                                ? stored.Type == JTokenType.String ? stored.Value<string>() : null
+                                : param.Default as string;
+                            if (string.IsNullOrWhiteSpace(value) || !EventLoader.IsPackageRelativePath(value)) continue;
+
+                            // The game's ZIP writer stores basenames. A path with a directory
+                            // component needs to be shipped in a directory-preserving archive.
+                            if (value.IndexOfAny(new[] { '/', '\\' }) >= 0) continue;
+                            string path = ChartPackages.ResolveChartAsset(value, directory);
+                            if (path != null && known.Add(path)) __result.Add(path);
+                        }
                     }
                 }
                 // A carrier marker is a virtual path, not a missing image asset. There can be

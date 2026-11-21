@@ -182,6 +182,8 @@ namespace PEV.Model
         public string Id;
         public string Version = "1.0.0";
         public int ApiVersion = 1;
+        public bool UsesLevelClock;
+        public readonly Dictionary<string, string> VideoPreviewBindings = new Dictionary<string, string>(StringComparer.Ordinal);
         public string Entry = "main.js";
         public string IconPath;
         /// <summary>Optional package-local Unity shader bundle (schema 2).</summary>
@@ -310,6 +312,14 @@ namespace PEV.Model
                 if (m.SchemaVersion < 3 || (primitive != "fx.field" && primitive != "fx.video"))
                 { error = "invalid hostPrimitive (requires schemaVersion 3 and fx.field or fx.video)"; return null; }
                 m.HostPrimitive = primitive;
+            }
+            m.UsesLevelClock = m.HostPrimitive == "fx.video";
+            if (root["clock"] != null)
+            {
+                string clock = root["clock"].Type == JTokenType.String ? root.Value<string>("clock") : null;
+                if (m.SchemaVersion < 5 || (clock != "level" && clock != "tile"))
+                { error = "clock requires schemaVersion 5 and 'level' or 'tile'"; return null; }
+                m.UsesLevelClock = clock == "level";
             }
             m.Description = LocalizedValue(root["description"]) ?? "";
             m.DisplayName = LocalizedValue(root["name"]) ?? m.Id;
@@ -630,7 +640,80 @@ namespace PEV.Model
                     m.Params.Add(spec);
                 }
             }
+
+            if (root["videoPreview"] != null)
+            {
+                if (m.SchemaVersion < 5 || m.HostPrimitive != "fx.video" || !m.DecorationBacked ||
+                    !(root["videoPreview"] is JObject preview) || preview.Count != 1 ||
+                    !(preview["parameterMap"] is JObject map) || map.Count < 1 || map.Count > 7)
+                { error = "videoPreview requires a schema 5 fx.video decoration and parameterMap"; return null; }
+
+                var used = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var item in map.Properties())
+                {
+                    string target = item.Value.Type == JTokenType.String ? item.Value.Value<string>() : null;
+                    if (!m.Params.Any(param => param.Name == item.Name) ||
+                        (target != "file" && target != "time" && target != "trimStart" &&
+                         target != "trimEnd" && target != "fit" && target != "compat" && target != "visible") ||
+                        !used.Add(target))
+                    { error = "invalid or duplicate videoPreview parameter mapping"; return null; }
+                    m.VideoPreviewBindings.Add(item.Name, target);
+                }
+                if (!used.Contains("file")) { error = "videoPreview must map a file parameter"; return null; }
+            }
+            if (m.EditorPanel != null && (m.ScreenEffect == null || !m.ValidatePanel(m.EditorPanel)))
+            { error = "editorPanel requires a screenEffect and valid control bindings to declared parameters"; return null; }
             return m;
+        }
+
+        private bool ValidatePanel(JObject panel)
+        {
+            bool Bind(JToken token, params string[] types) => token?.Type == JTokenType.String &&
+                Params.Any(param => param.Name == token.Value<string>() && types.Contains(param.Type));
+            bool Optional(JToken token, params string[] types) => token == null || Bind(token, types);
+            bool Channels(JToken token, params string[] names) => token == null ||
+                (token is JObject group && group.Count > 0 && group.Properties().All(item =>
+                    names.Contains(item.Name) && Bind(item.Value, "String", "Text")));
+
+            if (!Channels(panel["curves"], "master", "red", "green", "blue") ||
+                !Channels(panel["hueCurves"], "hue", "saturation", "luma") ||
+                !Optional(panel["compare"], "Bool") || !Optional(panel["composition"], "Choice") ||
+                (panel["title"] != null && !PanelLabel(panel["title"])) ||
+                (panel["summary"] != null && !PanelLabel(panel["summary"])) ||
+                (panel["scopes"] != null && panel["scopes"].Type != JTokenType.Boolean))
+                return false;
+
+            if (panel["wheels"] != null && (!(panel["wheels"] is JArray wheels) ||
+                wheels.Count < 1 || wheels.Count > 8 || wheels.Any(item => !(item is JObject wheel) ||
+                    !Bind(wheel["xy"], "Vector2", "FloatPair") || !Bind(wheel["luma"], "Float") ||
+                    (wheel["label"] != null && !PanelLabel(wheel["label"])))))
+                return false;
+            if (panel["lut"] != null && (!(panel["lut"] is JObject lut) ||
+                !Optional(lut["preset"], "Choice") || !Optional(lut["file"], "String", "Text", "File") ||
+                !Optional(lut["strength"], "Float") || (lut["note"] != null && !PanelLabel(lut["note"]))))
+                return false;
+            if (panel["hsl"] != null && (!(panel["hsl"] is JObject hsl) ||
+                !Bind(hsl["parameter"], "String", "Text") || !(hsl["bands"] is JArray bands) ||
+                bands.Count < 1 || bands.Count > 16 || bands.Any(band => !PanelLabel(band))))
+                return false;
+            if (panel["curvePresets"] != null && (!(panel["curvePresets"] is JArray presets) ||
+                presets.Count > 8 || presets.Any(item => !(item is JObject preset) ||
+                    !PanelLabel(preset["label"]) || preset["value"]?.Type != JTokenType.String)))
+                return false;
+            return true;
+        }
+
+        private static bool PanelLabel(JToken label) => label?.Type == JTokenType.String ||
+            (label is JObject locales && locales.Count > 0 && locales.Properties().All(p => p.Value.Type == JTokenType.String));
+
+        internal static string LocalizedText(JToken label, string locale)
+        {
+            if (label?.Type == JTokenType.String) return label.Value<string>();
+            if (!(label is JObject locales)) return "";
+            foreach (var item in locales.Properties())
+                if (item.Value.Type == JTokenType.String && NormalizeLocale(item.Name) == locale)
+                    return item.Value.Value<string>();
+            return LocalizedValue(locales) ?? "";
         }
 
         private static bool ReadNamedResourceMap(JToken token, Dictionary<string, string> target)

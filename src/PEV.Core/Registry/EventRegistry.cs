@@ -261,7 +261,8 @@ namespace PEV.Registry
             Texture2D tex = null;
             try
             {
-                byte[] bytes = PEV.Loading.EventLoader.ReadResource(m.SourcePath, m.IconPath);
+                byte[] bytes = PEV.Loading.EventLoader.ReadResource(m.SourcePath, m.IconPath,
+                    PEV.Loading.EventLoader.MaxIconBytes);
                 if (bytes == null || bytes.Length == 0) return null;
                 tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
                 if (!DecodeImage(tex, bytes)) { UnityEngine.Object.Destroy(tex); return null; }

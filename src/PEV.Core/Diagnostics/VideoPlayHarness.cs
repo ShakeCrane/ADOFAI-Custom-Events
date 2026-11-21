@@ -44,6 +44,47 @@ namespace PEV.Diagnostics
             try { File.AppendAllText(_resultPath, line + Environment.NewLine); } catch { }
         }
 
+        internal static bool ReadVideoPixels(Renderer renderer, out string detail)
+        {
+            if (renderer == null) { detail = "video renderer absent or disabled"; return false; }
+            const int probeLayer = 31;
+            int oldLayer = renderer.gameObject.layer;
+            var oldTarget = RenderTexture.active;
+            var target = RenderTexture.GetTemporary(32, 32, 16, RenderTextureFormat.ARGB32);
+            var texture = new Texture2D(32, 32, TextureFormat.RGBA32, false);
+            var probe = new GameObject("PEV.VideoPixelProbe");
+            try
+            {
+                renderer.gameObject.layer = probeLayer;
+                var camera = probe.AddComponent<Camera>();
+                camera.enabled = false;
+                camera.targetTexture = target;
+                camera.cullingMask = 1 << probeLayer;
+                camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = Color.black;
+                camera.orthographic = true;
+                camera.orthographicSize = renderer.bounds.extents.magnitude;
+                probe.transform.position = renderer.bounds.center - Vector3.forward * 10f;
+                camera.Render();
+                RenderTexture.active = target;
+                texture.ReadPixels(new Rect(0, 0, 32, 32), 0, 0);
+                int chromatic = 0;
+                foreach (var pixel in texture.GetPixels32())
+                    if (Mathf.Max(pixel.r, Mathf.Max(pixel.g, pixel.b)) -
+                        Mathf.Min(pixel.r, Mathf.Min(pixel.g, pixel.b)) > 24) chromatic++;
+                detail = chromatic + " chromatic pixels from the rendered test pattern";
+                return chromatic >= 16;
+            }
+            finally
+            {
+                renderer.gameObject.layer = oldLayer;
+                RenderTexture.active = oldTarget;
+                UnityEngine.Object.Destroy(probe);
+                UnityEngine.Object.Destroy(texture);
+                RenderTexture.ReleaseTemporary(target);
+            }
+        }
+
         [HarmonyPatch(typeof(scnLevelSelect), "Start")]
         public static class AutoStart
         {
@@ -115,8 +156,8 @@ namespace PEV.Diagnostics
                         report.IndexOf("frame=True", StringComparison.Ordinal) >= 0) break;
                 }
 
-                Row("PLAY-RENDERS", report.IndexOf("frame=True", StringComparison.Ordinal) >= 0 ? "PASS" : "FAIL",
-                    Truncate(report, 300));
+                bool pixels = ReadVideoPixels(VideoSurface.FindVisibleRenderer(), out string pixelDetail);
+                Row("PLAY-RENDERS", pixels ? "PASS" : "FAIL", pixelDetail + " | " + Truncate(report, 300));
 
                 // And it must advance with the song clock, which is the whole point of driving
                 // playback from lookups rather than from a delta the script accumulates.

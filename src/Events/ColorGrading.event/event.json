@@ -1,7 +1,7 @@
 {
   "schemaVersion": 5,
   "id": "pev.color-grading",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "apiVersion": 2,
   "entry": "main.js",
   "icon": "icon.png",
@@ -74,9 +74,33 @@
     "lut": {
       "preset": "lutPreset",
       "file": "lutFile",
-      "strength": "lutStrength"
+      "strength": "lutStrength",
+      "note": {
+        "en": "Choose None to use a custom file instead of a bundled look.",
+        "zh-CN": "选择「无」后使用自定义 LUT 文件。"
+      }
     },
-    "compare": "enabled"
+    "curvePresets": [
+      { "label": { "en": "S-Curve", "zh-CN": "S 曲线" }, "value": "0,0;0.25,0.15;0.75,0.85;1,1" },
+      { "label": { "en": "Contrast+", "zh-CN": "高反差" }, "value": "0,0;0.35,0.2;0.65,0.8;1,1" },
+      { "label": { "en": "Fade", "zh-CN": "褪色" }, "value": "0,0.08;1,0.95" }
+    ],
+    "hsl": {
+      "parameter": "hslBands",
+      "bands": [
+        { "en": "Red", "zh-CN": "红" }, { "en": "Orange", "zh-CN": "橙" },
+        { "en": "Yellow", "zh-CN": "黄" }, { "en": "Green", "zh-CN": "绿" },
+        { "en": "Cyan", "zh-CN": "青" }, { "en": "Blue", "zh-CN": "蓝" },
+        { "en": "Purple", "zh-CN": "紫" }, { "en": "Magenta", "zh-CN": "洋红" }
+      ]
+    },
+    "composition": "mode",
+    "compare": "enabled",
+    "scopes": true,
+    "summary": {
+      "en": "Order: exposure, white balance, gain/offset, wheels, tone, contrast, gamma, curves, HSL and LUT.",
+      "zh-CN": "顺序为曝光、白平衡、增益与偏移、色轮、影调、对比度、伽马、曲线、HSL 与 LUT。"
+    }
   },
   "params": [
     {

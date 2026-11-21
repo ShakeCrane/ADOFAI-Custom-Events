@@ -2,6 +2,24 @@
 
 2026-11-19。环境：ADOFAI r150（2026-11-03）、Unity 6000.3.25f1、Windows Direct3D 11、AMD Radeon RX 6750 GRE 10GB、1600×900。结论全部来自实机运行：`tools/run_video_test.ps1` 在真实编辑器里跑完一份随附谱面，`tools/test_video_vanilla.ps1` 检查数据形状与原版启动，素材由 `tools/make_video_media.ps1` 生成。
 
+## 2026-11-21 合并后回归
+
+`Video.event` 1.1.0 在同一游戏与图形环境中通过 51 项编辑器检查和 3 项真实游玩检查。两个场景均对实际视频对象做离屏像素读回，分别读到 444 和 448 个彩色样本像素。编辑器还验证了 Fit 保持媒体宽高比、Fill 使用裁切 UV 且保留原框、切换无效路径后撤下旧图、切回后恢复，以及谱面导出包含 `Video.event` 和视频素材。
+
+重新生成完整媒体夹具后，格式矩阵为 17/17，并发解码为 4/4。报表中的 `frame=True` 表示解码进度，出画通过 `RENDER-PIXELS` 与 `PLAY-RENDERS` 单独验证。原版启动及原生装饰载体形状检查通过。
+
+从仓库根目录执行以下命令可复现，先设置 `ADOFAI_GAME_DIR`。
+
+```powershell
+dotnet build src/PEV.Core -c Release -p:IncludeDiagnostics=true
+./tools/make_video_media.ps1
+./tools/make_video_fixture.ps1
+./tools/run_video_test.ps1
+./tools/make_video_fixture.ps1
+./tools/run_video_test.ps1 -Mode play
+./tools/test_video_vanilla.ps1
+```
+
 ## 实测格式
 
 原生后端（`WindowsVideoMedia`）直接解码，不依赖任何外部程序：

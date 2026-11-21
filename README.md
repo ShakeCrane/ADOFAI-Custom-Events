@@ -27,16 +27,14 @@ vanilla editor comments or native decoration rows.
 2. Download `PEV.Core-<version>.zip` from the [latest GitHub Release](https://github.com/ShakeCrane/ADOFAI-Custom-Events/releases/latest).
 3. In UMM, use **Mods → Install Mod** and pick the zip.
 4. To use the noise field, place [`NoiseField.event`](https://github.com/ShakeCrane/ADOFAI-Custom-Events/raw/refs/heads/main/template-events/NoiseField.event) next to the `.adofai` chart, then open the chart.
-5. To add a video, place `Video.event` next to the chart and put the video file beside it too.
+5. Place `Video.event` beside the chart for video decorations, or `ColorGrading.event` for full-screen grading. See the [player install and event guide](docs/INSTALL-zh-CN.md).
 
 Video needs no extra software for MP4/MOV/M4V (H.264, HEVC, AV1), AVI, WMV and VP8 WebM.
-Other containers — MKV, FLV, TS, Ogg, ProRes, VP9 WebM — are converted once into
-`Mods/PEV.Core/video-cache/`, which needs `ffmpeg.exe` beside the mod, beside the chart, or
-on `PATH`. Without it those files report the exact reason instead of failing silently.
+The compatibility layer handles other tested combinations such as MKV, FLV, TS, Theora, ProRes and VP9 WebM. Install FFmpeg beside the mod or on `PATH` for automatic conversion to `Mods/PEV.Core/video-cache/`. Use a chart-relative path for video files. [Video validation](docs/VIDEO-VALIDATION.md).
 
 The Core package contains no events. Each chart loads `.event` files from its own
 directory only. Missing declared packages produce a notification and preserve event data;
-the game's chart export includes declared packages.
+the game's chart export includes declared packages and same-directory media referenced by event `File` parameters.
 
 ---
 
@@ -80,12 +78,11 @@ the pinned script dependencies before building. For example, in PowerShell:
 ```powershell
 $env:ADOFAI_GAME_DIR = 'X:\SteamLibrary\steamapps\common\A Dance of Fire and Ice'
 python tools/restore_dependencies.py
-python tools/build_release.py --version 0.6.2
+python tools/build_release.py --version 0.7.1
 ```
 
 That builds `src/PEV.Core` and writes the core-only `dist/PEV.Core-<version>.zip`
-alongside one `.event` per event package in `src/Events`: the noise field and its state
-control, the video package, and the colour grading package.
+alongside `NoiseField.event` (field plus state control), `Video.event` and `ColorGrading.event`. Build the smaller examples individually with `tools/pack_event.py`.
 See [the boundary audit](docs/CORE-BOUNDARY-AUDIT.md) for the implementation boundary.
 
 The build uses assemblies from your local game installation. The checked-in shader bundles
@@ -107,7 +104,7 @@ Editor palette click
   → author edits values in the native property panel
   → copy / delete hooks clone or detach that data
   → the chart saves its package dependencies in pevEvents
-  → event data travels in @PEV1 comments or native AddDecoration rows
+  → event data travels in @PEV1 comments or AddDecoration with a pev1: payload
   → Core finds the chart's .event files and restores the instances on load
   → runtime drives each instance's script from the song clock
 ```

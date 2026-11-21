@@ -205,6 +205,20 @@ class PackageValidationTests(unittest.TestCase):
             self.assertTrue(validate(self.root, dict(valid, fieldPreview={"key": "field", "parameterMap": mapping})))
         self.assertTrue(validate(self.root, dict(valid, fieldPreview={"key": "", "parameterMap": {}})))
 
+    def test_schema_five_video_preview_and_clock(self):
+        valid = dict(self.manifest, schemaVersion=5, decoration=True, decorationMarker="pev/clip",
+                     hostPrimitive="fx.video", clock="level",
+                     params=[{"name": "clip", "type": "File", "fileType": "Video"}],
+                     videoPreview={"parameterMap": {"clip": "file"}})
+        self.assertEqual([], validate(self.root, valid))
+        for overrides in (
+            {"schemaVersion": "5"}, {"schemaVersion": 4}, {"clock": "song"}, {"decoration": False},
+            {"videoPreview": {"parameterMap": {"unknown": "file"}}},
+            {"videoPreview": {"parameterMap": {"clip": "fit"}}},
+        ):
+            with self.subTest(overrides=overrides):
+                self.assertTrue(validate(self.root, dict(valid, **overrides)))
+
     def test_qualified_enum_is_valid(self):
         manifest = dict(self.manifest, params=[{"name": "x", "type": "Enum:Example.Type, Assembly"}])
         self.assertEqual([], validate(self.root, manifest))

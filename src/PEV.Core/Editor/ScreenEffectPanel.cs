@@ -1,28 +1,20 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using ADOFAI;
 using HarmonyLib;
+using Newtonsoft.Json.Linq;
+using PEV.Model;
+using PEV.Scripting;
 using PEV.Registry;
 using PEV.Storage;
 using UnityEngine;
 
 namespace PEV.Editor
 {
-    /// <summary>
-    /// The grading panel: curves, colour wheels, LUT and HSL ranges.
-    ///
-    /// The native property panel can express a float, a colour and a two-number vector. It
-    /// cannot express a tone curve or a colour wheel, and flattening those into columns of
-    /// numbers is exactly the "edit a config file in another tool" workflow this event is
-    /// meant to remove. So the package declares the panel in its manifest and Core draws it,
-    /// while the values still live in ordinary declared parameters — which is what keeps the
-    /// event saveable, copyable and readable by a chart that has no mod installed.
-    ///
-    /// Editing writes the parameter on the live LevelEvent, the same place the native panel
-    /// and the save path read, so nothing here has a private copy of the truth.
-    /// </summary>
+    /// <summary>Draws the screen-effect controls declared by a package.</summary>
     public class ScreenEffectPanel : MonoBehaviour
     {
         private const float WindowWidth = 340f;
@@ -32,13 +24,12 @@ namespace PEV.Editor
         private static readonly string[] Tabs = { "Curves", "Wheels", "LUT", "HSL", "Scopes", "Info" };
         private static readonly string[] Channels = { "Master", "Red", "Green", "Blue" };
         private static readonly string[] HueChannels = { "Hue vs Hue", "Hue vs Sat", "Hue vs Luma" };
-        private static readonly string[] BandNames =
-            { "Red", "Orange", "Yellow", "Green", "Cyan", "Blue", "Purple", "Magenta" };
 
         private Rect _window = new Rect(-1f, 96f, WindowWidth, 470f);
         private int _tab;
         private int _curveChannel;
         private int _eventIndex;
+        private Vector2 _bodyScroll;
 
         private Texture2D _wheel;
         private Texture2D _white;
@@ -60,7 +51,7 @@ namespace PEV.Editor
                     if (__instance.GetComponent<ScreenEffectPanel>() == null)
                         __instance.gameObject.AddComponent<ScreenEffectPanel>();
                 }
-                catch (Exception e) { PEV.Core.Plugin.Log("grading panel attach failed: " + e.Message); }
+                catch (Exception e) { PEV.Core.Plugin.Log("screen effect panel attach failed: " + e.Message); }
             }
         }
 
@@ -82,11 +73,18 @@ namespace PEV.Editor
         private void OnGUI()
         {
             var editor = ADOBase.editor;
-            if (editor == null) return;
-            if (editor.playMode) return;
+            if (editor == null || editor.playMode)
+            {
+                StopScopeCapture();
+                return;
+            }
 
             var events = Collect(editor);
-            if (events.Count == 0) return;
+            if (events.Count == 0)
+            {
+                StopScopeCapture();
+                return;
+            }
 
             if (_headerStyle == null)
             {
@@ -106,7 +104,10 @@ namespace PEV.Editor
             _window.y = Mathf.Clamp(_window.y, 0f, Mathf.Max(0f, Screen.height - 80f));
             _window.width = _tab == 4 ? ScopesWidth : WindowWidth;
             _window.height = height;
-            _window = GUILayout.Window(GetInstanceID(), _window, Draw, "Color Grading");
+            var manifest = events[_eventIndex].Manifest;
+            string title = LocaleLabel(manifest.EditorPanel["title"]);
+            if (string.IsNullOrEmpty(title)) title = manifest.LocaleName(RDString.language.ToString());
+            _window = GUILayout.Window(GetInstanceID(), _window, Draw, title);
         }
 
         private static float TabHeight(int tab)
@@ -126,7 +127,7 @@ namespace PEV.Editor
         {
             var editor = ADOBase.editor;
             var events = Collect(editor);
-            if (events.Count == 0) { GUILayout.Label("No grading event in this chart."); return; }
+            if (events.Count == 0) { GUILayout.Label("No event with a screen effect panel."); return; }
 
             DrawEventPicker(events);
             var entry = events[Mathf.Clamp(_eventIndex, 0, events.Count - 1)];
@@ -138,12 +139,14 @@ namespace PEV.Editor
             var manifest = entry.Manifest;
 
             GUILayout.BeginHorizontal();
-            bool enabled = GetBool(entry.Event, "enabled", true);
-            bool newEnabled = GUILayout.Toggle(enabled, "On", GUILayout.Width(42));
-            if (newEnabled != enabled) SetValue(entry.Event, data, "enabled", newEnabled);
-
-            if (GUILayout.Button("A/B", GUILayout.Width(40)))
-                SetValue(entry.Event, data, "enabled", !enabled);
+            string compare = manifest.EditorPanel.Value<string>("compare");
+            if (compare != null)
+            {
+                bool enabled = GetBool(entry.Event, compare, true);
+                bool newEnabled = GUILayout.Toggle(enabled, "On", GUILayout.Width(42));
+                if (GUILayout.Button("A/B", GUILayout.Width(40))) newEnabled = !enabled;
+                if (newEnabled != enabled) SetValue(entry.Event, data, compare, newEnabled);
+            }
             if (GUILayout.Button("Reset", GUILayout.Width(52)))
                 ResetAll(entry.Event, data, manifest);
             if (GUILayout.Button("Copy", GUILayout.Width(48)))
@@ -155,9 +158,22 @@ namespace PEV.Editor
             GUILayout.EndHorizontal();
 
             GUILayout.Space(2);
-            _tab = GUILayout.Toolbar(_tab, Tabs);
+            var panel = manifest.EditorPanel;
+            var tabs = new List<int>();
+            if (panel["curves"] != null || panel["hueCurves"] != null) tabs.Add(0);
+            if (panel["wheels"] != null) tabs.Add(1);
+            if (panel["lut"] != null) tabs.Add(2);
+            if (panel["hsl"] != null) tabs.Add(3);
+            if (panel.Value<bool?>("scopes") ?? true) tabs.Add(4);
+            tabs.Add(5);
+            int selected = Mathf.Max(0, tabs.IndexOf(_tab));
+            int current = tabs[GUILayout.Toolbar(selected, tabs.Select(index => Tabs[index]).ToArray())];
+            if (_tab != current) _bodyScroll = Vector2.zero;
+            _tab = current;
+            if (_tab != 4) StopScopeCapture();
             GUILayout.Space(4);
 
+            _bodyScroll = GUILayout.BeginScrollView(_bodyScroll);
             switch (_tab)
             {
                 case 0: DrawCurves(entry.Event, data, manifest); break;
@@ -168,6 +184,7 @@ namespace PEV.Editor
                 default: DrawInfo(entry.Event, data, manifest); break;
             }
 
+            GUILayout.EndScrollView();
             GUI.DragWindow(new Rect(0, 0, WindowWidth, 20));
         }
 
@@ -197,7 +214,7 @@ namespace PEV.Editor
                     if (!LevelStorage.TryGetData(ev, out var data)) continue;
                     if (data.IsPlaceholder) continue;
                     if (!EventRegistry.TryGetById(data.Id, out var manifest)) continue;
-                    if (manifest.ScreenEffect == null) continue;
+                    if (manifest.ScreenEffect == null || manifest.EditorPanel == null) continue;
                     Buffer.Add(new Entry { Event = ev, Manifest = manifest });
                 }
             }
@@ -222,39 +239,32 @@ namespace PEV.Editor
         private void DrawCurves(LevelEvent ev, EventInstanceData data, PEV.Model.EventManifest manifest)
         {
             var panel = manifest.EditorPanel;
-            string masterParam = ParamFor(panel, "curves", "master", "curveMaster");
-            string redParam = ParamFor(panel, "curves", "red", "curveRed");
-            string greenParam = ParamFor(panel, "curves", "green", "curveGreen");
-            string blueParam = ParamFor(panel, "curves", "blue", "curveBlue");
-            string hueParam = ParamFor(panel, "hueCurves", "hue", "hueVsHue");
-            string satParam = ParamFor(panel, "hueCurves", "saturation", "hueVsSat");
-            string lumaParam = ParamFor(panel, "hueCurves", "luma", "hueVsLuma");
-
-            bool hueMode = _curveChannel >= 4;
-            string param;
-            switch (_curveChannel)
+            string[] parameters =
             {
-                case 0: param = masterParam; break;
-                case 1: param = redParam; break;
-                case 2: param = greenParam; break;
-                case 3: param = blueParam; break;
-                case 4: param = hueParam; break;
-                case 5: param = satParam; break;
-                default: param = lumaParam; break;
-            }
+                ParamFor(panel, "curves", "master"), ParamFor(panel, "curves", "red"),
+                ParamFor(panel, "curves", "green"), ParamFor(panel, "curves", "blue"),
+                ParamFor(panel, "hueCurves", "hue"), ParamFor(panel, "hueCurves", "saturation"),
+                ParamFor(panel, "hueCurves", "luma")
+            };
+            int first = Array.FindIndex(parameters, name => !string.IsNullOrEmpty(name));
+            if (first < 0) return;
+            if (parameters[_curveChannel] == null) _curveChannel = first;
 
             GUILayout.BeginHorizontal();
             for (int i = 0; i < Channels.Length; i++)
-                if (GUILayout.Toggle(_curveChannel == i, Channels[i], GUI.skin.button))
+                if (parameters[i] != null && GUILayout.Toggle(_curveChannel == i, Channels[i], GUI.skin.button))
                     _curveChannel = i;
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
             for (int i = 0; i < HueChannels.Length; i++)
-                if (GUILayout.Toggle(_curveChannel == 4 + i, HueChannels[i], GUI.skin.button))
+                if (parameters[4 + i] != null && GUILayout.Toggle(_curveChannel == 4 + i, HueChannels[i], GUI.skin.button))
                     _curveChannel = 4 + i;
             GUILayout.EndHorizontal();
 
-            string text = GetString(ev, param, hueMode ? "0,0.5;1,0.5" : "0,0;1,1");
+            bool hueMode = _curveChannel >= 4;
+            string param = parameters[_curveChannel];
+            string identity = hueMode ? "0,0.5;1,0.5" : "0,0;1,1";
+            string text = GetString(ev, param, identity);
             var points = ParseCurve(text, hueMode);
 
             float size = Mathf.Min(WindowWidth - 24f, 300f);
@@ -262,10 +272,11 @@ namespace PEV.Editor
             DrawCurveCanvas(canvas, points, hueMode, ev, data, param);
 
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Identity")) SetValue(ev, data, param, hueMode ? "0,0.5;1,0.5" : "0,0;1,1");
-            if (GUILayout.Button("S-Curve")) SetValue(ev, data, param, "0,0;0.25,0.15;0.75,0.85;1,1");
-            if (GUILayout.Button("Contrast+")) SetValue(ev, data, param, "0,0;0.35,0.2;0.65,0.8;1,1");
-            if (GUILayout.Button("Fade")) SetValue(ev, data, param, "0,0.08;1,0.95");
+            if (GUILayout.Button("Identity")) SetValue(ev, data, param, identity);
+            if (!hueMode && panel["curvePresets"] is JArray presets)
+                foreach (var preset in presets)
+                    if (GUILayout.Button(LocaleLabel(preset["label"])))
+                        SetValue(ev, data, param, preset.Value<string>("value"));
             GUILayout.EndHorizontal();
             GUILayout.Label("Click to add, drag to move, right-click a point to remove.", _smallStyle);
         }
@@ -509,53 +520,45 @@ namespace PEV.Editor
 
         private void DrawLut(LevelEvent ev, EventInstanceData data, PEV.Model.EventManifest manifest)
         {
-            var lut = manifest.EditorPanel?["lut"];
-            string presetName = lut?.Value<string>("preset") ?? "lutPreset";
-            string fileName = lut?.Value<string>("file") ?? "lutFile";
-            string strengthName = lut?.Value<string>("strength") ?? "lutStrength";
+            var lut = (JObject)manifest.EditorPanel["lut"];
+            DrawChoices(ev, data, manifest, lut.Value<string>("preset"));
+            string fileName = lut.Value<string>("file");
+            if (fileName != null)
+            {
+                GUILayout.Label(".cube path in the package or chart", _smallStyle);
+                string file = GetString(ev, fileName, "");
+                string edited = GUILayout.TextField(file, GUILayout.Height(20));
+                if (edited != file) SetValue(ev, data, fileName, edited);
+            }
 
-            string preset = GetString(ev, presetName, "None");
-            GUILayout.Label("Built-in look", _smallStyle);
-            var options = new[] { "None", "BundledTealOrange", "BundledBleachBypass", "BundledWarmFilm" };
-            var labels = new[] { "None", "Teal & Orange", "Bleach Bypass", "Warm Film" };
-            GUILayout.BeginHorizontal();
-            for (int i = 0; i < options.Length; i++)
-                if (GUILayout.Toggle(preset == options[i], labels[i], GUI.skin.button) && preset != options[i])
-                    SetValue(ev, data, presetName, options[i]);
-            GUILayout.EndHorizontal();
-
-            GUILayout.Space(4);
-            GUILayout.Label("Custom .cube (in the package or beside the chart):", _smallStyle);
-            string file = GetString(ev, fileName, "");
-            string edited = GUILayout.TextField(file ?? "", GUILayout.Height(20));
-            if (edited != file) SetValue(ev, data, fileName, edited);
-
-            float strength = GetFloat(ev, strengthName, 1f);
-            GUILayout.Label($"LUT strength  {strength:F2}", _smallStyle);
-            float newStrength = GUILayout.HorizontalSlider(strength, 0f, 1f);
-            if (!Mathf.Approximately(newStrength, strength))
-                SetValue(ev, data, strengthName, Mathf.Round(newStrength * 100f) / 100f);
-
-            GUILayout.Space(4);
-            GUILayout.Label("A built-in look wins over the file name; set it to None to use the file.",
-                _smallStyle);
+            string strengthName = lut.Value<string>("strength");
+            if (strengthName != null)
+            {
+                float strength = GetFloat(ev, strengthName, 1f);
+                GUILayout.Label($"LUT strength  {strength:F2}", _smallStyle);
+                float value = GUILayout.HorizontalSlider(strength, 0f, 1f);
+                if (!Mathf.Approximately(value, strength))
+                    SetValue(ev, data, strengthName, Mathf.Round(value * 100f) / 100f);
+            }
+            string note = LocaleLabel(lut["note"]);
+            if (note.Length > 0) GUILayout.Label(note, _smallStyle);
         }
 
-        // ── HSL ranges ────────────────────────────────────────────────────────────
-
-        private void DrawHsl(LevelEvent ev, EventInstanceData data, PEV.Model.EventManifest manifest)
+        private void DrawHsl(LevelEvent ev, EventInstanceData data, EventManifest manifest)
         {
-            string name = "hslBands";
-            var bands = ParseBands(GetString(ev, name, ""));
+            var hsl = manifest.EditorPanel["hsl"];
+            string name = hsl.Value<string>("parameter");
+            var labels = (JArray)hsl["bands"];
+            var bands = ParseBands(GetString(ev, name, ""), labels.Count);
 
             GUILayout.Label("Hue shift / saturation / luminance per range", _smallStyle);
-            for (int i = 0; i < 8; i++)
+            for (int i = 0; i < bands.Count; i++)
             {
                 GUILayout.BeginHorizontal();
-                GUILayout.Label(BandNames[i], _smallStyle, GUILayout.Width(60));
-                float hue = GUILayout.HorizontalSlider(bands[i].x, -60f, 60f, GUILayout.Width(70));
-                float sat = GUILayout.HorizontalSlider(bands[i].y, -1f, 1f, GUILayout.Width(70));
-                float lum = GUILayout.HorizontalSlider(bands[i].z, -1f, 1f, GUILayout.Width(70));
+                GUILayout.Label(LocaleLabel(labels[i]), _smallStyle, GUILayout.Width(60));
+                float hue = GUILayout.HorizontalSlider(bands[i].x, -60f, 60f, GUILayout.Width(65));
+                float sat = GUILayout.HorizontalSlider(bands[i].y, -1f, 1f, GUILayout.Width(65));
+                float lum = GUILayout.HorizontalSlider(bands[i].z, -1f, 1f, GUILayout.Width(65));
                 if (!Mathf.Approximately(hue, bands[i].x) || !Mathf.Approximately(sat, bands[i].y) ||
                     !Mathf.Approximately(lum, bands[i].z))
                 {
@@ -565,8 +568,8 @@ namespace PEV.Editor
                 }
                 GUILayout.EndHorizontal();
             }
-            if (GUILayout.Button("Reset ranges")) SetValue(ev, data, name, FormatBands(new List<Vector3>
-                { Vector3.zero, Vector3.zero, Vector3.zero, Vector3.zero, Vector3.zero, Vector3.zero, Vector3.zero, Vector3.zero }));
+            if (GUILayout.Button("Reset ranges"))
+                SetValue(ev, data, name, FormatBands(Enumerable.Repeat(Vector3.zero, bands.Count).ToList()));
         }
 
         // ── scopes ────────────────────────────────────────────────────────────────
@@ -583,53 +586,62 @@ namespace PEV.Editor
 
             if (!_scopes.Ready)
             {
-                GUILayout.Label("Start playback, or select an active grade, to see the scopes.",
+                GUILayout.Label("Enable a screen effect to see the scopes.",
                     _smallStyle);
                 GUILayout.Space(4);
             }
             _scopes.Draw(_window.width - 24f);
-            GUILayout.Label("Sampled four times a second from the grade's input frame.", _smallStyle);
+            GUILayout.Label("Sampled four times a second from the screen effect input.", _smallStyle);
         }
 
         // ── info ──────────────────────────────────────────────────────────────────
 
-        private void DrawInfo(LevelEvent ev, EventInstanceData data, PEV.Model.EventManifest manifest)
+        private static void StopScopeCapture()
         {
+            if (!ScreenEffectPipeline.CaptureScopes) return;
+            ScreenEffectPipeline.CaptureScopes = false;
+            ScreenEffectPipeline.ReleaseScope();
+        }
+
+        private void DrawInfo(LevelEvent ev, EventInstanceData data, EventManifest manifest)
+        {
+            string locale = RDString.language.ToString();
             GUILayout.Label($"{manifest.Id}  {manifest.Version}", _smallStyle);
-            GUILayout.Label("Order applied: exposure, white balance, gain/offset, wheels, tone, " +
-                            "contrast, gamma, curves, HSL, LUT.", _smallStyle);
-            GUILayout.Space(4);
-            GUILayout.Label("Combine", _smallStyle);
-            string mode = GetString(ev, "mode", "Replace");
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Toggle(mode == "Replace", "Replace previous", GUI.skin.button) && mode != "Replace")
-                SetValue(ev, data, "mode", "Replace");
-            if (GUILayout.Toggle(mode == "Stack", "Stack", GUI.skin.button) && mode != "Stack")
-                SetValue(ev, data, "mode", "Stack");
-            GUILayout.EndHorizontal();
-            GUILayout.Label("Replace: only the newest grade is shown. Stack: later grades are applied " +
-                            "on top of earlier ones.", _smallStyle);
-            GUILayout.Space(4);
-            GUILayout.Label("Runtime: " + Scripting.ScreenEffectPipeline.Report(), _smallStyle);
+            string summary = LocaleLabel(manifest.EditorPanel["summary"]);
+            GUILayout.Label(summary.Length > 0 ? summary : manifest.LocaleDescription(locale), _smallStyle);
+            DrawChoices(ev, data, manifest, manifest.EditorPanel.Value<string>("composition"));
         }
 
-        // ── value plumbing ────────────────────────────────────────────────────────
-
-        private static string ParamFor(Newtonsoft.Json.Linq.JObject panel, string group, string key, string fallback)
+        private static void DrawChoices(LevelEvent ev, EventInstanceData data, EventManifest manifest, string name)
         {
-            var node = panel?[group];
-            return node?[key]?.Type == Newtonsoft.Json.Linq.JTokenType.String
-                ? node[key].ToString() : fallback;
+            var param = manifest.Params.Find(candidate => candidate.Name == name);
+            if (param?.Options == null) return;
+            string current = GetString(ev, name, param.Default as string);
+            string locale = RDString.language.ToString();
+            GUILayout.BeginHorizontal();
+            for (int i = 0; i < param.Options.Count; i++)
+            {
+                if (i > 0 && i % 3 == 0)
+                {
+                    GUILayout.EndHorizontal();
+                    GUILayout.BeginHorizontal();
+                }
+                string option = param.Options[i];
+                var labels = param.OptionLabels.Find(item => item.Key == option)?.Value;
+                string label = labels != null && labels.TryGetValue(locale, out var text) ? text :
+                    labels != null && labels.TryGetValue("English", out var english) ? english : option;
+                if (GUILayout.Toggle(current == option, label, GUI.skin.button) && current != option)
+                    SetValue(ev, data, name, option);
+            }
+            GUILayout.EndHorizontal();
         }
+
+        private static string ParamFor(JObject panel, string group, string key) =>
+            (panel[group] as JObject)?.Value<string>(key);
 
         private static string LocaleLabel(Newtonsoft.Json.Linq.JToken label)
         {
-            if (label == null) return "";
-            if (label.Type == Newtonsoft.Json.Linq.JTokenType.String) return label.ToString();
-            string locale = "English";
-            try { locale = RDString.language.ToString(); } catch { }
-            var value = label[locale] ?? label["en"] ?? label["English"];
-            return value != null && value.Type == Newtonsoft.Json.Linq.JTokenType.String ? value.ToString() : "";
+            return EventManifest.LocalizedText(label, RDString.language.ToString());
         }
 
         private static bool GetBool(LevelEvent ev, string name, bool fallback)
@@ -714,27 +726,24 @@ namespace PEV.Editor
             if (manifest?.Params == null) return;
             foreach (var param in manifest.Params)
             {
-                if (param.Name == "enabled") continue;
+                if (param.Name == manifest.EditorPanel.Value<string>("compare")) continue;
                 SetValue(ev, data, param.Name, param.Default);
             }
         }
 
         /// <summary>
-        /// A grade is a parameter set, so reusing one is copying it.
-        ///
-        /// The clipboard lives for the session and holds plain values, which means copying a
-        /// look between two events — or between two charts open in one session — works
-        /// without a file, and the pasted result is indistinguishable from one typed by hand.
+        /// Copies the parameters between instances of a package during the editor session.
         /// </summary>
         private static Dictionary<string, object> _clipboard;
+        private static string _clipboardId;
 
         private static void CopySettings(LevelEvent ev, PEV.Model.EventManifest manifest)
         {
             _clipboard = new Dictionary<string, object>(StringComparer.Ordinal);
-            if (manifest?.Params == null) return;
+            _clipboardId = manifest.Id;
             foreach (var param in manifest.Params)
             {
-                if (param.Name == "enabled") continue;
+                if (param.Name == manifest.EditorPanel.Value<string>("compare")) continue;
                 try
                 {
                     object value = ev.Get<object>(param.Name);
@@ -742,16 +751,16 @@ namespace PEV.Editor
                 }
                 catch { }
             }
-            PEV.Core.Plugin.Log($"grading panel: copied {_clipboard.Count} value(s)");
+            PEV.Core.Plugin.Log($"screen effect panel: copied {_clipboard.Count} value(s)");
         }
 
         private static void PasteSettings(LevelEvent ev, EventInstanceData data, PEV.Model.EventManifest manifest)
         {
-            if (_clipboard == null || _clipboard.Count == 0) return;
+            if (_clipboard == null || _clipboard.Count == 0 || _clipboardId != manifest.Id) return;
             if (manifest?.Params == null) return;
             foreach (var param in manifest.Params)
             {
-                if (param.Name == "enabled") continue;
+                if (param.Name == manifest.EditorPanel.Value<string>("compare")) continue;
                 if (_clipboard.TryGetValue(param.Name, out var value)) SetValue(ev, data, param.Name, value);
             }
         }
@@ -778,7 +787,7 @@ namespace PEV.Editor
             return points;
         }
 
-        private static List<Vector3> ParseBands(string text)
+        private static List<Vector3> ParseBands(string text, int count)
         {
             var bands = new List<Vector3>();
             if (!string.IsNullOrEmpty(text))
@@ -791,10 +800,10 @@ namespace PEV.Editor
                     float.TryParse(fields[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float s);
                     float.TryParse(fields[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float l);
                     bands.Add(new Vector3(h, s, l));
-                    if (bands.Count >= 8) break;
+                    if (bands.Count >= count) break;
                 }
             }
-            while (bands.Count < 8) bands.Add(Vector3.zero);
+            while (bands.Count < count) bands.Add(Vector3.zero);
             return bands;
         }
 

@@ -48,6 +48,7 @@ namespace PEV.Scripting
         /// clock origin and the tile time are kept apart.
         /// </summary>
         public double FloorEntryTime;
+        private double _floorBpm;
         public double BpmRatio = 2.0;
         public double LastT = double.NegativeInfinity;
 
@@ -75,8 +76,11 @@ namespace PEV.Scripting
                 int idx = LevelEvent.floor;
                 if (idx < 0 || idx >= floors.Count) return;
 
-                double t = floors[idx].entryTime;
+                var floor = floors[idx];
+                double t = floor.entryTime;
                 if (!double.IsNaN(t) && !double.IsInfinity(t)) floorTime = t;
+                double bpm = ReadBpm() * floor.speed;
+                if (bpm > 0 && !double.IsInfinity(bpm)) _floorBpm = bpm;
             }
             catch { return; }
 
@@ -105,7 +109,8 @@ namespace PEV.Scripting
             string source = EventScriptCache.Get(Manifest);
             if (source == null) { Phase = InstancePhase.Faulted; return false; }
 
-            Host = ScriptHost.Create(source, Key, out string err, Manifest);
+            Host = ScriptHost.Create(source, Key, out string err, Manifest,
+                LevelEvent.IsDecoration ? LevelEvent : null);
             if (Host == null)
             {
                 Plugin.Log("create failed: " + err);
@@ -118,6 +123,7 @@ namespace PEV.Scripting
                 Bpm = ReadBpm(),
                 EventTime = EntryTime,
                 TileTime = AnchorAtLevelStart ? FloorEntryTime : EntryTime,
+                TileBpm = _floorBpm,
                 FloorSeq = LevelEvent.floor,
                 EventOrder = EventOrder,
                 Params = ReadLiveParams()
@@ -244,7 +250,8 @@ namespace PEV.Scripting
 
             try
             {
-                byte[] bytes = PEV.Loading.EventLoader.ReadResource(manifest.SourcePath, manifest.Entry);
+                byte[] bytes = PEV.Loading.EventLoader.ReadResource(manifest.SourcePath, manifest.Entry,
+                    PEV.Loading.EventLoader.MaxScriptBytes);
                 if (bytes == null)
                 {
                     Plugin.Log($"'{manifest.Id}': entry script '{manifest.Entry}' missing from package");

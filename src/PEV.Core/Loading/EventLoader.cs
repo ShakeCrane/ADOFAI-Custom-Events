@@ -27,6 +27,9 @@ namespace PEV.Loading
     public static class EventLoader
     {
         public const string ManifestName = "event.json";
+        internal const int MaxManifestBytes = 2 * 1024 * 1024;
+        internal const int MaxScriptBytes = 4 * 1024 * 1024;
+        internal const int MaxIconBytes = 8 * 1024 * 1024;
 
         public static LoadReport Scan(IEnumerable<string> roots)
         {
@@ -72,20 +75,20 @@ namespace PEV.Loading
         {
             try
             {
-                string json = Directory.Exists(path) ? ReadFromDirectory(path) : ReadFromZip(path);
-                if (json == null)
+                byte[] main = ReadResource(path, ManifestName, MaxManifestBytes);
+                if (main == null)
                 {
-                    report.Errors.Add($"{Path.GetFileName(path)}: no {ManifestName} found");
+                    report.Errors.Add($"{Path.GetFileName(path)}: {ManifestName} missing or larger than 2 MiB");
                     return;
                 }
-                var manifest = EventManifest.Parse(json, path, out string error);
+                var manifest = EventManifest.Parse(DecodeManifest(main), path, out string error);
                 if (manifest == null)
                 {
                     report.Errors.Add($"{Path.GetFileName(path)}: {error}");
                     return;
                 }
-                if (ReadResource(path, manifest.Entry) == null)
-                    throw new InvalidDataException("event entry not found: " + manifest.Entry);
+                if (ReadResource(path, manifest.Entry, MaxScriptBytes) == null)
+                    throw new InvalidDataException("event entry missing or larger than 4 MiB: " + manifest.Entry);
                 // A compound package is registered atomically: a broken included event must
                 // not silently leave half of a feature installed. All entries and resources
                 // use the same package root, for both ZIPs and directory packages.
@@ -93,13 +96,14 @@ namespace PEV.Loading
                 var ids = new HashSet<string>(StringComparer.Ordinal) { manifest.Id };
                 foreach (string includedPath in manifest.IncludedEvents)
                 {
-                    byte[] bytes = ReadResource(path, includedPath);
-                    if (bytes == null) throw new InvalidDataException("included event not found: " + includedPath);
-                    var included = EventManifest.Parse(Encoding.UTF8.GetString(bytes), path, out string includedError);
+                    byte[] bytes = ReadResource(path, includedPath, MaxManifestBytes);
+                    if (bytes == null) throw new InvalidDataException("included event missing or larger than 2 MiB: " + includedPath);
+                    var included = EventManifest.Parse(DecodeManifest(bytes), path, out string includedError);
                     if (included == null) throw new InvalidDataException("invalid included event " + includedPath + ": " + includedError);
                     if (included.IncludedEvents.Count != 0) throw new InvalidDataException("nested includedEvents are not supported");
                     if (!ids.Add(included.Id)) throw new InvalidDataException("duplicate event id inside package: " + included.Id);
-                    if (ReadResource(path, included.Entry) == null) throw new InvalidDataException("included event entry not found: " + included.Entry);
+                    if (ReadResource(path, included.Entry, MaxScriptBytes) == null)
+                        throw new InvalidDataException("included event entry missing or larger than 4 MiB: " + included.Entry);
                     definitions.Add(included);
                 }
                 report.Loaded.AddRange(definitions);
@@ -110,23 +114,8 @@ namespace PEV.Loading
             }
         }
 
-        private static string ReadFromDirectory(string dir)
-        {
-            string p = Path.Combine(dir, ManifestName);
-            return File.Exists(p) ? File.ReadAllText(p, Encoding.UTF8) : null;
-        }
-
-        private static string ReadFromZip(string zipPath)
-        {
-            using (var archive = ZipFile.OpenRead(zipPath))
-            {
-                var entry = archive.Entries.FirstOrDefault(e =>
-                    e.FullName.Equals(ManifestName, StringComparison.OrdinalIgnoreCase));
-                if (entry == null) return null;
-                using (var reader = new StreamReader(entry.Open(), Encoding.UTF8))
-                    return reader.ReadToEnd();
-            }
-        }
+        private static string DecodeManifest(byte[] bytes) =>
+            new UTF8Encoding(false, true).GetString(bytes).TrimStart('\uFEFF');
 
         /// <summary>Reads a side file (script, icon) out of a package.</summary>
         public static bool IsPackageRelativePath(string relative)

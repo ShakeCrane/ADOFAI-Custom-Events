@@ -3,19 +3,15 @@
 
 function create(ctx, params) {
   var fired = false;
-  var instanceFloor = ctx.floorSeq;
+  var duration = Number(params.duration) * (ctx.tileSecondsPerBeat || ctx.secondsPerBeat);
 
   return {
     update: function (t) {
-      if (t < 0 || fired) return;
+      if (t < 0 || fired || !(duration > t)) return;
       fired = true;
 
-      var duration = params.duration * ctx.secondsPerBeat;
-      fx.shake({ strength: params.strength, duration: duration });
-    },
-
-    dispose: function () {
-      fired = false;
+      var remaining = duration - t;
+      fx.shake({ strength: params.strength * remaining / duration, duration: remaining });
     }
   };
 }

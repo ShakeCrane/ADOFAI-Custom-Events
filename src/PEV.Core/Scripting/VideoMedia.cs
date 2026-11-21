@@ -46,7 +46,6 @@ namespace PEV.Scripting
             };
 
         private static string _ffmpegPath;
-        private static bool _ffmpegProbed;
         private static readonly object ConversionLock = new object();
         private static readonly Dictionary<string, ConversionJob> Jobs =
             new Dictionary<string, ConversionJob>(StringComparer.Ordinal);
@@ -82,9 +81,7 @@ namespace PEV.Scripting
 
         private sealed class ConversionJob
         {
-            public string Source;
             public string Target;
-            public Process Process;
             public bool Done;
             public bool Failed;
             public string Message;
@@ -99,7 +96,7 @@ namespace PEV.Scripting
         /// writes; an absolute path still resolves so an author can test with a file elsewhere,
         /// but it is flagged because copying the level to another machine will not carry it.
         /// </summary>
-        public static bool TryResolve(string raw, out string fullPath, out string problem)
+        public static bool TryResolve(string raw, out string fullPath, out string problem, bool chartOnly = false)
         {
             fullPath = null;
             problem = null;
@@ -108,7 +105,14 @@ namespace PEV.Scripting
             string path = raw.Trim().Trim('"');
             try
             {
-                if (!Path.IsPathRooted(path))
+                if (chartOnly)
+                {
+                    if (!PEV.Loading.EventLoader.IsPackageRelativePath(path))
+                    { problem = "video file must be relative to the chart: " + path; return false; }
+                    path = PEV.Loading.ChartPackages.ResolveChartAsset(path);
+                    if (path == null) { problem = "video file not found in the chart: " + raw; return false; }
+                }
+                else if (!Path.IsPathRooted(path))
                 {
                     string chartDir = ChartDirectory();
                     if (string.IsNullOrEmpty(chartDir)) { problem = "no chart directory to resolve '" + path + "'"; return false; }
@@ -296,7 +300,7 @@ namespace PEV.Scripting
         private static string CacheKey(string path)
         {
             var info = new FileInfo(path);
-            string raw = path.ToLowerInvariant() + "|" + info.Length + "|" + info.LastWriteTimeUtc.Ticks;
+            string raw = "2|" + path.ToLowerInvariant() + "|" + info.Length + "|" + info.LastWriteTimeUtc.Ticks;
             using (var sha = SHA256.Create())
             {
                 var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(raw));
@@ -318,7 +322,7 @@ namespace PEV.Scripting
             string ffmpeg = FfmpegPath();
             if (string.IsNullOrEmpty(ffmpeg))
             {
-                note = "no FFmpeg found — put ffmpeg.exe next to PEV.Core, next to the chart, or on PATH";
+                note = "no FFmpeg found — install ffmpeg.exe next to PEV.Core or on PATH";
                 return false;
             }
 
@@ -327,77 +331,17 @@ namespace PEV.Scripting
 
             lock (ConversionLock)
             {
-                if (Jobs.TryGetValue(path, out var running) && !running.Done)
+                if (Jobs.TryGetValue(path, out var running) && running.Target == target && !running.Done)
                 {
-                    note = "already converting";
-                    return true;
-                }
-
-                var job = new ConversionJob { Source = path, Target = target };
-                Jobs[path] = job;
-                try
-                {
-                    Directory.CreateDirectory(Path.GetDirectoryName(target));
-
-                    // Try a lossless remux first: Matroska and FLV hold AVCC H.264 that MP4
-                    // can carry unchanged, so this is seconds of copying rather than a full
-                    // re-encode, and the result is bit-identical to the source stream.
-                    var info = new ProcessStartInfo(ffmpeg)
-                    {
-                        RedirectStandardError = true,
-                        RedirectStandardOutput = true,
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        Arguments = Quote("-hide_banner", "-loglevel", "error", "-y",
-                            "-i", path, "-c", "copy", "-movflags", "+faststart", target)
-                    };
-
-                    var process = job.Process = new Process { StartInfo = info, EnableRaisingEvents = true };
-                    var stderr = new StringBuilder();
-                    process.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
-                    process.Start();
-                    process.BeginErrorReadLine();
-
-                    System.Threading.Tasks.Task.Run(() =>
-                    {
-                        try
-                        {
-                            process.WaitForExit(120000);
-                            bool ok = process.HasExited && process.ExitCode == 0 &&
-                                      File.Exists(target) && new FileInfo(target).Length > 1024;
-                            if (!ok)
-                            {
-                                // The remux can fail for a codec MP4 refuses to carry (ProRes,
-                                // Theora, VP9-in-Matroska). Only then pay for a real transcode.
-                                TryDelete(target);
-                                ok = Transcode(ffmpeg, path, target, alpha);
-                            }
-                            job.Done = true;
-                            job.Failed = !ok;
-                            job.Message = ok ? "converted" : Limit(stderr.ToString(), 400);
-                            PEV.Core.Plugin.Log("video convert " + Path.GetFileName(path) + ": " +
-                                                (ok ? "ok -> " + Path.GetFileName(target) : job.Message));
-                        }
-                        catch (Exception e)
-                        {
-                            job.Done = true; job.Failed = true; job.Message = e.Message;
-                            PEV.Core.Plugin.Log("video convert failed: " + e.Message);
-                        }
-                        finally
-                        {
-                            try { process.Dispose(); } catch { }
-                        }
-                    });
-
                     note = "converting";
                     return true;
                 }
-                catch (Exception e)
-                {
-                    Jobs.Remove(path);
-                    note = "cannot start converter: " + e.Message;
-                    return false;
-                }
+
+                var job = new ConversionJob { Target = target };
+                Jobs[path] = job;
+                System.Threading.Tasks.Task.Run(() => ConvertFile(ffmpeg, path, job, alpha));
+                note = "converting";
+                return true;
             }
         }
 
@@ -414,57 +358,92 @@ namespace PEV.Scripting
             }
         }
 
-        private static bool Transcode(string ffmpeg, string source, string target, bool alpha)
+        private static void ConvertFile(string ffmpeg, string source, ConversionJob job, bool alpha)
         {
+            string target = job.Target;
+            string temporary = target + "." + Guid.NewGuid().ToString("N") + Path.GetExtension(target);
+            string message = null;
             try
             {
-                var arguments = new List<string>
+                var input = new[]
                 {
-                    "-hide_banner", "-loglevel", "error", "-y", "-i", source
+                    "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                    "-protocol_whitelist", "file",
+                    "-format_whitelist", "mov,matroska,webm,avi,asf,flv,mpegts,ogg,mpeg,mpegvideo",
+                    "-i", source, "-map", "0:v:0", "-map", "0:a:0?"
                 };
-
-                if (alpha)
+                bool success = !alpha && RunConversion(ffmpeg, temporary, input,
+                    new[] { "-c", "copy", "-movflags", "+faststart" }, 120000, out message);
+                if (!success)
                 {
-                    // The only container this backend decodes with a live alpha plane is
-                    // VP8-in-WebM, so a transparent source is re-encoded there.
-                    arguments.AddRange(new[]
-                    {
-                        "-c:v", "libvpx", "-pix_fmt", "yuva420p",
-                        "-auto-alt-ref", "0", "-b:v", "8M"
-                    });
+                    var codecs = alpha
+                        ? new[] { "-c:v", "libvpx", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0",
+                                  "-b:v", "8M", "-c:a", "libvorbis" }
+                        : new[] { "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                                  "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-c:a", "aac" };
+                    success = RunConversion(ffmpeg, temporary, input, codecs, 600000, out message);
                 }
-                else
+                if (success)
                 {
-                    arguments.AddRange(new[]
-                    {
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                        "-pix_fmt", "yuv420p", "-movflags", "+faststart"
-                    });
-                }
-                arguments.AddRange(new[] { "-c:a", "aac", target });
-
-                var info = new ProcessStartInfo(ffmpeg)
-                {
-                    RedirectStandardError = true,
-                    RedirectStandardOutput = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    Arguments = Quote(arguments.ToArray())
-                };
-
-                using (var process = Process.Start(info))
-                {
-                    if (process == null) return false;
-                    process.ErrorDataReceived += (_, __) => { };
-                    process.BeginErrorReadLine();
-                    process.WaitForExit(600000);
-                    return process.HasExited && process.ExitCode == 0 &&
-                           File.Exists(target) && new FileInfo(target).Length > 1024;
+                    try { File.Move(temporary, target); }
+                    catch (IOException) when (File.Exists(target)) { }
+                    message = null;
                 }
             }
-            catch (Exception e)
+            catch (Exception e) { message = e.Message; }
+            finally
             {
-                PEV.Core.Plugin.Log("video transcode failed: " + e.Message);
+                TryDelete(temporary);
+                lock (ConversionLock)
+                {
+                    job.Failed = message != null;
+                    job.Message = message ?? "converted";
+                    job.Done = true;
+                }
+                PEV.Core.Plugin.Log("video convert " + Path.GetFileName(source) + ": " +
+                    (message ?? "ok -> " + Path.GetFileName(target)));
+            }
+        }
+
+        private static bool RunConversion(string ffmpeg, string target, string[] input, string[] codecs,
+            int timeout, out string error)
+        {
+            var arguments = new List<string>(input);
+            arguments.AddRange(codecs);
+            arguments.Add(target);
+            var info = new ProcessStartInfo(ffmpeg)
+            {
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                Arguments = Quote(arguments.ToArray())
+            };
+
+            using (var process = new Process { StartInfo = info })
+            {
+                var stderr = new StringBuilder();
+                process.ErrorDataReceived += (_, e) =>
+                {
+                    if (e.Data != null && stderr.Length < 400) stderr.AppendLine(Limit(e.Data, 400));
+                };
+                process.Start();
+                process.BeginErrorReadLine();
+                if (!process.WaitForExit(timeout))
+                {
+                    process.Kill();
+                    process.WaitForExit();
+                    error = "FFmpeg timed out";
+                    return false;
+                }
+                process.WaitForExit();
+                if (process.ExitCode == 0 && File.Exists(target) && new FileInfo(target).Length > 1024)
+                {
+                    error = null;
+                    return true;
+                }
+
+                error = stderr.Length > 0 ? Limit(stderr.ToString().Trim(), 400)
+                    : "FFmpeg produced no usable video (exit " + process.ExitCode + ")";
                 return false;
             }
         }
@@ -480,14 +459,11 @@ namespace PEV.Scripting
         /// <summary>
         /// Locates an FFmpeg binary without requiring configuration.
         ///
-        /// The search order puts the two places a chart author controls first — the mod folder
-        /// and the chart folder — so a portable setup can ship its own binary, and falls back to
-        /// PATH for machines that already have one.
+        /// The executable comes from the user's mod installation or an absolute PATH entry.
         /// </summary>
         public static string FfmpegPath()
         {
-            if (_ffmpegProbed) return _ffmpegPath;
-            _ffmpegProbed = true;
+            if (_ffmpegPath != null && File.Exists(_ffmpegPath)) return _ffmpegPath;
 
             var candidates = new List<string>();
             try
@@ -498,17 +474,6 @@ namespace PEV.Scripting
                     candidates.Add(Path.Combine(modDir, "ffmpeg.exe"));
                     candidates.Add(Path.Combine(modDir, "ffmpeg", "ffmpeg.exe"));
                     candidates.Add(Path.Combine(modDir, "tools", "ffmpeg.exe"));
-                }
-            }
-            catch { }
-
-            try
-            {
-                string chartDir = ChartDirectory();
-                if (!string.IsNullOrEmpty(chartDir))
-                {
-                    candidates.Add(Path.Combine(chartDir, "ffmpeg.exe"));
-                    candidates.Add(Path.Combine(chartDir, "ffmpeg", "ffmpeg.exe"));
                 }
             }
             catch { }
@@ -525,7 +490,9 @@ namespace PEV.Scripting
                 {
                     foreach (var dir in path.Split(new[] { Path.PathSeparator }, StringSplitOptions.RemoveEmptyEntries))
                     {
-                        string candidate = Path.Combine(dir.Trim(), "ffmpeg.exe");
+                        string root = dir.Trim().Trim('"');
+                        if (!Path.IsPathRooted(root) || Path.GetPathRoot(root).Length < 3) continue;
+                        string candidate = Path.Combine(root, "ffmpeg.exe");
                         if (File.Exists(candidate)) return _ffmpegPath = candidate;
                     }
                 }

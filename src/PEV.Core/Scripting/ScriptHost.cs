@@ -86,6 +86,7 @@ var __pevReady = true;
 
         private string _debugName;
         private PEV.Model.EventManifest _manifest;
+        private ADOFAI.LevelEvent _decoration;
 
         /// <summary>
         /// Tile this instance belongs to, injected into every host call so the field
@@ -95,10 +96,11 @@ var __pevReady = true;
         private double _eventTime;
         private int _eventOrder;
 
-        public static ScriptHost Create(string source, string debugName, out string error, PEV.Model.EventManifest manifest = null)
+        public static ScriptHost Create(string source, string debugName, out string error,
+            PEV.Model.EventManifest manifest = null, ADOFAI.LevelEvent decoration = null)
         {
             error = null;
-            var host = new ScriptHost { _debugName = debugName, _manifest = manifest };
+            var host = new ScriptHost { _debugName = debugName, _manifest = manifest, _decoration = decoration };
             try
             {
                 host._engine = new Engine(options =>
@@ -156,7 +158,8 @@ var __pevReady = true;
                 // instance identity here means two fields on the same floor cannot collide,
                 // and no script has to invent globally unique keys.
                 args["__instance"] = _debugName ?? "";
-                if (_manifest != null) args["__manifest"] = _manifest;
+                args["__manifest"] = _manifest;
+                args["__event"] = _decoration;
                 args["__floor"] = _floorSeq;
                 args["__eventTime"] = _eventTime;
                 args["__eventOrder"] = _eventOrder;

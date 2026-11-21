@@ -111,16 +111,21 @@ namespace PEV.Storage
                 if (!encoded.TryGetValue(name, out var rows) || !(rows is IEnumerable sequence) || rows is string) continue;
                 foreach (var raw in sequence)
                 {
-                    if (!(raw is IDictionary<string, object> row)) continue;
-                    if (row.TryGetValue("comment", out var comment) && comment is string text && EventInstanceData.LooksLikeOurs(text))
+                    string text = ReadString(raw, "comment");
+                    if (EventInstanceData.LooksLikeOurs(text))
                     {
                         var parsed = EventInstanceData.Parse(text, out _);
                         if (parsed != null) yield return parsed;
                     }
-                    if (row.TryGetValue("maskingTarget", out var target) && target is string payload &&
-                        DecorationCarrier.TryUnpack(payload, out var decoration)) yield return decoration;
+                    if (DecorationCarrier.TryUnpack(ReadString(raw, "maskingTarget"), out var decoration))
+                        yield return decoration;
                 }
             }
+        }
+        private static string ReadString(object row, string name)
+        {
+            if (row is JObject json) return json[name]?.Type == JTokenType.String ? json.Value<string>(name) : null;
+            return row is IDictionary<string, object> data && data.TryGetValue(name, out var value) ? value as string : null;
         }
         private static object Plain(JToken token)
         {

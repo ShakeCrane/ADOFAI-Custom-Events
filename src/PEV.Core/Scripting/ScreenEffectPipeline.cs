@@ -77,6 +77,7 @@ namespace PEV.Scripting
 
         private static readonly Dictionary<string, Layer> Layers =
             new Dictionary<string, Layer>(StringComparer.Ordinal);
+        private static readonly HashSet<string> Replaced = new HashSet<string>(StringComparer.Ordinal);
         private static readonly List<Layer> Ordered = new List<Layer>();
         private static int _sequence;
         private static int _warnedLimit;
@@ -135,8 +136,26 @@ namespace PEV.Scripting
             if (string.IsNullOrEmpty(payload)) { error = "missing screen effect payload"; return false; }
 
             if (Layers.TryGetValue(scope, out var existing) && existing.Payload == payload &&
-                existing.Manifest == manifest && existing.Material != null && !existing.FadingOut)
+                existing.Manifest == manifest && existing.Material != null)
                 return true;
+
+            JObject spec;
+            string mode;
+            bool enabled;
+            float weight, fade;
+            int order;
+            try
+            {
+                spec = JObject.Parse(payload);
+                mode = spec.Value<string>("mode") == "stack" ? "stack" : "replace";
+                if ((Replaced.Contains(scope) || existing?.FadingOut == true) && mode == "replace") return true;
+                enabled = spec.Value<bool?>("enabled") ?? true;
+                order = Mathf.Clamp(spec.Value<int?>("order") ?? 0, -1024, 1024);
+                weight = Mathf.Clamp01(spec["weight"] == null ? 1f : Finite(spec["weight"]));
+                fade = Mathf.Clamp(Finite(spec["fade"]), 0f, 60f);
+                ValidateUniforms(spec);
+            }
+            catch (Exception e) { error = "invalid screen effect payload: " + e.Message; return false; }
 
             if (!Layers.ContainsKey(scope) && Layers.Count >= MaxLayers)
             {
@@ -149,51 +168,13 @@ namespace PEV.Scripting
                 return false;
             }
 
-            JObject spec;
-            try { spec = JObject.Parse(payload); }
-            catch (Exception e) { error = "screen effect payload is not valid JSON: " + e.Message; return false; }
-
             var layer = existing;
             if (layer == null)
-            {
-                layer = new Layer { Scope = scope, Sequence = _sequence++ };
-                Layers[scope] = layer;
-            }
-
-            layer.Manifest = manifest;
-            layer.Payload = payload;
-            layer.Enabled = spec.Value<bool?>("enabled") ?? true;
-            layer.Order = Mathf.Clamp(spec.Value<int?>("order") ?? 0, -1024, 1024);
-            layer.Weight = Mathf.Clamp01(spec.Value<float?>("weight") ?? 1f);
-            string mode = spec.Value<string>("mode");
-            layer.Mode = mode == "stack" ? "stack" : "replace";
-
-            // A replace-mode layer supersedes older replace-mode layers: the newest grade is
-            // the one the author means, and keeping the old one underneath would double the
-            // effect instead of switching it. Stack-mode layers are left alone on purpose.
-            if (layer.Mode == "replace")
-            {
-                float fade = Mathf.Clamp(spec.Value<float?>("fade") ?? 0f, 0f, 60f);
-                foreach (var other in Layers.Values)
-                {
-                    if (other == layer || other.Mode != "replace" || other.Sequence >= layer.Sequence) continue;
-                    if (other.FadingOut) continue;
-                    other.FadingOut = true;
-                    other.FadeOutDuration = fade;
-                    other.FadeOutRemaining = fade;
-                    other.FadeOutApplied = 1f;
-                }
-            }
-            else
-            {
-                layer.FadingOut = false;
-                layer.FadeOutApplied = 1f;
-            }
-
-            if (!EnsureMaterial(layer, out error)) return false;
+                layer = new Layer { Scope = scope, Sequence = _sequence++, Manifest = manifest };
 
             try
             {
+                if (!EnsureMaterial(layer, out error)) return false;
                 ApplyFloats(layer.Material, spec["floats"] as JObject);
                 ApplyVectors(layer.Material, spec["vectors"] as JObject);
                 ApplyVectorArrays(layer.Material, spec["vectorArrays"] as JObject);
@@ -208,9 +189,54 @@ namespace PEV.Scripting
                 error = "screen effect uniforms failed: " + e.Message;
                 return false;
             }
+            finally
+            {
+                if (existing == null && error != null) Dispose(layer);
+            }
 
-            EnsureDriver();
+            layer.Payload = payload;
+            layer.Enabled = enabled;
+            layer.Order = order;
+            layer.Weight = weight;
+            layer.Mode = mode;
+            Layers[scope] = layer;
+            if (enabled && mode == "replace")
+            {
+                foreach (var other in Layers.Values)
+                {
+                    if (other == layer || other.Mode != "replace" || other.Sequence >= layer.Sequence) continue;
+                    if (other.FadingOut) continue;
+                    other.FadingOut = true;
+                    other.FadeOutDuration = fade;
+                    other.FadeOutRemaining = fade;
+                    other.FadeOutApplied = 1f;
+                }
+            }
+            else if (mode == "stack")
+            {
+                Replaced.Remove(scope);
+                layer.FadingOut = false;
+                layer.FadeOutApplied = 1f;
+            }
+
+            if (enabled && weight > 0f) EnsureDriver();
             return true;
+        }
+
+        private static void ValidateUniforms(JObject spec)
+        {
+            foreach (string group in new[] { "floats", "vectors", "vectorArrays", "colors", "curves" })
+            {
+                if (!(spec[group] is JObject values)) continue;
+                foreach (var property in values.Properties()) ValidateName(property.Name);
+                if (group != "curves") continue;
+                if (values.Count > MaxCurveRoles) throw new ArgumentException("too many curve roles");
+                foreach (var curve in values.Properties())
+                    if (curve.Value is JObject channels)
+                        foreach (var channel in channels.Properties())
+                            if (channel.Value is JArray points && points.Count > 32)
+                                throw new ArgumentException("too many points in curve " + curve.Name);
+            }
         }
 
         private static bool EnsureMaterial(Layer layer, out string error)
@@ -231,6 +257,12 @@ namespace PEV.Scripting
                 name = "PEV.Screen." + layer.Scope,
                 hideFlags = HideFlags.DontSave
             };
+            if (spec.Pass >= layer.Material.passCount)
+            {
+                DestroyMaterial(layer);
+                error = "screen effect pass is unavailable: " + spec.Pass;
+                return false;
+            }
             // A shader that samples display-referred values has to be told which colour space
             // the project runs in; converting already-linear pixels again is the difference
             // between a correct grade and a washed-out one.
@@ -246,7 +278,6 @@ namespace PEV.Scripting
             if (values == null) return;
             foreach (var property in values.Properties())
             {
-                ValidateName(property.Name);
                 if (property.Value.Type != JTokenType.Integer && property.Value.Type != JTokenType.Float) continue;
                 float value = property.Value.Value<float>();
                 if (float.IsNaN(value) || float.IsInfinity(value)) continue;
@@ -259,7 +290,6 @@ namespace PEV.Scripting
             if (values == null) return;
             foreach (var property in values.Properties())
             {
-                ValidateName(property.Name);
                 if (!(property.Value is JArray array) || array.Count != 4) continue;
                 material.SetVector(property.Name, new Vector4(
                     Finite(array[0]), Finite(array[1]), Finite(array[2]), Finite(array[3])));
@@ -271,7 +301,6 @@ namespace PEV.Scripting
             if (values == null) return;
             foreach (var property in values.Properties())
             {
-                ValidateName(property.Name);
                 if (!(property.Value is JArray rows) || rows.Count == 0 || rows.Count > MaxVectorArrayLength) continue;
                 var packed = new Vector4[rows.Count];
                 bool ok = true;
@@ -289,7 +318,6 @@ namespace PEV.Scripting
             if (values == null) return;
             foreach (var property in values.Properties())
             {
-                ValidateName(property.Name);
                 if (property.Value.Type != JTokenType.String) continue;
                 if (ColorUtility.TryParseHtmlString("#" + property.Value.Value<string>(), out var color))
                     material.SetColor(property.Name, color);
@@ -312,7 +340,6 @@ namespace PEV.Scripting
             {
                 foreach (var property in curves.Properties())
                 {
-                    ValidateName(property.Name);
                     if (!(property.Value is JObject set)) continue;
                     if (seen.Count >= MaxCurveRoles) { error = "too many curve roles"; return; }
                     seen.Add(property.Name);
@@ -344,6 +371,7 @@ namespace PEV.Scripting
                 }
             }
 
+            if (layer.Curves.Count == 0) return;
             EnsureIdentity(layer);
             foreach (var pair in layer.Curves)
             {
@@ -377,6 +405,7 @@ namespace PEV.Scripting
             string path = lut.Value<string>("path");
             if (string.IsNullOrEmpty(path))
             {
+                ReleaseLut(layer);
                 layer.Material.SetFloat("_LutEnabled", 0f);
                 return;
             }
@@ -384,6 +413,7 @@ namespace PEV.Scripting
             string resolved = LutCache.Resolve(path, layer.Manifest.SourcePath, out string resolveError);
             if (resolved == null)
             {
+                ReleaseLut(layer);
                 // Fail once per path rather than every frame; the author needs to see it, but
                 // a broken LUT must not spam the log at frame rate.
                 if (layer.LutResolved != path || layer.LutError != resolveError)
@@ -405,6 +435,7 @@ namespace PEV.Scripting
             var entry = LutCache.Acquire(resolved, layer.Manifest.SourcePath, path, out string acquireError);
             if (entry == null)
             {
+                ReleaseLut(layer);
                 if (layer.LutError != acquireError)
                 {
                     layer.LutError = acquireError;
@@ -441,6 +472,7 @@ namespace PEV.Scripting
         internal static void Clear(string scope)
         {
             if (string.IsNullOrEmpty(scope)) return;
+            Replaced.Remove(scope);
             if (!Layers.TryGetValue(scope, out var layer)) return;
             Layers.Remove(scope);
             Dispose(layer);
@@ -451,6 +483,7 @@ namespace PEV.Scripting
         {
             var layers = new List<Layer>(Layers.Values);
             Layers.Clear();
+            Replaced.Clear();
             foreach (var layer in layers) Dispose(layer);
             DetachDriver();
             LutCache.Clear();
@@ -534,6 +567,7 @@ namespace PEV.Scripting
             {
                 if (!Layers.TryGetValue(scope, out var layer)) continue;
                 Layers.Remove(scope);
+                Replaced.Add(scope);
                 Dispose(layer);
             }
         }
@@ -599,7 +633,7 @@ namespace PEV.Scripting
         private static void DetachDriver()
         {
             if (_driver == null) return;
-            try { UnityEngine.Object.Destroy(_driver); } catch { }
+            try { _driver.enabled = false; UnityEngine.Object.Destroy(_driver); } catch { }
             _driver = null;
             _driverObject = null;
         }

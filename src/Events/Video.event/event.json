@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "id": "pev.video",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "apiVersion": 1,
   "entry": "main.js",
   "icon": "icon.png",
@@ -19,6 +19,15 @@
   },
   "decoration": true,
   "hostPrimitive": "fx.video",
+  "clock": "level",
+  "videoPreview": {
+    "parameterMap": {
+      "file": "file",
+      "mode": "fit",
+      "trimStart": "trimStart",
+      "trimEnd": "trimEnd"
+    }
+  },
   "decorationListName": "Video",
   "decorationMarker": "pev/video",
   "decorationDefaults": {

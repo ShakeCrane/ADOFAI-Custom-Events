@@ -4,10 +4,11 @@
     <TargetFramework>net8.0</TargetFramework>
     <RollForward>Major</RollForward>
     <ImplicitUsings>disable</ImplicitUsings>
+    <DefineConstants>$(DefineConstants);PEV_DIAGNOSTICS</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../src/PEV.Core/Scripting/NoiseFieldColorTypes.cs" Link="NoiseFieldColorTypes.cs" />
+    <Compile Include="../../src/PEV.Core/Diagnostics/NoiseFieldColorTypes.cs" Link="NoiseFieldColorTypes.cs" />
     <Compile Include="../../src/PEV.Core/Diagnostics/NoiseFieldColorReference.cs" Link="NoiseFieldColorReference.cs" />
-    <Compile Include="../../src/PEV.Core/Scripting/NoiseFieldGroupStaging.cs" Link="NoiseFieldGroupStaging.cs" />
+    <Compile Include="../../src/PEV.Core/Scripting/ResourceGroupStaging.cs" Link="ResourceGroupStaging.cs" />
   </ItemGroup>
 </Project>

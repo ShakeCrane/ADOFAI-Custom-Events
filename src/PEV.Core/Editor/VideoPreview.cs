@@ -27,7 +27,11 @@ namespace PEV.Editor
         private const string PreviewScopePrefix = "editorvideo/";
 
         private static VideoPreview _instance;
-        private readonly Dictionary<string, string> _seen = new Dictionary<string, string>(StringComparer.Ordinal);
+        private HashSet<string> _seen = new HashSet<string>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, string> LegacyBindings = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            { "file", "file" }, { "trimStart", "trimStart" }, { "trimEnd", "trimEnd" }, { "mode", "fit" }
+        };
 
         [HarmonyPatch(typeof(scnEditor), "Start")]
         public static class AttachPatch
@@ -70,67 +74,51 @@ namespace PEV.Editor
                     if (ev == null || !ev.active) continue;
                     if (!LevelStorage.TryGetData(ev, out var data)) continue;
                     if (!EventRegistry.TryGetById(data.Id, out var manifest)) continue;
-                    if (manifest.HostPrimitive != "fx.video") continue;
+                    if (manifest.HostPrimitive != "fx.video" ||
+                        (manifest.SchemaVersion >= 5 && manifest.VideoPreviewBindings.Count == 0)) continue;
 
-                    string uid = data.Uid;
-                    live.Add(uid);
-                    Preview(ev, manifest, data, uid);
+                    string scope = PreviewScopePrefix + data.Id + "#" + data.Uid;
+                    live.Add(scope);
+                    Preview(ev, manifest, data, scope);
                 }
             }
 
             // A deleted or undone row is gone from the list entirely; drop its surface.
-            var stale = new List<string>();
-            foreach (var key in _seen.Keys) if (!live.Contains(key)) stale.Add(key);
-            foreach (var key in stale)
-            {
-                var args = new Dictionary<string, object> { { "__instance", PreviewScopePrefix + key } };
-                VideoSurface.Destroy(_seen[key], args, out _);
-                _seen.Remove(key);
-            }
+            foreach (var scope in _seen) if (!live.Contains(scope)) VideoSurface.DestroyScope(scope);
+            _seen = live;
         }
 
-        private void Preview(LevelEvent ev, PEV.Model.EventManifest manifest, EventInstanceData data, string uid)
+        private static void Preview(LevelEvent ev, PEV.Model.EventManifest manifest, EventInstanceData data, string scope)
         {
             try
             {
                 var args = new Dictionary<string, object>
                 {
-                    { "__instance", PreviewScopePrefix + uid },
+                    { "__instance", scope },
                     { "__event", ev },
                     { "__manifest", manifest },
-                    { "__floor", ev.floor }
+                    { "playing", false },
+                    { "muted", true }
                 };
 
                 // Read the row's current values, not the load-time snapshot: this is what makes
                 // a path typed into the panel appear without reopening the level.
-                foreach (var kv in data.Effective)
+                var bindings = manifest.SchemaVersion >= 5 ? manifest.VideoPreviewBindings : LegacyBindings;
+                foreach (var binding in bindings)
                 {
-                    object value = kv.Value;
+                    if (!data.Effective.TryGetValue(binding.Key, out var value)) continue;
                     try
                     {
-                        object liveValue = ev.Get<object>(kv.Key);
+                        object liveValue = ev.Get<object>(binding.Key);
                         if (liveValue != null) value = liveValue;
                     }
                     catch { }
-                    args[kv.Key] = Normalize(value);
+                    args[binding.Value] = value is Enum choice ? choice.ToString() : value;
                 }
 
-                // The editor has no song clock, so the surface shows the first frame of the
-                // clip. The author is placing a picture, not previewing a performance.
-                args["time"] = TrimStart(args);
-                args["playing"] = false;
-                args["loop"] = false;
-
-                // The package declares this input as `mode` and forwards it to the host as
-                // `fit`; the preview sees the authored parameter names, so the same translation
-                // has to happen here or the editor draws a stretched picture while playback
-                // draws a fitted one.
-                if (args.TryGetValue("mode", out var mode) && mode != null)
-                    args["fit"] = mode.ToString();
-
-                VideoSurface.Set("video", args, out string error);
-                if (!string.IsNullOrEmpty(error)) PEV.Core.Plugin.Log("video preview: " + error);
-                _seen[uid] = "video";
+                if (!args.ContainsKey("time") && args.TryGetValue("trimStart", out var start))
+                    args["time"] = start;
+                VideoSurface.Set("preview", args, out _);
             }
             catch (Exception e)
             {
@@ -138,36 +126,13 @@ namespace PEV.Editor
             }
         }
 
-        private static double TrimStart(Dictionary<string, object> args)
-        {
-            object raw;
-            if (args.TryGetValue("trimStart", out raw) && raw != null)
-            {
-                try { return Math.Max(0, Convert.ToDouble(raw)); } catch { }
-            }
-            return 0;
-        }
-
         private void Clear()
         {
-            if (_seen.Count == 0) return;
-            foreach (var pair in _seen)
-            {
-                var args = new Dictionary<string, object> { { "__instance", PreviewScopePrefix + pair.Key } };
-                VideoSurface.Destroy(pair.Value, args, out _);
-            }
+            foreach (var scope in _seen) VideoSurface.DestroyScope(scope);
             _seen.Clear();
         }
 
         private void OnDestroy() => Clear();
 
-        /// <summary>Unity structs and enums do not survive JSON-style parsing; flatten once.</summary>
-        private static object Normalize(object value)
-        {
-            if (value is Vector2 v2) return new[] { v2.x, v2.y };
-            if (value is Color c) return ColorUtility.ToHtmlStringRGB(c);
-            if (value is Enum e) return e.ToString();
-            return value;
-        }
     }
 }

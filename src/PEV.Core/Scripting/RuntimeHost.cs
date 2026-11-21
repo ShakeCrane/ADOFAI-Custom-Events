@@ -175,16 +175,9 @@ namespace PEV.Scripting
                 EventOrder = _instances.Count
             };
 
-            // A video row is a decoration, and decorations exist for the whole level rather
-            // than from one tile onward. Its clock is therefore the song clock itself: the
-            // package's own start-beat parameter decides when the media begins, and before
-            // that it holds its first frame. Anchoring to the row's floor instead would make
-            // a video placed on a late tile stay blank through the part of the song a
-            // decoration is supposed to be visible in.
-            if (manifest.HostPrimitive == "fx.video")
+            if (manifest.UsesLevelClock)
             {
                 inst.EntryTime = 0;
-                inst.EntryTimeResolved = true;
                 inst.AnchorAtLevelStart = true;
             }
 
@@ -202,12 +195,6 @@ namespace PEV.Scripting
                 // floor. The placement tile is where the event sits, not when it appears.
                 if (describeFields && NoiseFieldRenderer.IsFieldEvent(manifest))
                     NoiseFieldRenderer.Describe(inst.Key, manifest.FieldPreviewKey, ev, data);
-
-                // A video row is likewise a decoration. Bind it so the quad follows the live
-                // transform from the first frame; the script supplies the clip and the clock
-                // only once the song reaches this tile.
-                if (manifest.HostPrimitive == "fx.video")
-                    VideoSurface.Describe(inst.Key, "video", ev);
             }
 
             _instances.Add(inst);
@@ -239,7 +226,8 @@ namespace PEV.Scripting
             // decoration, and a paused surface must still hold the frame the clock asked for.
             // Ownership is declared first: while the editor is idle the preview draws these
             // rows and the runtime must not put a second quad on the same decoration.
-            VideoSurface.RuntimeActive = ADOBase.editor == null || ADOBase.editor.playMode;
+            bool playingScene = ADOBase.editor == null || ADOBase.editor.playMode;
+            VideoSurface.RuntimeActive = playingScene;
             try { VideoSurface.Refresh(); } catch { }
 
             // Keep a package-declared full-screen stage attached to whichever camera is
@@ -247,7 +235,7 @@ namespace PEV.Scripting
             // while the song is paused or before play begins.
             try { ScreenEffectPipeline.Tick(); } catch { }
 
-            if (!_live || _instances.Count == 0) return;
+            if (!playingScene || !_live || _instances.Count == 0) return;
 
             double songTime;
             try
@@ -257,6 +245,7 @@ namespace PEV.Scripting
                 songTime = conductor.songposition_minusi;
             }
             catch { return; }
+            if (double.IsNaN(songTime) || double.IsInfinity(songTime)) return;
 
             // "Is the level running" is answered by the clock itself, not by an enum.
             // The song position freezes when paused, so a time delta is the honest signal.
@@ -322,7 +311,6 @@ namespace PEV.Scripting
             // Bindings point at LevelEvent rows that the next decode replaces. Clearing them
             // is what stops a stale reference from resurrecting a destroyed decoration.
             try { NoiseFieldRenderer.UnbindAll(); } catch { }
-            try { VideoSurface.UnbindAll(); } catch { }
 
             // Belt and braces: even a script that leaked objects or crashed leaves nothing.
             try { GameBridge.DestroyAll(); } catch { }

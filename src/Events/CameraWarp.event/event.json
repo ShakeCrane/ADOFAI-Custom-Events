@@ -8,13 +8,14 @@
   "category": "VisualFx",
   "name": { "en": "Camera Warp", "zh-CN": "镜头扭曲" },
   "description": {
-    "en": "Warps the camera over a duration. A proof-of-concept package for P0.",
-    "zh-CN": "在指定时长内扭曲镜头。P0 阶段的验证用事件包。"
+    "en": "Combines a flash and a camera shake for the specified number of beats.",
+    "zh-CN": "在指定拍数内叠加闪光与镜头震动。"
   },
   "params": [
     { "name": "strength", "type": "Float", "default": 0.8, "min": 0, "max": 2, "unit": "x" },
     { "name": "duration", "type": "Float", "default": 2, "min": 0, "max": 16, "unit": "beats" },
-    { "name": "ease", "type": "Enum:Ease", "default": "OutQuad" },
+    { "name": "ease", "type": "Enum:Ease", "default": "OutQuad",
+      "label": { "en": "Ease (editor control sample)", "zh-CN": "缓动（控件示例）" } },
     { "name": "color", "type": "Color", "default": "ffffff" }
   ]
 }

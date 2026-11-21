@@ -6,11 +6,11 @@
 //
 // Things worth copying from here:
 //   - t is relative to the tile and is NOT monotonic; it resets on restart.
-//   - the object key includes the uid, so two instances never fight over one object.
+//   - object keys are scoped by the host, so two instances can use the same key.
 //   - dispose() destroys the object; the host also reclaims it on teardown.
 
 function create(ctx, params) {
-  var key = "pulse:" + ctx.floorSeq;
+  var key = "pulse";
   var started = false;
   var duration = params.duration > 0 ? params.duration : 1;
   var cycles = params.cycles > 0 ? params.cycles : 1;

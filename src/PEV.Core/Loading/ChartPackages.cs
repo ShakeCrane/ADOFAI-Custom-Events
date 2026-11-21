@@ -43,11 +43,32 @@ namespace PEV.Loading
                 try
                 {
                     var context = _current;
-                    if (context == null || string.IsNullOrEmpty(context.Path) || !File.Exists(context.Path))
-                        return null;
-                    return Path.GetDirectoryName(Path.GetFullPath(context.Path));
+                    string path = context?.Path ?? ADOBase.levelPath;
+                    return string.IsNullOrEmpty(path) ? null : Path.GetDirectoryName(Path.GetFullPath(path));
                 }
                 catch { return null; }
+            }
+        }
+
+        internal static string ResolveChartAsset(string relative, string directory = null)
+        {
+            if (!EventLoader.IsPackageRelativePath(relative)) return null;
+            directory = directory ?? CurrentChartDirectory;
+            if (string.IsNullOrEmpty(directory)) return null;
+
+            try
+            {
+                string root = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                string full = Path.GetFullPath(Path.Combine(root, relative));
+                if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(full)) return null;
+                for (string path = full; path.Length >= root.Length; path = Path.GetDirectoryName(path))
+                    if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) return null;
+                return full;
+            }
+            catch (Exception e) when (e is ArgumentException || e is IOException || e is UnauthorizedAccessException ||
+                                      e is NotSupportedException)
+            {
+                return null;
             }
         }
 

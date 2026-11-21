@@ -15,10 +15,14 @@ import math
 import os
 import re
 import sys
+import tempfile
 import zipfile
 from pathlib import PurePosixPath
 
 REQUIRED_FIELDS = ("schemaVersion", "id", "version", "entry")
+MAX_MANIFEST_BYTES = 2 * 1024 * 1024
+MAX_SCRIPT_BYTES = 4 * 1024 * 1024
+MAX_ICON_BYTES = 8 * 1024 * 1024
 VALID_TYPES = {
     "Array", "Bool", "Choice", "Color", "Export", "File", "FilterProperties", "Float",
     "FloatPair", "Int", "List", "MinMaxGradient", "Note", "ParticlePlayback",
@@ -35,14 +39,16 @@ def load_manifest(root):
     if not os.path.isfile(path):
         return None, f"missing event.json in {root}"
     try:
-        with open(path, encoding="utf-8") as fh:
+        if os.path.getsize(path) > MAX_MANIFEST_BYTES:
+            return None, "event.json is larger than 2 MiB"
+        with open(path, encoding="utf-8-sig") as fh:
             return json.load(fh), None
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         return None, f"event.json is not valid JSON: {exc}"
 
 
 def validate(root, manifest, _included=False):
-    """Returns a list of problems. Empty means the package will load."""
+    """Return manifest and declared-resource problems found by static checks."""
     problems = []
 
     def valid_uniform_number(value):
@@ -55,6 +61,13 @@ def validate(root, manifest, _included=False):
 
     if not isinstance(manifest, dict):
         return ["manifest must be an object"]
+
+    for field, supported in (("schemaVersion", (1, 2, 3, 4, 5)), ("apiVersion", (1, 2))):
+        value = manifest.get(field, 1)
+        if type(value) is not int or value not in supported:
+            problems.append(f"unsupported {field}: {value!r} (supported: {supported})")
+    if problems:
+        return problems
 
     if "includedEvents" in manifest:
         included = manifest["includedEvents"]
@@ -76,7 +89,11 @@ def validate(root, manifest, _included=False):
                     continue
                 paths.add(normalized.lower())
                 try:
-                    with open(os.path.join(root, normalized), encoding="utf-8") as fh:
+                    child_path = os.path.join(root, normalized)
+                    if os.path.getsize(child_path) > MAX_MANIFEST_BYTES:
+                        problems.append(f"included event '{normalized}' is larger than 2 MiB")
+                        continue
+                    with open(child_path, encoding="utf-8-sig") as fh:
                         child = json.load(fh)
                 except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                     problems.append(f"cannot read included event '{normalized}': {exc}")
@@ -154,35 +171,50 @@ def validate(root, manifest, _included=False):
         if field not in manifest:
             problems.append(f"missing required field '{field}'")
 
-    for field in ("schemaVersion", "apiVersion"):
-        value = manifest.get(field, 1)
-        supported = (1, 2, 3, 4, 5) if field == "schemaVersion" else (1, 2)
-        if type(value) is not int or value not in supported:
-            problems.append(f"unsupported {field}: {value!r} (supported: {supported})")
-
     for field in ("id", "version", "entry"):
         value = manifest.get(field)
         if not isinstance(value, str) or not value.strip():
             problems.append(f"'{field}' must be a non-empty string")
 
-    def check_resource(field):
+    def check_resource(field, max_bytes):
         value = manifest.get(field)
-        if value is None and field == "icon":
-            return
         if not isinstance(value, str) or not value.strip():
             return
         normalized = value.replace("\\", "/")
+        path = os.path.join(root, normalized)
         if normalized.startswith("/") or ":" in normalized or ".." in PurePosixPath(normalized).parts:
             problems.append(f"{field} must be a package-relative path")
-        elif not os.path.isfile(os.path.join(root, normalized)):
+        elif not os.path.isfile(path):
             problems.append(f"{field} '{value}' not found")
+        elif os.path.getsize(path) > max_bytes:
+            problems.append(f"{field} '{value}' is larger than {max_bytes // (1024 * 1024)} MiB")
 
-    check_resource("entry")
-    check_resource("icon")
+    check_resource("entry", MAX_SCRIPT_BYTES)
+    if "icon" in manifest and (not isinstance(manifest["icon"], str) or not manifest["icon"].strip()):
+        problems.append("icon must be a non-empty package-relative path")
+    else:
+        check_resource("icon", MAX_ICON_BYTES)
     primitive = manifest.get("hostPrimitive")
     if "hostPrimitive" in manifest and (manifest.get("schemaVersion", 0) < 3 or
             primitive not in ("fx.field", "fx.video")):
         problems.append("invalid hostPrimitive (requires schemaVersion 3 and fx.field or fx.video)")
+    if "clock" in manifest and (manifest.get("schemaVersion", 0) < 5 or manifest["clock"] not in ("level", "tile")):
+        problems.append("clock requires schemaVersion 5 and 'level' or 'tile'")
+    if "videoPreview" in manifest:
+        preview = manifest["videoPreview"]
+        mapping = preview.get("parameterMap") if isinstance(preview, dict) else None
+        if (manifest.get("schemaVersion", 0) < 5 or primitive != "fx.video" or
+                manifest.get("decoration") is not True or not isinstance(preview, dict) or
+                set(preview) != {"parameterMap"} or not isinstance(mapping, dict) or not 1 <= len(mapping) <= 7):
+            problems.append("videoPreview requires a schema 5 fx.video decoration and parameterMap")
+        else:
+            params = manifest.get("params", [])
+            names = [p.get("name") for p in params if isinstance(p, dict)] if isinstance(params, list) else []
+            targets = tuple(mapping.values())
+            if (any(source not in names for source in mapping) or "file" not in targets or
+                    any(target not in ("file", "time", "trimStart", "trimEnd", "fit", "compat", "visible")
+                        for target in targets) or len(set(targets)) != len(targets)):
+                problems.append("invalid or duplicate videoPreview parameter mapping (file is required)")
     if "shaderBundle" in manifest:
         if manifest.get("schemaVersion", 0) < 2:
             problems.append("shaderBundle requires schemaVersion 2 or newer")
@@ -190,7 +222,7 @@ def validate(root, manifest, _included=False):
         if not isinstance(bundle, str) or not bundle.strip():
             problems.append("shaderBundle must be a package-relative path string")
         else:
-            check_resource("shaderBundle")
+            check_resource("shaderBundle", 64 * 1024 * 1024)
 
     if "globalSettings" in manifest:
         settings = manifest["globalSettings"]
@@ -242,7 +274,7 @@ def validate(root, manifest, _included=False):
         # chart directory and start with the shared prefix, because that is how Core tells a
         # carrier row apart from a real image decoration.
         marker = manifest["decorationMarker"]
-        if (manifest.get("schemaVersion") != 4 or manifest.get("decoration") is not True or
+        if (manifest.get("schemaVersion", 0) < 4 or manifest.get("decoration") is not True or
                 not isinstance(marker, str) or not re.fullmatch(r"pev/[a-z0-9_-]+(/[a-z0-9_-]+)*", marker or "")):
             problems.append("invalid decorationMarker for schema 4 decoration event "
                             "(expected pev/<lower-case path>)")
@@ -393,37 +425,62 @@ def validate(root, manifest, _included=False):
 
     if "editorPanel" in manifest:
         panel = manifest["editorPanel"]
-        declared = {p.get("name") for p in manifest.get("params", []) if isinstance(p, dict)}
-        blobs = []
-        if manifest.get("schemaVersion", 0) < 5 or not isinstance(panel, dict):
-            problems.append("editorPanel requires schemaVersion 5 and an object")
+        raw_params = manifest.get("params", [])
+        declared = {p["name"]: p.get("type") for p in raw_params
+                    if isinstance(p, dict) and isinstance(p.get("name"), str)} if isinstance(raw_params, list) else {}
+
+        def binds(name, *types):
+            return isinstance(name, str) and declared.get(name) in types
+
+        def label(value):
+            return isinstance(value, str) or (
+                isinstance(value, dict) and bool(value) and all(isinstance(v, str) for v in value.values()))
+
+        if manifest.get("schemaVersion", 0) < 5 or "screenEffect" not in manifest or not isinstance(panel, dict):
+            problems.append("editorPanel requires a schema 5 screenEffect and an object")
         else:
-            for key in ("curves", "hueCurves"):
-                if key in panel:
-                    if not isinstance(panel[key], dict):
-                        problems.append(f"editorPanel {key} must map channel names to parameters")
-                    else:
-                        blobs.extend(panel[key].values())
+            for group, channels in (("curves", ("master", "red", "green", "blue")),
+                                    ("hueCurves", ("hue", "saturation", "luma"))):
+                if group in panel:
+                    values = panel[group]
+                    if (not isinstance(values, dict) or not values or
+                            any(name not in channels or not binds(value, "String", "Text")
+                                for name, value in values.items())):
+                        problems.append(f"editorPanel {group} must bind channels to String or Text parameters")
             if "wheels" in panel:
-                if not isinstance(panel["wheels"], list) or not 1 <= len(panel["wheels"]) <= 8:
-                    problems.append("editorPanel wheels must list 1-8 wheels")
-                else:
-                    for wheel in panel["wheels"]:
-                        if not isinstance(wheel, dict):
-                            problems.append("editorPanel wheel must be an object")
-                            continue
-                        blobs.extend([wheel.get("xy"), wheel.get("luma")])
+                wheels = panel["wheels"]
+                if (not isinstance(wheels, list) or not 1 <= len(wheels) <= 8 or
+                        any(not isinstance(wheel, dict) or not binds(wheel.get("xy"), "Vector2", "FloatPair") or
+                            not binds(wheel.get("luma"), "Float") or
+                            ("label" in wheel and not label(wheel["label"])) for wheel in wheels)):
+                    problems.append("editorPanel wheels must list 1-8 xy/luma bindings")
             if "lut" in panel:
                 lut = panel["lut"]
-                if not isinstance(lut, dict):
-                    problems.append("editorPanel lut must be an object")
-                else:
-                    blobs.extend([lut.get("preset"), lut.get("file"), lut.get("strength")])
-            if "compare" in panel:
-                blobs.append(panel["compare"])
-            for name in blobs:
-                if name is not None and (not isinstance(name, str) or name not in declared):
-                    problems.append(f"editorPanel refers to an undeclared parameter: {name!r}")
+                if (not isinstance(lut, dict) or
+                        any(name in lut and not binds(lut[name], *types) for name, types in
+                            (("preset", ("Choice",)), ("file", ("String", "Text", "File")), ("strength", ("Float",)))) or
+                        ("note" in lut and not label(lut["note"]))):
+                    problems.append("editorPanel lut has invalid preset, file, strength or note")
+            if "hsl" in panel:
+                hsl = panel["hsl"]
+                if (not isinstance(hsl, dict) or not binds(hsl.get("parameter"), "String", "Text") or
+                        not isinstance(hsl.get("bands"), list) or not 1 <= len(hsl["bands"]) <= 16 or
+                        not all(label(band) for band in hsl["bands"])):
+                    problems.append("editorPanel hsl must bind a String or Text parameter and 1-16 labels")
+            if "curvePresets" in panel:
+                presets = panel["curvePresets"]
+                if (not isinstance(presets, list) or len(presets) > 8 or
+                        any(not isinstance(preset, dict) or not label(preset.get("label")) or
+                            not isinstance(preset.get("value"), str) for preset in presets)):
+                    problems.append("editorPanel curvePresets must contain at most 8 label/value pairs")
+            for name, kind in (("compare", "Bool"), ("composition", "Choice")):
+                if name in panel and not binds(panel[name], kind):
+                    problems.append(f"editorPanel {name} must bind a {kind} parameter")
+            if "scopes" in panel and type(panel["scopes"]) is not bool:
+                problems.append("editorPanel scopes must be boolean")
+            for name in ("title", "summary"):
+                if name in panel and not label(panel[name]):
+                    problems.append(f"editorPanel {name} must be a label")
 
     params = manifest.get("params", [])
     if not isinstance(params, list):
@@ -465,21 +522,40 @@ def validate(root, manifest, _included=False):
 
 
 def collect_files(root):
-    for dirpath, _dirnames, filenames in os.walk(root):
-        for name in filenames:
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        for name in sorted(filenames):
             full = os.path.join(dirpath, name)
             rel = os.path.relpath(full, root).replace(os.sep, "/")
-            if rel.endswith(".event"):
+            if rel.lower().endswith(".event"):
                 continue
             yield full, rel
 
 
 def pack(root, output):
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
-        for full, rel in collect_files(root):
-            if os.path.abspath(full) == os.path.abspath(output):
-                continue
-            zf.write(full, rel)
+    output = os.path.abspath(output)
+    files = [(full, rel) for full, rel in collect_files(root)
+             if os.path.normcase(os.path.abspath(full)) != os.path.normcase(output)]
+    names = set()
+    for full, rel in files:
+        folded = rel.casefold()
+        if folded in names:
+            raise ValueError(f"case-insensitive duplicate archive path: {rel}")
+        names.add(folded)
+        if os.path.islink(full) or not os.path.isfile(full):
+            raise ValueError(f"archive input must be a regular file: {rel}")
+
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=os.path.dirname(output), suffix=".event", delete=False) as file:
+            temp = file.name
+            with zipfile.ZipFile(file, "w", zipfile.ZIP_DEFLATED) as zf:
+                for full, rel in files:
+                    zf.write(full, rel)
+        os.replace(temp, output)
+    finally:
+        if temp is not None and os.path.exists(temp):
+            os.unlink(temp)
 
 
 def main():
@@ -519,7 +595,11 @@ def main():
         print("error: id cannot be used as an output filename; specify --output", file=sys.stderr)
         return 1
     output = args.output or f"{event_id}.event"
-    pack(root, output)
+    try:
+        pack(root, output)
+    except (OSError, ValueError) as exc:
+        print(f"error: cannot pack {output}: {exc}", file=sys.stderr)
+        return 1
     size = os.path.getsize(output)
     print(f"packed -> {output} ({size} bytes)")
     return 0

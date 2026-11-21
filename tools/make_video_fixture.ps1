@@ -11,6 +11,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+$eventSource = Join-Path $root 'src\Events\Video.event'
+$manifest = Get-Content -LiteralPath (Join-Path $eventSource 'event.json') -Raw | ConvertFrom-Json
 
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 
@@ -23,8 +25,8 @@ for ($i = 0; $i -lt $tiles - 1; $i++) { $angleData += 0.0 }
 # The decoration row that carries the event. Values mirror the manifest defaults, then the
 # test overrides the file so it points at a real clip.
 $payload = @{
-    id      = 'pev.video'
-    v       = '1.0.0'
+    id      = $manifest.id
+    v       = $manifest.version
     uid     = 'videotest01'
     p       = @{
         file      = $VideoFile
@@ -93,7 +95,7 @@ $chart = [ordered]@{
             tag             = 'pev'
         }
     )
-    pevEvents   = @(@{ id = 'pev.video'; version = '1.0.0'; file = 'Video.event' })
+    pevEvents   = @(@{ id = $manifest.id; version = $manifest.version; file = 'Video.event' })
 }
 
 $chartPath = Join-Path $Out 'level.adofai'
@@ -102,8 +104,8 @@ $json = ConvertTo-Json -InputObject $chart -Depth 32
 
 # Copy the packed event next to the chart; the chart only loads packages from its own folder.
 $eventZip = Join-Path $Out 'Video.event'
-if (Test-Path $eventZip) { Remove-Item $eventZip -Force }
-& python (Join-Path $root 'tools\pack_event.py') (Join-Path $root 'src\Events\Video.event') -o $eventZip | Out-Null
+& python (Join-Path $root 'tools\pack_event.py') $eventSource -o $eventZip
+if ($LASTEXITCODE -ne 0) { throw "Failed to pack the video fixture" }
 
 # Copy the media the chart references, so the fixture is self-contained and portable.
 $sourceVideo = Join-Path $Media $VideoFile

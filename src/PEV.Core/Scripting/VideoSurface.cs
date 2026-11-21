@@ -38,10 +38,10 @@ namespace PEV.Scripting
         {
             public string Key;
             public string Scope;
-            public string ScriptKey;
 
             public GameObject GameObject;
-            public SpriteRenderer Renderer;
+            public MeshRenderer Renderer;
+            public Mesh Mesh;
             public Material Material;
             public VideoPlayer Player;
             public RenderTexture Target;
@@ -49,6 +49,7 @@ namespace PEV.Scripting
 
             /// <summary>The file this surface was opened from, after path resolution.</summary>
             public string SourcePath;
+            public string RequestedFile;
             public string SourceError;
 
             /// <summary>
@@ -101,6 +102,7 @@ namespace PEV.Scripting
             public double TrimStart;
             public double TrimEnd;
             public string Fit = "stretch";
+            public Vector2 UvScale = Vector2.one;
 
             /// <summary>
             /// Set while a seek is in flight. Native seeking is asynchronous: assigning time
@@ -108,9 +110,7 @@ namespace PEV.Scripting
             /// acknowledges it is what makes the picture stutter and stay behind.
             /// </summary>
             public bool SeekPending;
-            public double SeekIssuedAt;
             public int SeekFrames;
-            public double SeekTarget;
             public int SeekAttempts;
             public double LastObservedTime = -1;
             public int StallFrames;
@@ -128,7 +128,6 @@ namespace PEV.Scripting
             public bool HasFrame;
 
             public ADOFAI.LevelEvent Bound;
-            public bool Described;
 
             public int UpdateCalls;
             public double LastErrorLogTime;
@@ -150,6 +149,19 @@ namespace PEV.Scripting
 
         public static int LiveCount => Live.Count;
         public static IEnumerable<string> Keys => Live.Keys;
+
+#if PEV_DIAGNOSTICS
+        internal static Renderer FindVisibleRenderer(string scope = null, string key = null)
+        {
+            if (scope != null)
+                return Live.TryGetValue(Scoped(scope, key), out var entry) && entry.Renderer != null &&
+                    entry.Renderer.enabled ? entry.Renderer : null;
+            foreach (var candidate in Live.Values)
+                if (candidate.Bound != null && candidate.Renderer != null && candidate.Renderer.enabled)
+                    return candidate.Renderer;
+            return null;
+        }
+#endif
 
         /// <summary>
         /// Whether the song clock is advancing.
@@ -190,7 +202,7 @@ namespace PEV.Scripting
         public static int ClockOverride;
 
         internal static string Scoped(string scope, string key) =>
-            string.IsNullOrEmpty(scope) ? key : scope + "/" + key;
+            GameBridge.ScopedKey(scope, key);
 
         /// <summary>
         /// Test hook: record what packages ask for instead of opening media.
@@ -234,21 +246,28 @@ namespace PEV.Scripting
 
             try
             {
-                string id = Scoped(ScopeOf(args), key);
+                string scope = ScopeOf(args);
+                string id = Scoped(scope, key);
                 if (!Live.TryGetValue(id, out var entry))
                 {
-                    entry = new Entry { Key = id, Scope = ScopeOf(args), ScriptKey = key };
+                    entry = new Entry { Key = string.IsNullOrEmpty(scope) ? key : scope + "/" + key, Scope = scope };
                     Live[id] = entry;
                 }
 
                 entry.UpdateCalls++;
                 // Before Open: whether a refused container may be substituted decides what
                 // Open hands to the decoder, so it has to be known when Open runs.
-                entry.AllowConversion = Bool(args, "compat", true);
-
-                string file = Str(args, "file", null);
-                if (!string.IsNullOrEmpty(file) && entry.SourcePath == null)
-                    Open(entry, file, args);
+                bool compat = Bool(args, "compat", true);
+                bool hasFile = args != null && args.ContainsKey("file");
+                string file = hasFile ? Str(args, "file", "").Trim() : entry.RequestedFile;
+                if (!string.Equals(file, entry.RequestedFile, StringComparison.Ordinal) ||
+                    entry.AllowConversion != compat)
+                {
+                    Release(entry);
+                    entry.RequestedFile = file;
+                    entry.AllowConversion = compat;
+                    if (!string.IsNullOrEmpty(file)) Open(entry, file, args);
+                }
 
                 entry.DesiredTime = Num(args, "time", entry.DesiredTime);
                 entry.DesiredSpeed = (float)Num(args, "speed", 1.0);
@@ -263,15 +282,21 @@ namespace PEV.Scripting
                 if (!string.IsNullOrEmpty(fit)) entry.Fit = fit;
 
                 ReadBinding(entry, args);
-                ApplyGeometry(entry);
-                Reconcile(entry);
+                if (entry.Bound != null) ReadDecoration(entry);
+                else
+                {
+                    entry.World.Center = new Vector3((float)Num(args, "x", 0), (float)Num(args, "y", 0));
+                    entry.World.Size = new Vector2((float)Num(args, "width", 0), (float)Num(args, "height", 0));
+                    entry.World.Rotation = (float)Num(args, "rotation", 0);
+                    entry.SortingOrder = (int)Num(args, "sortingOrder", 0);
+                    entry.Opacity = Mathf.Clamp01((float)Num(args, "alpha", 1));
+                    if (!ColorUtility.TryParseHtmlString("#" + Str(args, "color", "ffffff"), out entry.Tint))
+                        entry.Tint = Color.white;
+                }
+                ApplyAudio(entry);
 
-                // A file that could not be resolved or decoded is reported on the call that
-                // asked for it. Silently returning ok would make a missing asset look like a
-                // working surface that draws nothing.
-                if (!entry.Prepared && !string.IsNullOrEmpty(entry.SourceError)) error = entry.SourceError;
-                else if (!entry.Prepared && !string.IsNullOrEmpty(entry.PlayerError)) error = entry.PlayerError;
-                return true;
+                if (!entry.Prepared) error = entry.SourceError ?? entry.PlayerError;
+                return error == null || entry.Converting;
             }
             catch (Exception e)
             {
@@ -280,40 +305,10 @@ namespace PEV.Scripting
             }
         }
 
-        /// <summary>
-        /// Registers the geometry a decoration-backed surface follows, without opening media.
-        ///
-        /// The runtime calls this when a level is decoded, so a video row exists and follows
-        /// its decoration from the first frame; the script's first Set then only supplies the
-        /// clip and the clock.
-        /// </summary>
-        public static void Describe(string scope, string key, ADOFAI.LevelEvent ev)
-        {
-            if (string.IsNullOrEmpty(scope) || ev == null) return;
-            string id = Scoped(scope, key);
-            if (!Live.TryGetValue(id, out var entry))
-            {
-                entry = new Entry { Key = id, Scope = scope, ScriptKey = key };
-                Live[id] = entry;
-            }
-            entry.Bound = ev;
-            entry.Described = true;
-        }
-
-        public static void Bind(string scope, ADOFAI.LevelEvent ev)
-        {
-            if (string.IsNullOrEmpty(scope) || ev == null) return;
-            if (Live.TryGetValue(scope, out var entry)) entry.Bound = ev;
-        }
-
-        public static void UnbindAll()
-        {
-            foreach (var entry in Live.Values) entry.Bound = null;
-        }
-
         public static bool Destroy(string key, Dictionary<string, object> args, out string error)
         {
             error = null;
+            if (string.IsNullOrEmpty(key)) return true;
             string id = Scoped(ScopeOf(args), key);
             if (Live.TryGetValue(id, out var entry))
             {
@@ -351,9 +346,9 @@ namespace PEV.Scripting
         /// </summary>
         public static void Refresh()
         {
+            FlushDeferred();
             if (Live.Count == 0) return;
             UpdateClock();
-            FlushDeferred();
             foreach (var entry in Live.Values)
             {
                 try
@@ -376,7 +371,6 @@ namespace PEV.Scripting
                         ApplyAudio(entry);
                         continue;
                     }
-                    ApplyGeometry(entry);
                     RetryConverted(entry);
                     // Audio is applied before the playback sequencer, not after it: that
                     // sequencer returns early while it waits for a frame or a seek, and an
@@ -384,6 +378,7 @@ namespace PEV.Scripting
                     // the decoder happens to be.
                     ApplyAudio(entry);
                     Reconcile(entry);
+                    ApplyGeometry(entry);
                 }
                 catch (Exception e) { LogOnce(entry, "refresh: " + e.Message); }
             }
@@ -443,6 +438,9 @@ namespace PEV.Scripting
 
         private static void UpdateClock()
         {
+#if PEV_DIAGNOSTICS
+            if (ClockOverride != 0) { ClockRunning = ClockOverride > 0; return; }
+#endif
             double now;
             try
             {
@@ -459,7 +457,6 @@ namespace PEV.Scripting
             ClockRunning = rewound || now > _lastClock + Epsilon;
             _lastClock = now;
 
-            if (ClockOverride != 0) ClockRunning = ClockOverride > 0;
         }
 
         /// <summary>
@@ -497,8 +494,7 @@ namespace PEV.Scripting
             reply["duration"] = entry.Duration;
             reply["width"] = entry.Width;
             reply["height"] = entry.Height;
-            if (!string.IsNullOrEmpty(entry.SourceError)) reply["error"] = entry.SourceError;
-            if (!string.IsNullOrEmpty(entry.PlayerError)) reply["error"] = entry.PlayerError;
+            reply["converting"] = entry.Converting;
         }
 
         /// <summary>Diagnostics: the audio wiring of one surface.</summary>
@@ -531,7 +527,7 @@ namespace PEV.Scripting
             foreach (var kv in Live)
             {
                 var e = kv.Value;
-                sb.Append(kv.Key)
+                sb.Append(e.Key)
                     .Append(" file=").Append(e.SourcePath == null ? "-" : Path.GetFileName(e.SourcePath))
                     .Append(" prepared=").Append(e.Prepared)
                     .Append(" failed=").Append(e.PrepareFailed)
@@ -585,7 +581,8 @@ namespace PEV.Scripting
         private static void Open(Entry entry, string file, Dictionary<string, object> args)
         {
             string resolved, problem;
-            if (!VideoMedia.TryResolve(file, out resolved, out problem))
+            bool chartOnly = args != null && args.TryGetValue("__manifest", out var owner) && owner is PEV.Model.EventManifest;
+            if (!VideoMedia.TryResolve(file, out resolved, out problem, chartOnly))
             {
                 entry.SourceError = problem;
                 entry.PrepareFailed = true;
@@ -620,10 +617,9 @@ namespace PEV.Scripting
         /// <summary>Builds the player and starts preparing the file in <see cref="Entry.SourcePath"/>.</summary>
         private static void OpenPrepared(Entry entry)
         {
-            EnsureObject(entry);
-
             try
             {
+                EnsureObject(entry);
                 var vp = entry.Player = entry.GameObject.AddComponent<VideoPlayer>();
                 vp.playOnAwake = false;
                 vp.waitForFirstFrame = false;
@@ -645,9 +641,9 @@ namespace PEV.Scripting
                 // Which containers this build can decode is not knowable from the extension:
                 // an .mp4 holding HEVC opens, an .mkv holding the same H.264 does not. Only
                 // the backend can answer, so the answer is recorded and surfaced.
-                vp.prepareCompleted += _ => OnPrepared(entry);
-                vp.errorReceived += (_, msg) => OnError(entry, msg);
-                vp.seekCompleted += _ => { entry.SeekPending = false; };
+                vp.prepareCompleted += player => { if (entry.Player == player) OnPrepared(entry); };
+                vp.errorReceived += (player, msg) => { if (entry.Player == player) OnError(entry, msg); };
+                vp.seekCompleted += player => { if (entry.Player == player) entry.SeekPending = false; };
                 vp.Prepare();
             }
             catch (Exception e)
@@ -662,8 +658,6 @@ namespace PEV.Scripting
         {
             try
             {
-                entry.Prepared = true;
-                entry.PrepareFailed = false;
                 var vp = entry.Player;
                 entry.Duration = vp.length;
                 entry.Width = (int)Math.Max(1, vp.width);
@@ -672,16 +666,20 @@ namespace PEV.Scripting
                 // The target texture is created only once the decoded size is known, so the
                 // picture is never resampled through a guessed resolution.
                 entry.Target = new RenderTexture(entry.Width, entry.Height, 0, RenderTextureFormat.ARGB32);
-                entry.Target.Create();
+                if (!entry.Target.Create()) throw new InvalidOperationException("could not create video render target");
                 vp.renderMode = VideoRenderMode.RenderTexture;
                 vp.targetTexture = entry.Target;
 
                 if (entry.Material != null) entry.Material.mainTexture = entry.Target;
-                vp.time = entry.DesiredTime;
-                if (entry.DesiredPlaying) vp.Play();
-                else vp.Pause();
+                entry.Prepared = true;
+                entry.PrepareFailed = false;
             }
-            catch (Exception e) { LogOnce(entry, "prepare handling failed: " + e.Message); }
+            catch (Exception e)
+            {
+                entry.PlayerError = e.Message;
+                entry.PrepareFailed = true;
+                LogOnce(entry, "prepare handling failed: " + e.Message);
+            }
         }
 
         private static void OnError(Entry entry, string message)
@@ -702,9 +700,16 @@ namespace PEV.Scripting
             if (entry.SourcePath != null && !string.Equals(entry.SourcePath, entry.OriginalPath, StringComparison.Ordinal))
                 return; // already playing a converted copy that failed; nothing left to try
 
-            entry.SourceError = "converting " + Path.GetFileName(entry.OriginalPath); entry.Converting = true;
-            if (!VideoMedia.StartConversion(entry.OriginalPath, false, out string note))
+            if (VideoMedia.StartConversion(entry.OriginalPath, false, out string note))
+            {
+                entry.SourceError = "converting " + Path.GetFileName(entry.OriginalPath);
+                entry.Converting = true;
+            }
+            else
+            {
+                entry.PlayerError = message + " (" + note + ")";
                 PEV.Core.Plugin.Log("video " + entry.Key + ": cannot convert —" + note);
+            }
         }
 
         /// <summary>
@@ -726,9 +731,10 @@ namespace PEV.Scripting
             // The clip window is resolved here, not in the package, because its end depends on
             // the media duration and that only exists after preparing. A package that guessed
             // the duration would clamp to the wrong point on every file it did not make.
-            double windowStart = entry.TrimStart;
+            double lastTime = Math.Max(0, entry.Duration - 0.001);
+            double windowStart = Math.Min(entry.TrimStart, lastTime);
             double windowEnd = entry.Duration > 0
-                ? (entry.TrimEnd > 0 ? Math.Min(entry.TrimEnd, entry.Duration) : entry.Duration)
+                ? (entry.TrimEnd > entry.TrimStart ? Math.Min(entry.TrimEnd, entry.Duration) : entry.Duration)
                 : 0;
 
             if (windowEnd > windowStart)
@@ -763,7 +769,7 @@ namespace PEV.Scripting
                 {
                     try { vp.Play(); } catch (Exception e) { LogOnce(entry, "prime failed: " + e.Message); }
                 }
-                entry.HasFrame = now > 0 || SafeLong(() => vp.frame) > 0;
+                entry.HasFrame = SafeLong(() => vp.frame) >= 0;
                 return;
             }
 
@@ -832,7 +838,6 @@ namespace PEV.Scripting
                     vp.time = target;
                     entry.SeekPending = true;
                     entry.SeekFrames = 0;
-                    entry.SeekTarget = target;
 
                     // A paused surface asks the decoder to materialise the frame it just
                     // seeked to. Without this the assignment can sit unapplied until some
@@ -898,14 +903,15 @@ namespace PEV.Scripting
         private static void RetryConverted(Entry entry)
         {
             if (entry.SourcePath == null) return;
-            if (entry.SourceError == null || !entry.SourceError.StartsWith("converting", StringComparison.Ordinal)) return;
+            if (!entry.Converting) return;
             if ((Time.frameCount & 15) != 0) return;
 
             string state = VideoMedia.ConversionState(entry.OriginalPath ?? entry.SourcePath, out bool failed);
             if (state == null) return;
             if (failed)
             {
-                entry.SourceError = "conversion failed";
+                entry.Converting = false;
+                entry.SourceError = "conversion failed: " + state;
                 PEV.Core.Plugin.Log("video " + entry.Key + ": conversion failed —" + state);
                 return;
             }
@@ -913,14 +919,9 @@ namespace PEV.Scripting
             string converted = VideoMedia.CachedConversion(entry.OriginalPath ?? entry.SourcePath);
             if (converted == null) return;
 
-            // The player that failed is torn down before the converted file is opened;
-            // otherwise two VideoPlayers would exist on one object.
-            try { if (entry.Player != null) UnityEngine.Object.Destroy(entry.Player); } catch { }
-            entry.Player = null;
-            entry.SourceError = null;
-            entry.PrepareFailed = false;
-            entry.Converting = false;
+            Release(entry);
             entry.SourcePath = converted;
+            entry.OriginalPath = null;
             OpenPrepared(entry);
         }
 
@@ -940,16 +941,32 @@ namespace PEV.Scripting
             var go = EffectCanvas.CreateObject("PEV.Video." + entry.Key);
             entry.GameObject = go;
 
-            var sr = go.AddComponent<SpriteRenderer>();
-            sr.sprite = SolidSprite.White;
-            entry.Renderer = sr;
-
-            var shader = Shader.Find("Sprites/Default") ?? Shader.Find("Unlit/Transparent");
-            if (shader != null)
+            // SpriteRenderer supplies its sprite texture as a per-renderer _MainTex.
+            // A mesh lets the material sample the decoder's RenderTexture directly.
+            var shader = Shader.Find("Sprites/Default");
+            if (shader == null) throw new InvalidOperationException("Sprites/Default shader unavailable");
+            entry.Mesh = new Mesh
             {
-                entry.Material = new Material(shader) { name = "PEV.VideoMat." + entry.Key };
-                sr.sharedMaterial = entry.Material;
-            }
+                name = "PEV.VideoQuad",
+                vertices = new[] { new Vector3(-.5f, -.5f), new Vector3(-.5f, .5f),
+                                   new Vector3(.5f, .5f), new Vector3(.5f, -.5f) },
+                triangles = new[] { 0, 1, 2, 0, 2, 3 },
+                colors = new[] { Color.white, Color.white, Color.white, Color.white }
+            };
+            SetUvs(entry, Vector2.one);
+            go.AddComponent<MeshFilter>().sharedMesh = entry.Mesh;
+            entry.Material = new Material(shader) { name = "PEV.VideoMat." + entry.Key };
+            entry.Renderer = go.AddComponent<MeshRenderer>();
+            entry.Renderer.sharedMaterial = entry.Material;
+            entry.Renderer.enabled = false;
+        }
+
+        private static void SetUvs(Entry entry, Vector2 scale)
+        {
+            entry.UvScale = scale;
+            Vector2 min = (Vector2.one - scale) * .5f;
+            Vector2 max = min + scale;
+            entry.Mesh.uv = new[] { min, new Vector2(min.x, max.y), max, new Vector2(max.x, min.y) };
         }
 
         private static void ReadBinding(Entry entry, Dictionary<string, object> args)
@@ -996,7 +1013,9 @@ namespace PEV.Scripting
         {
             if (entry.GameObject == null) return;
 
-            bool show = entry.Visible && entry.Renderable && entry.DesiredVisible;
+            Vector2 size = entry.World.Size;
+            bool show = entry.HasFrame && entry.Visible && entry.Renderable && entry.DesiredVisible &&
+                size.x > 0f && size.y > 0f;
             if (entry.Renderer != null) entry.Renderer.enabled = show;
             if (!show) return;
 
@@ -1004,41 +1023,29 @@ namespace PEV.Scripting
             t.position = entry.World.Center;
             t.rotation = Quaternion.Euler(0f, 0f, entry.World.Rotation);
 
-            // The sprite is a unit quad at 100 PPU, so the transform scale is the world size.
-            Vector2 size = entry.World.Size;
-            if (size.x <= 0f || size.y <= 0f) return;
-            t.localScale = new Vector3(size.x, size.y, 1f);
-
-            // No aspect correction is possible before the decoder reports its dimensions; the
-            // first frames are drawn stretched and settle as soon as prepare completes.
-            if (entry.Width > 1 && entry.Height > 1)
+            Vector2 uvScale = Vector2.one;
+            if (entry.Width > 0 && entry.Height > 0)
             {
                 float mediaAspect = (float)entry.Width / entry.Height;
                 float boxAspect = size.x / size.y;
 
-                if (string.Equals(entry.Fit, "stretch", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(entry.Fit, "fill", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Occupies the box exactly.
+                    uvScale = new Vector2(Mathf.Min(1f, boxAspect / mediaAspect),
+                        Mathf.Min(1f, mediaAspect / boxAspect));
                 }
-                else if (string.Equals(entry.Fit, "fill", StringComparison.OrdinalIgnoreCase))
+                else if (string.Equals(entry.Fit, "fit", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Covers the box and is cropped by it; the quad grows past the decoration.
-                    float factor = mediaAspect > boxAspect ? mediaAspect / boxAspect : 1f;
-                    float factorY = mediaAspect < boxAspect ? boxAspect / mediaAspect : 1f;
-                    t.localScale = new Vector3(size.x * factor, size.y * factorY, 1f);
-                }
-                else
-                {
-                    // Fit: the picture sits inside the box, letterboxed on the long axis.
-                    float factor = mediaAspect > boxAspect ? boxAspect / mediaAspect : 1f;
-                    float factorY = mediaAspect < boxAspect ? mediaAspect / boxAspect : 1f;
-                    t.localScale = new Vector3(size.x * factor, size.y * factorY, 1f);
+                    size.x *= Mathf.Min(1f, mediaAspect / boxAspect);
+                    size.y *= Mathf.Min(1f, boxAspect / mediaAspect);
                 }
             }
+            t.localScale = new Vector3(size.x, size.y, 1f);
+            if (entry.UvScale != uvScale) SetUvs(entry, uvScale);
 
             var color = entry.Tint;
             color.a *= entry.Opacity;
-            if (entry.Renderer != null) entry.Renderer.color = color;
+            if (entry.Material != null) entry.Material.color = color;
 
             if (entry.Renderer != null)
             {
@@ -1060,13 +1067,16 @@ namespace PEV.Scripting
         private static void Release(Entry entry)
         {
             var player = entry.Player;
+            bool preparing = player != null && !entry.Prepared && !entry.PrepareFailed;
+            entry.Player = null;
             if (player != null)
             {
                 try { player.targetTexture = null; } catch { }
                 try { player.renderMode = VideoRenderMode.APIOnly; } catch { }
                 try { if (SafeBool(() => player.isPrepared)) player.Stop(); } catch { }
-                try { player.enabled = false; } catch { }
             }
+            if (entry.Renderer != null) entry.Renderer.enabled = false;
+            if (entry.Audio != null) entry.Audio.mute = true;
 
             try
             {
@@ -1082,24 +1092,44 @@ namespace PEV.Scripting
             }
             catch { }
             try { if (entry.Material != null) UnityEngine.Object.Destroy(entry.Material); } catch { }
+            try { if (entry.Mesh != null) UnityEngine.Object.Destroy(entry.Mesh); } catch { }
 
             // A GameObject still holding a preparing VideoPlayer is destroyed on a later
             // frame rather than this one: the native decoder is mid-open and cutting it down
             // here crashes the process instead of throwing.
             if (entry.GameObject != null)
             {
-                if (entry.Player != null && !SafeBool(() => entry.Player.isPrepared))
+                if (preparing)
+                {
+                    entry.GameObject.transform.SetParent(null);
+                    UnityEngine.Object.DontDestroyOnLoad(entry.GameObject);
                     Deferred.Add(new PendingDestroy { Object = entry.GameObject, Since = Time.realtimeSinceStartup });
+                }
                 else
                     try { UnityEngine.Object.Destroy(entry.GameObject); } catch { }
             }
 
             entry.Target = null;
             entry.Material = null;
+            entry.Mesh = null;
+            entry.Renderer = null;
+            entry.Audio = null;
             entry.GameObject = null;
-            entry.Player = null;
             entry.HasFrame = false;
             entry.Prepared = false;
+            entry.PrepareFailed = false;
+            entry.Converting = false;
+            entry.SourcePath = null;
+            entry.OriginalPath = null;
+            entry.PlayerError = null;
+            entry.SourceError = null;
+            entry.SeekPending = false;
+            entry.SeekAttempts = 0;
+            entry.StallFrames = 0;
+            entry.LastObservedTime = -1;
+            entry.LastRestartFrame = int.MinValue / 2;
+            entry.Duration = 0;
+            entry.Width = entry.Height = 0;
         }
 
         // -------------------------------------------------------------- parsing
@@ -1120,7 +1150,12 @@ namespace PEV.Scripting
         {
             if (args != null && args.TryGetValue(key, out var v) && v != null)
             {
-                try { return Convert.ToDouble(v); } catch { }
+                try
+                {
+                    double n = Convert.ToDouble(v);
+                    if (!double.IsNaN(n) && !double.IsInfinity(n) && Math.Abs(n) <= float.MaxValue) return n;
+                }
+                catch { }
             }
             return fallback;
         }

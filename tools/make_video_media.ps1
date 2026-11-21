@@ -41,20 +41,22 @@ $jobs = @(
     # Variable frame rate: the same nominal 30 fps clip whose packets switch to 10 fps
     # halfway through. Seeking by media time has to land on the right picture here, which
     # is exactly what frame-number arithmetic would get wrong.
-    @{ n = 'v-vfr.mp4';           a = "-f lavfi -i testsrc2=size=320x180:rate=30:duration=3 -vf `"setpts='if(lt(N,45),N/30,(45/30)+(N-45)/12)/TB'`" -vsync vfr -c:v libx264 -pix_fmt yuv420p" }
+    @{ n = 'v-vfr.mp4';           a = "$src -vf setpts='if(lt(N,45),N/30,(45/30)+(N-45)/12)/TB' -fps_mode vfr -c:v libx264 -pix_fmt yuv420p" }
 )
 
 $made = 0
 foreach ($job in $jobs) {
     $target = Join-Path $Out $job.n
-    if ((Test-Path -LiteralPath $target) -and -not $Force) { continue }
+    if ((Test-Path -LiteralPath $target) -and (Get-Item -LiteralPath $target).Length -gt 0 -and -not $Force) { continue }
 
     $arguments = @('-hide_banner', '-loglevel', 'error', '-y') + ($job.a -split ' ') + @($target)
     # FFmpeg writes progress to stderr; with $ErrorActionPreference='Stop' a native program's
     # stderr output becomes a terminating error, so it is captured instead of piped.
     $ErrorActionPreference = 'Continue'
-    try { & $ffmpeg @arguments 2>$null | Out-Null } finally { $ErrorActionPreference = 'Stop' }
-    if (-not (Test-Path -LiteralPath $target)) { throw "ffmpeg did not produce $($job.n)" }
+    try { $diagnostic = & $ffmpeg @arguments 2>&1 } finally { $ErrorActionPreference = 'Stop' }
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $target)) {
+        throw "ffmpeg did not produce $($job.n): $diagnostic"
+    }
     $made++
 }
 

@@ -86,12 +86,14 @@ def main():
         touch["SPIRV_Cross_Combined_TouchTextureSPIRV_Cross_DummySampler"].value = 1
         for width, height in ((256, 144), (255, 143)):
             mw, mh = max(1, width // 8) * 2, max(1, height // 8) * 2
-            param_bytes = bytearray(64)
+            # SPIRV-Cross emits the global block in std140 order. The three
+            # coast/ring scale fields between time and glow stay zero in this probe.
+            param_bytes = bytearray(80)
             struct.pack_into("<I", param_bytes, 0, len(areas))
             struct.pack_into("<2I", param_bytes, 8, mw, mh)
             struct.pack_into("<f", param_bytes, 16, 16 / 9)
             struct.pack_into("<2I", param_bytes, 24, noise_width, noise_height)
-            struct.pack_into("<2I", param_bytes, 56, touch_image.shape[1], touch_image.shape[0])
+            struct.pack_into("<2I", param_bytes, 64, touch_image.shape[1], touch_image.shape[0])
             params = ctx.buffer(bytes(param_bytes))
             src, aux, out, aux_out = (ctx.texture((mw, mh), 4, dtype="u4") for _ in range(4))
             params.bind_to_uniform_block(1)
@@ -133,7 +135,7 @@ def main():
             for label, contacts in touch_cases:
                 touch_data = ctx.buffer(b"".join(struct.pack("<4f", x, y, scale, 0.) for x, y, scale in contacts))
                 touch_data.bind_to_storage_buffer(2)
-                struct.pack_into("<If", param_bytes, 44, len(contacts), width / height)
+                struct.pack_into("<If", param_bytes, 56, len(contacts), width / height)
                 params.write(bytes(param_bytes))
                 params.bind_to_uniform_block(0)
                 aux_out.bind_to_image(1, read=True, write=True)
@@ -187,7 +189,7 @@ def main():
                 for pass_index, weight in enumerate(weights):
                     if weight < 0.01:
                         break
-                    struct.pack_into("<fI", param_bytes, 36, float(weight), pass_index)
+                    struct.pack_into("<fI", param_bytes, 48, float(weight), pass_index)
                     params.write(bytes(param_bytes))
                     effect.bind_to_image(1, read=True, write=True)
                     ping.bind_to_image(2, read=True, write=False)

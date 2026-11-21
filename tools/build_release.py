@@ -25,7 +25,7 @@ import sys
 import tempfile
 import zipfile
 
-from pack_event import pack, validate
+from pack_event import load_manifest, pack, validate
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE = os.path.join(ROOT, "src", "PEV.Core")
@@ -76,8 +76,9 @@ def main():
         src = os.path.join(EVENTS, name)
         if not os.path.isdir(src):
             raise SystemExit(f"missing event source: {src}")
-        with open(os.path.join(src, "event.json"), encoding="utf-8") as fh:
-            manifest = json.load(fh)
+        manifest, error = load_manifest(src)
+        if error:
+            raise SystemExit(f"invalid event {name}: {error}")
         problems = validate(src, manifest)
         if problems:
             raise SystemExit(f"invalid event {name}: " + "; ".join(problems))
