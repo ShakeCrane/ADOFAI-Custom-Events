@@ -38,7 +38,7 @@ ENTRY = "PEV.Core.Plugin.Load"
 # The packages this release ships. Exposed as a constant so the release test builds its
 # fixture from the same list: a test that hard-codes one name stops covering the others the
 # moment a package is added, and then fails with a fixture error instead of a real signal.
-EVENT_NAMES = ("NoiseField.event", "Video.event")
+EVENT_NAMES = ("NoiseField.event", "Video.event", "ColorGrading.event")
 
 
 def run(cmd, cwd=None):

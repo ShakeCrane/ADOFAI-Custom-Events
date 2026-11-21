@@ -202,6 +202,10 @@ namespace PEV.Model
         public string DecorationMarker;
         public readonly HashSet<string> HiddenDecorationProperties = new HashSet<string>(StringComparer.Ordinal);
         public string HostPrimitive;
+        /// <summary>Optional package-owned full-screen post-processing stage (schema 5).</summary>
+        public ScreenEffectSpec ScreenEffect;
+        /// <summary>Optional declarative editor panel for controls the native inspector cannot express.</summary>
+        public JObject EditorPanel;
         public readonly Dictionary<string, ImageAssetSpec> ImageAssets = new Dictionary<string, ImageAssetSpec>(StringComparer.Ordinal);
         public readonly Dictionary<string, string> ShaderAssets = new Dictionary<string, string>(StringComparer.Ordinal);
         public string FieldPreviewKey;
@@ -322,10 +326,11 @@ namespace PEV.Model
                 error = "manifest is missing required field 'id'";
                 return null;
             }
-            if ((m.SchemaVersion != 1 && m.SchemaVersion != 2 && m.SchemaVersion != 3 && m.SchemaVersion != 4) ||
+            if ((m.SchemaVersion != 1 && m.SchemaVersion != 2 && m.SchemaVersion != 3 && m.SchemaVersion != 4 &&
+                 m.SchemaVersion != 5) ||
                 (m.ApiVersion != 1 && m.ApiVersion != 2))
             {
-                error = $"unsupported schemaVersion {m.SchemaVersion} or apiVersion {m.ApiVersion} (supported schemas: 1, 2, 3, 4; API: 1, 2)";
+                error = $"unsupported schemaVersion {m.SchemaVersion} or apiVersion {m.ApiVersion} (supported schemas: 1, 2, 3, 4, 5; API: 1, 2)";
                 return null;
             }
             if (root["includedEvents"] != null)
@@ -411,6 +416,21 @@ namespace PEV.Model
             if (root["shaderAssets"] != null &&
                 (m.SchemaVersion < 4 || string.IsNullOrEmpty(m.ShaderBundlePath) || !ReadNamedResourceMap(root["shaderAssets"], m.ShaderAssets)))
             { error = "shaderAssets requires schemaVersion 4, a shader bundle and package-relative asset names"; return null; }
+            if (root["screenEffect"] != null)
+            {
+                if (m.SchemaVersion < 5 || string.IsNullOrEmpty(m.ShaderBundlePath))
+                { error = "screenEffect requires schemaVersion 5 and a shader bundle"; return null; }
+                m.ScreenEffect = ScreenEffectSpec.Parse(root["screenEffect"], out string screenError);
+                if (m.ScreenEffect == null) { error = screenError; return null; }
+                if (!m.ShaderAssets.ContainsKey(m.ScreenEffect.ShaderRole))
+                { error = "screenEffect shader role is not declared in shaderAssets: " + m.ScreenEffect.ShaderRole; return null; }
+            }
+            if (root["editorPanel"] != null)
+            {
+                if (m.SchemaVersion < 5 || !(root["editorPanel"] is JObject panel))
+                { error = "editorPanel requires schemaVersion 5 and an object"; return null; }
+                m.EditorPanel = panel;
+            }
             if (root["imageAssets"] != null)
             {
                 if (m.SchemaVersion < 4 || !(root["imageAssets"] is JObject images) || images.Count < 1 || images.Count > 16)

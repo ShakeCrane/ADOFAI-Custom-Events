@@ -54,6 +54,7 @@ namespace PEV.Core
             Diagnostics.VideoPlayHarness.Configure(entry.Path);
             Diagnostics.ReviewHarness.Configure(entry.Path);
             Diagnostics.ChartHarness.Configure(entry.Path);
+            Diagnostics.CGProbe.Configure(entry.Path);
 #endif
             Log("harmony patched; event packages are loaded from each chart directory");
             return true;

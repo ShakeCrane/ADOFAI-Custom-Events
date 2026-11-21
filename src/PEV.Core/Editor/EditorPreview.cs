@@ -75,6 +75,12 @@ namespace PEV.Editor
             // parameters. The call is a no-op once they are gone.
             NoiseFieldRenderer.DropDescribed();
 
+            // Screen-space grades preview through the package's own script, so what the
+            // author sees while dragging a slider is produced by the code that will run in
+            // the song rather than by a second implementation of it.
+            try { ScreenEffectPreview.Tick(editor); }
+            catch (Exception e) { PEV.Core.Plugin.Log("screen preview failed: " + e.Message); }
+
             var live = new HashSet<string>(StringComparer.Ordinal);
 
             // Decorations first: a decoration-backed event is a row in level.decorations, and
@@ -188,6 +194,7 @@ namespace PEV.Editor
 
         private void Clear()
         {
+            ScreenEffectPreview.Clear();
             if (_seen.Count == 0) return;
             foreach (var pair in _seen)
             {

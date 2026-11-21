@@ -64,6 +64,7 @@ Download ready-to-use packages from [`template-events/`](template-events/) and p
 | `CameraWarp` | One-shot flash and shake driven by parameters |
 | `ScreenShake` | One-shot camera shake with a per-instance trigger |
 | `Pulse` | Continuous per-frame animation via `update(t)` |
+| `ColorGrading` | Full-screen post-processing: a package-owned shader, curves, colour wheels and LUTs, with a floating editor panel for the controls the native inspector cannot draw |
 | `NoiseField` | Stored as a real decoration: place, drag, resize and retag it with the editor's own tools; MoveDecorations drives it by tag. [Download](https://github.com/ShakeCrane/ADOFAI-Custom-Events/raw/refs/heads/main/template-events/NoiseField.event) |
 | `NoiseFieldState` | Controls matching noise fields by tag, including warning and activation |
 | `Video` | Plays a video file on a real decoration, locked to the song clock. Drag, resize, rotate, depth and tag it like any decoration. Widely supported formats play directly; the rest are converted once to a cache. [Download](https://github.com/ShakeCrane/ADOFAI-Custom-Events/raw/refs/heads/main/template-events/Video.event) |
@@ -83,11 +84,18 @@ python tools/build_release.py --version 0.6.2
 ```
 
 That builds `src/PEV.Core` and writes the core-only `dist/PEV.Core-<version>.zip`
-alongside a separate `NoiseField.event` containing the field and its state control.
+alongside one `.event` per event package in `src/Events`: the noise field and its state
+control, the video package, and the colour grading package.
 See [the boundary audit](docs/CORE-BOUNDARY-AUDIT.md) for the implementation boundary.
 
-The build uses assemblies from your local game installation. The checked-in shader bundle
-is sufficient for packaging. To edit or rebuild shaders, start with the [shader source notes](src/UnityShaders/Reference/README.md).
+The build uses assemblies from your local game installation. The checked-in shader bundles
+are sufficient for packaging. To edit or rebuild shaders, start with the [shader source notes](src/UnityShaders/Reference/README.md).
+The colour grading bundle has its own reproducible build:
+
+```bash
+python tools/build_color_grading_bundle.py --unity <Unity 6000.3.25f1 Editor.exe> \
+    --project <new scratch directory> --output src/Events/ColorGrading.event/assets
+```
 
 ---
 

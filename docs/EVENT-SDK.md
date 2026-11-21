@@ -85,7 +85,7 @@ python -m zipfile -l BeatFlash.event
 
 | 字段 | 值和用途 |
 |---|---|
-| `schemaVersion` | 必填整数。普通脚本从 `1` 开始。Schema 2 起可声明内部原语的 `shaderBundle`。Schema 3 起支持 `Choice`、全局设置、装饰默认值和迁移。Schema 4 加入多入口、装饰面板定制与当前内部渲染资源声明 |
+| `schemaVersion` | 必填整数。普通脚本从 `1` 开始。Schema 2 起可声明内部原语的 `shaderBundle`。Schema 3 起支持 `Choice`、全局设置、装饰默认值和迁移。Schema 4 加入多入口、装饰面板定制与当前内部渲染资源声明。Schema 5 加入全屏后处理与编辑器面板声明 |
 | `apiVersion` | 可选整数，默认为 `1`。读取 `ctx.settings` 用 `2` |
 | `id` | 必填，大小写敏感。建议用 `作者.事件名` 形式，例如 `team-rhytropy.beat-flash`，并保持稳定 |
 | `version` | 必填，使用三段数字，例如 `1.2.0`。Core 读取旧实例时用主版本号判断是否过新，完整的兼容性由作者验收 |
@@ -94,6 +94,8 @@ python -m zipfile -l BeatFlash.event
 | `name`、`description` | 字符串或语言对象，例如 `{ "en": "Beat Flash", "zh-CN": "节拍闪光" }`。常用语言键还有 `zh-TW`、`ja`、`ko` |
 | `category` | 默认为 `VisualFx`。打包器允许 `Gameplay`、`TrackFx`、`DecorationFx`、`VisualFx`、`FxModifiers`、`Conveniences`、`Jank`、`Favorites` |
 | `params` | 可选，参数对象数组。名称在一个 manifest 内唯一，`__pevUid` 由 Core 保留 |
+| `screenEffect` | Schema 5。声明一个包内全屏后处理阶段，见「全屏屏幕效果」。需要 `shaderBundle` 和对应的 `shaderAssets` 角色 |
+| `editorPanel` | Schema 5。声明编辑器浮动面板，用来放曲线、色轮这类原生控件表达不了的输入 |
 
 包内路径统一用 `/`，以包根目录为基准，使用与文件一致的拼写，避开绝对路径、盘符和 `..`。源码目录只放要分发的文件。打包器会递归收集其中的文件，跳过以 `.event` 结尾的文件及输出文件自身。包里可以附素材和许可，但素材须有对应的宿主消费者才会在游戏里生效。`main.js` 作为一段脚本执行。有多份 JS 源码时，在打包前合并或构建成一个入口文件。
 
@@ -277,6 +279,68 @@ fx.videoDestroy("video");
 `time` 写绝对值，暂停、重开、检查点跳转和编辑器拖动都由宿主对齐到该值，不需要脚本自己累加时间。`trimEnd` 为 0 表示到片尾；返回的 `{ ok, error, ready, duration, width, height }` 里 `duration` 只有解码器准备好以后才非零，可用于把循环区间裁到片长。宿主自动换算 `fit`（`Fit` 完整显示、`Fill` 填满裁切、`Stretch` 拉伸）与装饰框的宽高比。`visible` 为 `false` 时宿主撤下画面但保留装饰行；`Video.event` 用它在「不保持末帧」时让视频在片尾消失。
 
 格式：原生后端直接解码 MP4/MOV/M4V（H.264、HEVC、AV1、MPEG-4）、AVI（H.264、MJPEG）、WMV 和 VP8-in-WebM。其余容器（MKV、FLV、TS、OGG/Theora、ProRes、VP9-in-WebM）由兼容层自动转换一次并缓存到 `Mods/PEV.Core/video-cache/`；转换使用机器上的 FFmpeg，可从模组目录、谱面目录或 PATH 找到，没有 FFmpeg 时日志和返回值给出明确诊断而不是静默黑屏。视频素材放在谱面目录，路径写相对值，未安装本模组时原版仍能打开谱面。
+
+### 全屏屏幕效果
+
+`fx.field` 和 `fx.video` 画的是世界里的对象；要对**整个画面**做后处理（调色、变形、雾化……），用屏幕效果。
+
+它挂在游戏实际出画面的那台摄像机上：编辑器空闲时世界相机直接出屏，播放时同一台相机先渲染到内部 RT 再由叠加四边形显示，两种情况都拿到合成后的完整轨道、装饰、背景、粒子与视频。UI 在相机之后绘制，**不会被处理**——这是有意的边界。
+
+```json
+{
+  "schemaVersion": 5,
+  "shaderBundle": "assets/look.bundle",
+  "shaderAssets": { "look": "MyScreenShader" },
+  "screenEffect": { "shader": "look", "pass": 0 }
+}
+```
+
+```js
+fx.screen({
+  enabled: true,
+  weight: 1,              // 0..1，宿主用来做淡入淡出；材质里是 _PEVWeight
+  mode: 'replace',        // 'replace' 覆盖旧调色层，'stack' 叠加
+  order: 0,               // 同 order 时按创建顺序
+  fade: 0.5,              // 秒；替换时旧层用这个时长淡出
+  floats:   { "_Exposure": 0.4 },
+  vectors:  { "_Tint": [1, 0.5, 0.2, 0] },
+  colors:   { "_Wash": "ff8800" },
+  vectorArrays: { "_Bands": [[0,0,0,1],[0,0,0,1]] },
+  curves:   { "_CurveTex": { "master": [0,0,1,1], "red": [0,0,1,1] } },
+  lut:      { "enabled": true, "path": "assets/luts/look.cube" }
+});
+fx.screenClear();
+```
+
+| 名称 | 说明 |
+|---|---|
+| 材质名 | 一律以 `_` 开头，只允许字母、数字、下划线，最长 32 字符 |
+| 保留名 | `_MainTex`、`_LutTex`、`_LutTex2D`、`_LutSize`、`_LutMode`、`_LutEnabled`、`_LutDomainMin`、`_LutDomainMax`、`_PEVLinearProject`、`_PEVWeight` 由宿主写入，包不能覆盖 |
+| `curves` | 每个键是一个角色名，值里的四组控制点烘成 256×1 的 RGBA 查找表：R/G/B 是分通道曲线，A 是主曲线。控制点写成 `[x0,y0,x1,y1,…]`，0..1，最多 16 点，用单调三次插值（不过冲） |
+| `lut` | `.cube` 文件，先找包内、再找谱面旁边；支持 `LUT_3D_SIZE`（2–64）与 `LUT_1D_SIZE`（2–4096）。着色器里用 `_LutTex`（3D）或 `_LutTex2D`（1D）采样，`_LutSize` 是格数，`_LutMode` 为 0/1 |
+| `fade` / `weight` | `weight` 由脚本按自己的时钟算好；旧层被替换时由宿主用 `fade` 平滑淡出 |
+| `mode` | `replace` 只显示最新的层，`stack` 让后加的层叠加在前面的结果上 |
+
+宿主**只做搬运**：不解释 `_Exposure` 或曲线的含义，着色器和参数都归事件包。换一个 shader 就是另一种画面效果，不需要改 Core。
+
+编辑器里的实时预览不需要另写：编辑器空闲时会用**同一个脚本、同一套参数、同一个材质**跑一遍，所以「调参数时看到的画面」和「播放时看到的画面」出自同一条代码路径。
+
+`editorPanel` 声明一个浮动面板，用来放原生属性面板表达不了的输入：
+
+```json
+"editorPanel": {
+  "title": { "en": "Color Grading", "zh-CN": "调色" },
+  "curves": { "master": "curveMaster", "red": "curveRed" },
+  "hueCurves": { "hue": "hueVsHue", "saturation": "hueVsSat", "luma": "hueVsLuma" },
+  "wheels": [ { "label": { "en": "Lift" }, "xy": "liftXY", "luma": "liftL" } ],
+  "lut": { "preset": "lutPreset", "file": "lutFile", "strength": "lutStrength" },
+  "compare": "enabled"
+}
+```
+
+面板写回的是**普通参数**，所以谱面保存、复制、分享和未安装模组时的打开行为都不受影响。曲线参数用 `"0,0;0.25,0.3;1,1"` 这样的文本保存，可以直接读懂并手工编辑。面板还提供直方图、RGB Parade、波形与矢量示波器；它们读取调色实际处理的画面（缩小后的副本，每秒采样四次），只在面板打开时采样，不占用正式播放的帧时间。
+
+可运行的参考实现是 [ColorGrading.event](../src/Events/ColorGrading.event/)，着色器源码在 [src/UnityShaders/ColorGrading](../src/UnityShaders/ColorGrading/ColorGrading.shader)。
 
 ### 自定义区域、GPU 与包内状态
 

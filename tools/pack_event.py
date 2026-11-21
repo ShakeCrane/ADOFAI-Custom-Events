@@ -58,7 +58,7 @@ def validate(root, manifest, _included=False):
 
     if "includedEvents" in manifest:
         included = manifest["includedEvents"]
-        if (_included or manifest.get("schemaVersion") != 4 or not isinstance(included, list) or
+        if (_included or manifest.get("schemaVersion", 0) < 4 or not isinstance(included, list) or
                 not 1 <= len(included) <= 16):
             problems.append("includedEvents requires schemaVersion 4, 1-16 paths and no nesting")
         else:
@@ -93,7 +93,7 @@ def validate(root, manifest, _included=False):
         if declaration not in manifest:
             continue
         programs = manifest[declaration]
-        if manifest.get("schemaVersion") != 4 or not isinstance(programs, dict) or not 1 <= len(programs) <= 16:
+        if manifest.get("schemaVersion", 0) < 4 or not isinstance(programs, dict) or not 1 <= len(programs) <= 16:
             problems.append(f"{declaration} requires schemaVersion 4 and 1-16 package-relative resources")
         else:
             for name, path in programs.items():
@@ -108,7 +108,7 @@ def validate(root, manifest, _included=False):
 
     if "runtimeBindings" in manifest:
         bindings = manifest["runtimeBindings"]
-        if manifest.get("schemaVersion") != 4 or not isinstance(bindings, dict) or not 1 <= len(bindings) <= 16:
+        if manifest.get("schemaVersion", 0) < 4 or not isinstance(bindings, dict) or not 1 <= len(bindings) <= 16:
             problems.append("runtimeBindings requires schemaVersion 4 and 1-16 named resource roles")
         else:
             programs = manifest.get("vectorPrograms")
@@ -123,7 +123,7 @@ def validate(root, manifest, _included=False):
 
     if "shaderAssets" in manifest:
         assets = manifest["shaderAssets"]
-        if (manifest.get("schemaVersion") != 4 or not manifest.get("shaderBundle") or not isinstance(assets, dict) or
+        if (manifest.get("schemaVersion", 0) < 4 or not manifest.get("shaderBundle") or not isinstance(assets, dict) or
                 not 1 <= len(assets) <= 32):
             problems.append("shaderAssets requires schemaVersion 4 and a shader bundle")
         else:
@@ -135,7 +135,7 @@ def validate(root, manifest, _included=False):
 
     if "imageAssets" in manifest:
         images = manifest["imageAssets"]
-        if manifest.get("schemaVersion") != 4 or not isinstance(images, dict) or not 1 <= len(images) <= 16:
+        if manifest.get("schemaVersion", 0) < 4 or not isinstance(images, dict) or not 1 <= len(images) <= 16:
             problems.append("imageAssets requires schemaVersion 4 and 1-16 named images")
         else:
             for name, spec in images.items():
@@ -156,7 +156,7 @@ def validate(root, manifest, _included=False):
 
     for field in ("schemaVersion", "apiVersion"):
         value = manifest.get(field, 1)
-        supported = (1, 2, 3, 4) if field == "schemaVersion" else (1, 2)
+        supported = (1, 2, 3, 4, 5) if field == "schemaVersion" else (1, 2)
         if type(value) is not int or value not in supported:
             problems.append(f"unsupported {field}: {value!r} (supported: {supported})")
 
@@ -180,11 +180,11 @@ def validate(root, manifest, _included=False):
     check_resource("entry")
     check_resource("icon")
     primitive = manifest.get("hostPrimitive")
-    if "hostPrimitive" in manifest and (manifest.get("schemaVersion") not in (3, 4) or
+    if "hostPrimitive" in manifest and (manifest.get("schemaVersion", 0) < 3 or
             primitive not in ("fx.field", "fx.video")):
         problems.append("invalid hostPrimitive (requires schemaVersion 3 and fx.field or fx.video)")
     if "shaderBundle" in manifest:
-        if manifest.get("schemaVersion") not in (2, 3, 4):
+        if manifest.get("schemaVersion", 0) < 2:
             problems.append("shaderBundle requires schemaVersion 2 or newer")
         bundle = manifest["shaderBundle"]
         if not isinstance(bundle, str) or not bundle.strip():
@@ -194,7 +194,7 @@ def validate(root, manifest, _included=False):
 
     if "globalSettings" in manifest:
         settings = manifest["globalSettings"]
-        if manifest.get("schemaVersion") not in (3, 4) or manifest.get("apiVersion", 1) != 2:
+        if manifest.get("schemaVersion", 0) < 3 or manifest.get("apiVersion", 1) != 2:
             problems.append("globalSettings requires schemaVersion 3 and apiVersion 2")
         if not isinstance(settings, list):
             problems.append("globalSettings must be an array")
@@ -217,13 +217,13 @@ def validate(root, manifest, _included=False):
 
     if "hiddenDecorationProperties" in manifest:
         hidden = manifest["hiddenDecorationProperties"]
-        if (manifest.get("schemaVersion") != 4 or manifest.get("decoration") is not True or not isinstance(hidden, list) or len(hidden) > 32
+        if (manifest.get("schemaVersion", 0) < 4 or manifest.get("decoration") is not True or not isinstance(hidden, list) or len(hidden) > 32
                 or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name) for name in hidden)):
             problems.append("invalid hiddenDecorationProperties for schema 4 decoration event")
 
     if "decorationDefaults" in manifest:
         defaults = manifest["decorationDefaults"]
-        if (manifest.get("schemaVersion") not in (3, 4) or manifest.get("decoration") is not True or
+        if (manifest.get("schemaVersion", 0) < 3 or manifest.get("decoration") is not True or
                 not isinstance(defaults, dict) or any(k not in ("color", "tag") for k in defaults) or
                 ("color" in defaults and (not isinstance(defaults["color"], str) or
                                           not re.fullmatch(r"[0-9a-fA-F]{6}", defaults["color"]))) or
@@ -233,7 +233,7 @@ def validate(root, manifest, _included=False):
 
     if "decorationListName" in manifest:
         list_name = manifest["decorationListName"]
-        if (manifest.get("schemaVersion") != 4 or manifest.get("decoration") is not True or
+        if (manifest.get("schemaVersion", 0) < 4 or manifest.get("decoration") is not True or
                 not isinstance(list_name, str) or not list_name.strip() or len(list_name) > 128):
             problems.append("invalid decorationListName for schema 4 decoration event")
 
@@ -249,7 +249,7 @@ def validate(root, manifest, _included=False):
 
     if "decorationMigration" in manifest:
         migrations = manifest["decorationMigration"]
-        if manifest.get("schemaVersion") not in (3, 4) or manifest.get("decoration") is not True or not isinstance(migrations, list) or len(migrations) > 16:
+        if manifest.get("schemaVersion", 0) < 3 or manifest.get("decoration") is not True or not isinstance(migrations, list) or len(migrations) > 16:
             problems.append("decorationMigration requires a schema 3 decoration event and at most 16 bindings")
         else:
             allowed = {("scale", "tilesToScale"), ("position", "vector2"), ("rotation", "float"),
@@ -271,7 +271,7 @@ def validate(root, manifest, _included=False):
         reserved = {"uView", "uUnityTime", "_PEVScreenParams", "_EffectRT_TexelSize", "_TouchPosCount",
                     "_TouchPos", "_TouchPosShine", "uMasks", "uAuxMasks", "uDisplaceTex", "uSparkTex",
                     "uNoiseTex", "uActiveColors", "uDisabledColors", "_PEVBackground", "_GrabTexture"}
-        if manifest.get("schemaVersion") not in (3, 4) or primitive != "fx.field" or not isinstance(uniforms, dict) or len(uniforms) > 128:
+        if manifest.get("schemaVersion", 0) < 3 or primitive != "fx.field" or not isinstance(uniforms, dict) or len(uniforms) > 128:
             problems.append("fieldUniforms requires a schema 3 fx.field event and an object with at most 128 entries")
         else:
             for name, value in uniforms.items():
@@ -287,7 +287,7 @@ def validate(root, manifest, _included=False):
         reserved = {"uView", "uUnityTime", "_PEVScreenParams", "_EffectRT_TexelSize", "_TouchPosCount", "_TouchPos",
                     "uMasks", "uAuxMasks", "uDisplaceTex", "uSparkTex", "uNoiseTex", "uActiveColors", "uDisabledColors", "_PEVBackground", "_GrabTexture"}
         existing_uniforms = manifest.get("fieldUniforms") if isinstance(manifest.get("fieldUniforms"), dict) else {}
-        if manifest.get("schemaVersion") not in (3, 4) or primitive != "fx.field" or not isinstance(waves, dict) or len(waves) > 16:
+        if manifest.get("schemaVersion", 0) < 3 or primitive != "fx.field" or not isinstance(waves, dict) or len(waves) > 16:
             problems.append("fieldWaves requires a schema 3 fx.field event and at most 16 entries")
         else:
             for name, wave in waves.items():
@@ -306,7 +306,7 @@ def validate(root, manifest, _included=False):
                          all(isinstance(name, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name) and
                              not name.startswith("__") for name in shaders))
         shader_roles_ok = set(shaders) == shader_roles if isinstance(shaders, dict) and manifest.get("schemaVersion") == 3 else named_shaders
-        if (manifest.get("schemaVersion") not in (3, 4) or primitive != "fx.field" or not isinstance(textures, dict) or
+        if (manifest.get("schemaVersion", 0) < 3 or primitive != "fx.field" or not isinstance(textures, dict) or
                 not isinstance(shaders, dict) or set(textures) != texture_roles or not shader_roles_ok):
             problems.append("field shader providers require fieldTextures and fieldShaders for every role")
         else:
@@ -323,7 +323,7 @@ def validate(root, manifest, _included=False):
 
     if "legacyFieldTextures" in manifest:
         textures = manifest["legacyFieldTextures"]
-        if (manifest.get("schemaVersion") not in (3, 4) or primitive != "fx.field" or
+        if (manifest.get("schemaVersion", 0) < 3 or primitive != "fx.field" or
                 not isinstance(textures, dict) or set(textures) != {"block", "point"}):
             problems.append("legacyFieldTextures requires block and point roles on a schema 3 fx.field event")
         else:
@@ -344,7 +344,7 @@ def validate(root, manifest, _included=False):
                    "activeDisplaceStrength", "sparkMapOpacity", "fillValue", "glowSaturation", "sparkSaturation", "grainPixels"}
         vectors = {"composeDisplaceDirection", "composeDisplaceMapScale", "activeDisplaceDirection",
                    "activeDisplaceMapScale", "activeSparkMapScale"}
-        if (manifest.get("schemaVersion") not in (3, 4) or primitive != "fx.field" or not isinstance(profile, dict) or
+        if (manifest.get("schemaVersion", 0) < 3 or primitive != "fx.field" or not isinstance(profile, dict) or
                 set(profile) != scalars | vectors | {"glowWeights"}):
             problems.append("legacyFieldProfile requires all declared scalar, vector and glow weight roles")
         else:
@@ -360,7 +360,7 @@ def validate(root, manifest, _included=False):
 
     if "fieldPreview" in manifest:
         preview = manifest["fieldPreview"]
-        if (manifest.get("schemaVersion") not in (3, 4) or primitive != "fx.field" or not isinstance(preview, dict) or
+        if (manifest.get("schemaVersion", 0) < 3 or primitive != "fx.field" or not isinstance(preview, dict) or
                 set(preview) != {"key", "parameterMap"} or not isinstance(preview.get("key"), str) or
                 not preview["key"].strip() or len(preview["key"]) > 128 or not isinstance(preview.get("parameterMap"), dict) or
                 len(preview["parameterMap"]) > 64):
@@ -379,6 +379,51 @@ def validate(root, manifest, _included=False):
         problems.append(
             f"unknown category '{category}', will fall back to VisualFx. "
             f"Valid: {', '.join(sorted(VALID_CATEGORIES))}")
+    if "screenEffect" in manifest:
+        screen = manifest["screenEffect"]
+        assets = manifest.get("shaderAssets")
+        if (manifest.get("schemaVersion", 0) < 5 or not manifest.get("shaderBundle") or
+                not isinstance(screen, dict) or set(screen) - {"shader", "pass"} or
+                not isinstance(screen.get("shader"), str) or
+                not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", screen["shader"]) or
+                not isinstance(assets, dict) or screen["shader"] not in assets):
+            problems.append("screenEffect requires schemaVersion 5, a shader bundle and a declared shader role")
+        elif "pass" in screen and (type(screen["pass"]) is not int or not 0 <= screen["pass"] <= 8):
+            problems.append("screenEffect pass must be an integer between 0 and 8")
+
+    if "editorPanel" in manifest:
+        panel = manifest["editorPanel"]
+        declared = {p.get("name") for p in manifest.get("params", []) if isinstance(p, dict)}
+        blobs = []
+        if manifest.get("schemaVersion", 0) < 5 or not isinstance(panel, dict):
+            problems.append("editorPanel requires schemaVersion 5 and an object")
+        else:
+            for key in ("curves", "hueCurves"):
+                if key in panel:
+                    if not isinstance(panel[key], dict):
+                        problems.append(f"editorPanel {key} must map channel names to parameters")
+                    else:
+                        blobs.extend(panel[key].values())
+            if "wheels" in panel:
+                if not isinstance(panel["wheels"], list) or not 1 <= len(panel["wheels"]) <= 8:
+                    problems.append("editorPanel wheels must list 1-8 wheels")
+                else:
+                    for wheel in panel["wheels"]:
+                        if not isinstance(wheel, dict):
+                            problems.append("editorPanel wheel must be an object")
+                            continue
+                        blobs.extend([wheel.get("xy"), wheel.get("luma")])
+            if "lut" in panel:
+                lut = panel["lut"]
+                if not isinstance(lut, dict):
+                    problems.append("editorPanel lut must be an object")
+                else:
+                    blobs.extend([lut.get("preset"), lut.get("file"), lut.get("strength")])
+            if "compare" in panel:
+                blobs.append(panel["compare"])
+            for name in blobs:
+                if name is not None and (not isinstance(name, str) or name not in declared):
+                    problems.append(f"editorPanel refers to an undeclared parameter: {name!r}")
 
     params = manifest.get("params", [])
     if not isinstance(params, list):
@@ -409,7 +454,7 @@ def validate(root, manifest, _included=False):
                 f"Valid: {', '.join(sorted(VALID_TYPES))}, or Enum:TypeName")
         if ptype == "Choice":
             options = param.get("options")
-            if (manifest.get("schemaVersion") not in (3, 4) or not isinstance(options, list) or not 1 <= len(options) <= 64 or
+            if (manifest.get("schemaVersion", 0) < 3 or not isinstance(options, list) or not 1 <= len(options) <= 64 or
                     any(not isinstance(o, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", o) or o == "value__" for o in options) or
                     len(set(options)) != len(options) or not isinstance(param.get("default"), str) or param["default"] not in options):
                 problems.append(f"Choice '{name}' requires schemaVersion 3, 1-64 unique identifier options and a matching default")

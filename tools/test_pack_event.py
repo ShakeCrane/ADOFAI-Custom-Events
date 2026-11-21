@@ -76,7 +76,7 @@ class PackageValidationTests(unittest.TestCase):
 
     def test_invalid_fields_are_reported(self):
         for field, values in {
-            "schemaVersion": (None, "1", True, 0, 5, []),
+            "schemaVersion": (None, "1", True, 0, 6, []),
             "apiVersion": (None, "1", True, 0, 3, {}),
             "id": (None, "", "  ", 3),
             "version": (None, "", 3),
