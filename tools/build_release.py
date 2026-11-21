@@ -35,6 +35,11 @@ PACKAGES = os.path.join(ROOT, "packages", "jint-lib")
 MOD_ID = "PEV.Core"
 ENTRY = "PEV.Core.Plugin.Load"
 
+# The packages this release ships. Exposed as a constant so the release test builds its
+# fixture from the same list: a test that hard-codes one name stops covering the others the
+# moment a package is added, and then fails with a fixture error instead of a real signal.
+EVENT_NAMES = ("NoiseField.event", "Video.event")
+
 
 def run(cmd, cwd=None):
     print("  $ " + " ".join(cmd))
@@ -66,7 +71,7 @@ def main():
     if not os.path.isfile(dll):
         raise SystemExit(f"missing build output: {dll}")
 
-    event_names = ("NoiseField.event", "Video.event")
+    event_names = EVENT_NAMES
     for name in event_names:
         src = os.path.join(EVENTS, name)
         if not os.path.isdir(src):
